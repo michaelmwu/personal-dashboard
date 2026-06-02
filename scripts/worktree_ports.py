@@ -125,27 +125,56 @@ def port_block(root: Path) -> int:
     return BASE_PORT + ((int(digest[:8], 16) % (SPAN // PORT_BLOCK_SIZE)) * PORT_BLOCK_SIZE)
 
 
-def allocate_web_port(base: int, reserved_ports: set[int], start_offset: int, block_size: int) -> int:
+def allocate_safe_browser_port(
+    base: int,
+    reserved_ports: set[int],
+    start_offset: int,
+    block_size: int,
+    name: str,
+) -> int:
     for port in range(base + start_offset, base + block_size):
         if port in reserved_ports or port in WEB_RESTRICTED_PORTS:
             continue
         return port
-    raise RuntimeError(f"no safe web port available in block starting at {base}")
+    raise RuntimeError(f"no safe {name} port available in block starting at {base}")
 
 
 def ports_for_base(base: int) -> dict[str, int]:
-    values = {name: base + offset for name, offset in OFFSETS.items()}
-    values["WEB_PORT"] = allocate_web_port(base, {values["API_PORT"]}, OFFSETS["WEB_PORT"], PORT_BLOCK_SIZE)
+    values = {
+        "API_PORT": allocate_safe_browser_port(
+            base,
+            set(),
+            OFFSETS["API_PORT"],
+            PORT_BLOCK_SIZE,
+            "API",
+        )
+    }
+    values["WEB_PORT"] = allocate_safe_browser_port(
+        base,
+        {values["API_PORT"]},
+        OFFSETS["WEB_PORT"],
+        PORT_BLOCK_SIZE,
+        "web",
+    )
     return values
 
 
 def ports_for_conductor_base(base: int) -> dict[str, int]:
-    values = {name: base + offset for name, offset in CONDUCTOR_OFFSETS.items()}
-    values["WEB_PORT"] = allocate_web_port(
+    values = {
+        "API_PORT": allocate_safe_browser_port(
+            base,
+            set(),
+            CONDUCTOR_OFFSETS["API_PORT"],
+            CONDUCTOR_PORT_RANGE_SIZE,
+            "API",
+        )
+    }
+    values["WEB_PORT"] = allocate_safe_browser_port(
         base,
         {values["API_PORT"]},
         CONDUCTOR_OFFSETS["WEB_PORT"],
         CONDUCTOR_PORT_RANGE_SIZE,
+        "web",
     )
     return values
 

@@ -13,6 +13,7 @@ bun build \
   packages/integrations/openclaw.mjs \
   tests/contracts.test.mjs \
   tests/dev_script.test.mjs \
+  tests/worktree_ports.test.mjs \
   --target=bun \
   --outdir "$tmp_dir/bun"
 
