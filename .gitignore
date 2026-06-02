@@ -1,0 +1,12 @@
+node_modules/
+.context/
+.DS_Store
+npm-debug.log*
+.env
+.env.*
+!.env.example
+.sops.yaml
+dist/
+build/
+coverage/
+*.log

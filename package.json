@@ -1,0 +1,29 @@
+{
+  "name": "personal-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.14",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "scripts/dev.sh",
+    "check": "scripts/check-all.sh",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint .",
+    "ports": "python3 scripts/worktree_ports.py env",
+    "smoke": "scripts/smoke-test.sh",
+    "test": "bun test tests/*.test.mjs",
+    "typecheck": "scripts/typecheck.sh"
+  },
+  "engines": {
+    "bun": ">=1.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.13"
+  },
+  "trustedDependencies": []
+}
