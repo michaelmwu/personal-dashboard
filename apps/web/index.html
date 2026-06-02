@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Personal Dashboard</title>
+    <link rel="stylesheet" href="/src/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Hermes / OpenClaw</p>
+          <h1>Personal Dashboard</h1>
+        </div>
+        <div class="status-strip" id="status-strip">
+          <span class="status-dot"></span>
+          Loading
+        </div>
+      </header>
+
+      <section class="metric-grid" id="metrics" aria-label="Dashboard metrics"></section>
+
+      <section class="workspace">
+        <div class="primary-column">
+          <section class="panel alert-panel">
+            <div class="panel-header">
+              <h2>Fast Path Alerts</h2>
+              <span id="alert-count"></span>
+            </div>
+            <div class="alert-list" id="alerts"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Recent Transactions</h2>
+              <span>Pending + posted</span>
+            </div>
+            <div class="transaction-table" id="transactions"></div>
+          </section>
+        </div>
+
+        <aside class="side-column">
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Reward Engine</h2>
+              <span id="reward-period"></span>
+            </div>
+            <div class="reward-list" id="rewards"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2>OpenClaw</h2>
+              <span id="openclaw-status"></span>
+            </div>
+            <div class="task-list" id="tasks"></div>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <script type="module" src="/src/app.js"></script>
+  </body>
+</html>
