@@ -12,6 +12,7 @@ bun build \
   packages/integrations/hermes.mjs \
   packages/integrations/openclaw.mjs \
   tests/contracts.test.mjs \
+  tests/dev_script.test.mjs \
   --target=bun \
   --outdir "$tmp_dir/bun"
 

@@ -41,7 +41,7 @@ function shutdown(code = 0) {
       child.kill("SIGKILL");
     }
     process.exit(code);
-  }, 500).unref();
+  }, 500);
 }
 
 process.on("SIGINT", () => shutdown(0));
