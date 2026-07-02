@@ -241,6 +241,7 @@ export function dashboardFixture() {
       actions: [
         hermesAction({
           id: "ha_001",
+          idempotencyKey: "gmail-intake-scan-2026-07-02",
           capabilityId: "gmail_intake_scan",
           target: "gmail-intake",
           title: "Scan recent travel emails",
@@ -253,6 +254,7 @@ export function dashboardFixture() {
         }),
         hermesAction({
           id: "ha_002",
+          idempotencyKey: "asia-deals-refresh-2026-07-02",
           capabilityId: "asia_deals_refresh",
           target: "asia-travel-deals",
           title: "Refresh Asia fare candidates",

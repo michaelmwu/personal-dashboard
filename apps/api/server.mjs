@@ -20,13 +20,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "../..");
 const port = Number.parseInt(process.env.API_PORT ?? "8810", 10);
 const webPort = Number.parseInt(process.env.WEB_PORT ?? "8811", 10);
+const hermesApiToken = process.env.PERSONAL_DASHBOARD_API_TOKEN ?? "";
 
 function json(response, statusCode, payload) {
   const body = JSON.stringify(payload, null, 2);
   response.writeHead(statusCode, {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": `http://127.0.0.1:${webPort}`,
-    "Access-Control-Allow-Headers": "Content-Type, X-Hermes-Signature",
+    "Access-Control-Allow-Headers":
+      "Authorization, Content-Type, Idempotency-Key, X-Hermes-Signature",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
   });
   response.end(body);
@@ -34,6 +36,19 @@ function json(response, statusCode, payload) {
 
 function error(response, statusCode, code, message) {
   json(response, statusCode, { error: code, message });
+}
+
+function requireHermesAuth(request, response) {
+  if (!hermesApiToken) {
+    return true;
+  }
+
+  if (request.headers.authorization === `Bearer ${hermesApiToken}`) {
+    return true;
+  }
+
+  error(response, 401, "unauthorized", "Missing or invalid Hermes API bearer token.");
+  return false;
 }
 
 async function readJson(request) {
@@ -99,11 +114,17 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && url.pathname === "/api/hermes/context") {
+      if (!requireHermesAuth(request, response)) {
+        return;
+      }
       json(response, 200, hermesContextFromDashboard(dashboardFixture()));
       return;
     }
 
     if (request.method === "GET" && url.pathname === "/api/hermes/capabilities") {
+      if (!requireHermesAuth(request, response)) {
+        return;
+      }
       json(response, 200, { capabilities: hermesCapabilities() });
       return;
     }
@@ -113,7 +134,13 @@ const server = http.createServer(async (request, response) => {
       (url.pathname === "/api/hermes/actions" ||
         url.pathname === "/api/integrations/hermes/actions")
     ) {
+      if (!requireHermesAuth(request, response)) {
+        return;
+      }
       const payload = await readJson(request);
+      if (!payload.idempotencyKey && request.headers["idempotency-key"]) {
+        payload.idempotencyKey = request.headers["idempotency-key"];
+      }
       const capabilityId = payload.capabilityId ?? payload.action;
       if (!hermesCapabilities().some((capability) => capability.id === capabilityId)) {
         error(

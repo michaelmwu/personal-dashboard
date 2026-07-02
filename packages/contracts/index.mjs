@@ -1,3 +1,6 @@
+export const DASHBOARD_CONTRACT_VERSION = "dashboard.v1";
+export const HERMES_ACTION_VERSION = "hermes-action.v1";
+
 export function metric(label, value, delta) {
   return { label, value, delta };
 }
@@ -60,8 +63,18 @@ export function hermesCapability({ id, title, target, description, inputSchema =
   return { id, title, target, description, inputSchema };
 }
 
-export function hermesAction({ id, capabilityId, target, title, status, payload = {}, createdAt }) {
-  return { id, capabilityId, target, title, status, payload, createdAt };
+export function hermesAction({
+  id,
+  capabilityId,
+  target,
+  title,
+  status,
+  payload = {},
+  idempotencyKey,
+  createdAt,
+  version = HERMES_ACTION_VERSION
+}) {
+  return { id, version, idempotencyKey, capabilityId, target, title, status, payload, createdAt };
 }
 
 export function dashboardContract({
@@ -78,6 +91,7 @@ export function dashboardContract({
   integrations = []
 }) {
   return {
+    version: DASHBOARD_CONTRACT_VERSION,
     generatedAt: new Date().toISOString(),
     health,
     metrics,

@@ -13,6 +13,7 @@ describe("contracts", () => {
   test("dashboard fixture exposes the core integration surfaces", () => {
     const dashboard = dashboardFixture();
 
+    expect(dashboard.version).toBe("dashboard.v1");
     expect(dashboard.health.level).toBe("warning");
     expect(dashboard.metrics).toHaveLength(4);
     expect(dashboard.alerts.some((alert) => alert.severity === "high")).toBe(true);
@@ -69,12 +70,15 @@ describe("contracts", () => {
     });
 
     expect(context.capabilities).toHaveLength(hermesCapabilities().length);
+    expect(context.version).toBe("dashboard.v1");
     expect(context.travel.reservationsNeedingReview).toHaveLength(1);
     expect(context.intake.needsReview).toHaveLength(2);
     expect(action).toMatchObject({
+      version: "hermes-action.v1",
       capabilityId: "flight_search",
       target: "flights-extension",
-      status: "queued"
+      status: "queued",
+      idempotencyKey: action.id
     });
   });
 

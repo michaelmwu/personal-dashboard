@@ -62,3 +62,6 @@ Hermes-facing endpoints:
 - `GET /api/hermes/context`: compact dashboard context for agent prompts.
 - `GET /api/hermes/capabilities`: actions Hermes is allowed to trigger.
 - `POST /api/hermes/actions`: normalized action envelope for future dispatch.
+
+Set `PERSONAL_DASHBOARD_API_TOKEN` to require `Authorization: Bearer ...` on
+the Hermes endpoints.

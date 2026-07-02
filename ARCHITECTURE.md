@@ -83,7 +83,8 @@ Core entities:
 - `FinanceAccount`: Plaid-backed account sync state.
 - `IntakeItem`: classified Gmail item for review or automation.
 - `HermesCapability`: action Hermes is allowed to trigger.
-- `HermesAction`: dashboard-visible request envelope for Hermes/app work.
+- `HermesAction`: versioned, idempotent, dashboard-visible request envelope for
+  Hermes/app work.
 
 The slow-path reconciliation system should stay narrow for now: pending-to-posted matching, merchant normalization, refund matching, transfer detection, and source-of-truth sync status.
 
@@ -104,6 +105,10 @@ Hermes integration is bidirectional:
   `/api/hermes/actions`.
 - Hermes-to-dashboard: Hermes reads `/api/hermes/context` before acting and can
   post source events back through `/api/integrations/:source/events`.
+
+When `PERSONAL_DASHBOARD_API_TOKEN` is configured, all `/api/hermes/*`
+endpoints require a bearer token. Action envelopes include a contract version
+and idempotency key before persistence/dispatch is implemented.
 
 ## Local Development
 

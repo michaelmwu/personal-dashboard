@@ -100,19 +100,22 @@ export function createHermesAction(payload) {
   const capabilityId = payload.capabilityId ?? payload.action ?? "unknown";
   const capability = hermesCapabilities().find((item) => item.id === capabilityId);
   const target = payload.target ?? capability?.target ?? "unknown";
+  const id = payload.id ?? `ha_${Date.now()}`;
   return hermesAction({
-    id: payload.id ?? `ha_${Date.now()}`,
+    id,
     capabilityId,
     target,
     title: payload.title ?? capability?.title ?? "Unknown Hermes action",
     status: payload.status ?? "queued",
     payload: payload.payload ?? {},
+    idempotencyKey: payload.idempotencyKey ?? id,
     createdAt: payload.createdAt ?? new Date().toISOString()
   });
 }
 
 export function hermesContextFromDashboard(dashboard) {
   return {
+    version: dashboard.version,
     generatedAt: dashboard.generatedAt,
     health: dashboard.health,
     alerts: dashboard.alerts.filter((item) => item.severity !== "low"),
