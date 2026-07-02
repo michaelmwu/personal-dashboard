@@ -43,6 +43,20 @@ scripts/archive-workspace.sh --dry-run
 - `HERMES_WEBHOOK_SECRET`: optional shared secret for future Hermes webhook validation.
 - `OPENCLAW_API_BASE_URL`: optional future OpenClaw service URL.
 
+## Framework Endpoints
+
+- `GET /api/dashboard`: full fixture-backed dashboard contract.
+- `GET /api/integrations/catalog`: adapter roadmap and source repo mapping.
+- `GET /api/travel`: travel watches, deal feed, and reservations.
+- `GET /api/finance`: Plaid placeholder account sync surface.
+- `GET /api/intake`: Gmail intake placeholder surface.
+- `GET /api/hermes/context`: compact context that Hermes can pull before acting.
+- `GET /api/hermes/capabilities`: triggerable app capabilities exposed to Hermes.
+- `POST /api/hermes/actions`: dashboard/Hermes action envelope for future dispatch.
+- `POST /api/integrations/:source/events`: normalized event intake for
+  `hotel-rate-finder`, `flights-extension`, `asia-travel-deals`, `plaid`, and
+  `gmail-intake`.
+
 ## Adding Real Integrations
 
 1. Add provider-specific client code under `packages/integrations/`.

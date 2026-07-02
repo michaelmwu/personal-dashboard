@@ -135,6 +135,149 @@ function renderTasks(openclaw) {
     .join("");
 }
 
+function rateLabel(value) {
+  return value > 0 ? money.format(value) : "TBD";
+}
+
+function renderTravel(travel) {
+  const hotelRows = travel.hotelWatches.map(
+    (watch) => `
+      <article class="compact-card">
+        <span class="pill">${escapeHtml(watch.status)}</span>
+        <div>
+          <strong>${escapeHtml(watch.property)}</strong>
+          <p>${escapeHtml(watch.location)} · ${escapeHtml(watch.checkIn)} to ${escapeHtml(watch.checkOut)}</p>
+        </div>
+        <small>${rateLabel(watch.bestRate)} / target ${rateLabel(watch.targetRate)}</small>
+      </article>
+    `
+  );
+  const flightRows = travel.flightWatches.map(
+    (watch) => `
+      <article class="compact-card">
+        <span class="pill">${escapeHtml(watch.status)}</span>
+        <div>
+          <strong>${escapeHtml(watch.route)}</strong>
+          <p>${escapeHtml(watch.dates)} · ${escapeHtml(watch.providers.join(", "))}</p>
+        </div>
+        <small>${rateLabel(watch.bestPrice)} / target ${rateLabel(watch.targetPrice)}</small>
+      </article>
+    `
+  );
+  byId("travel-watches").innerHTML = [...hotelRows, ...flightRows].join("");
+
+  byId("deal-count").textContent = `${travel.dealFeed.length} candidates`;
+  byId("deal-feed").innerHTML = travel.dealFeed
+    .map(
+      (deal) => `
+        <article class="compact-card">
+          <span class="pill">${escapeHtml(deal.status)}</span>
+          <div>
+            <strong>${escapeHtml(deal.title)}</strong>
+            <p>${escapeHtml(deal.route)} · ${escapeHtml(deal.source)} · ${escapeHtml(deal.confidence)}</p>
+          </div>
+          <small>${rateLabel(deal.price)}</small>
+        </article>
+      `
+    )
+    .join("");
+
+  byId("reservations").innerHTML = travel.reservations
+    .map(
+      (reservation) => `
+        <article class="compact-card">
+          <span class="pill">${escapeHtml(reservation.type)}</span>
+          <div>
+            <strong>${escapeHtml(reservation.title)}</strong>
+            <p>${escapeHtml(reservation.dates)} · ${escapeHtml(reservation.source)}</p>
+          </div>
+          <small>${escapeHtml(reservation.status)}</small>
+        </article>
+      `
+    )
+    .join("");
+}
+
+function renderFinance(finance) {
+  byId("finance-sync").textContent = finance.sync.state;
+  byId("finance").innerHTML = finance.accounts
+    .map(
+      (account) => `
+        <article class="compact-card">
+          <span class="pill">${escapeHtml(account.kind)}</span>
+          <div>
+            <strong>${escapeHtml(account.name)}</strong>
+            <p>ending ${escapeHtml(account.last4)}</p>
+          </div>
+          <small>${escapeHtml(account.syncStatus)}</small>
+        </article>
+      `
+    )
+    .join("");
+}
+
+function renderIntake(intake) {
+  byId("intake-count").textContent = `${intake.items.length} queued`;
+  byId("intake").innerHTML = intake.items
+    .map(
+      (item) => `
+        <article class="compact-card">
+          <span class="pill">${escapeHtml(item.classification)}</span>
+          <div>
+            <strong>${escapeHtml(item.title)}</strong>
+            <p>${escapeHtml(item.detail)}</p>
+          </div>
+          <small>${escapeHtml(item.state)}</small>
+        </article>
+      `
+    )
+    .join("");
+}
+
+function renderIntegrations(integrations) {
+  byId("integration-count").textContent = `${integrations.length} adapters`;
+  byId("integrations").innerHTML = integrations
+    .map(
+      (integration) => `
+        <article class="compact-card integration-card">
+          <span class="pill">${escapeHtml(integration.stage)}</span>
+          <div>
+            <strong>${escapeHtml(integration.name)}</strong>
+            <p>${escapeHtml(integration.sourceRepo)} · ${escapeHtml(integration.adapter)}</p>
+          </div>
+        </article>
+      `
+    )
+    .join("");
+}
+
+function renderHermes(hermes) {
+  byId("hermes-status").textContent = hermes.status;
+  const capabilityRows = hermes.capabilities.slice(0, 4).map(
+    (capability) => `
+      <article class="compact-card integration-card">
+        <span class="pill">${escapeHtml(capability.target)}</span>
+        <div>
+          <strong>${escapeHtml(capability.title)}</strong>
+          <p>${escapeHtml(capability.description)}</p>
+        </div>
+      </article>
+    `
+  );
+  const actionRows = hermes.actions.map(
+    (action) => `
+      <article class="compact-card integration-card">
+        <span class="pill">${escapeHtml(action.status)}</span>
+        <div>
+          <strong>${escapeHtml(action.title)}</strong>
+          <p>${escapeHtml(action.target)} · ${escapeHtml(action.capabilityId)}</p>
+        </div>
+      </article>
+    `
+  );
+  byId("hermes").innerHTML = [...actionRows, ...capabilityRows].join("");
+}
+
 async function main() {
   try {
     const config = await loadConfig();
@@ -145,6 +288,11 @@ async function main() {
     renderTransactions(dashboard.transactions);
     renderRewards(dashboard.rewards);
     renderTasks(dashboard.openclaw);
+    renderTravel(dashboard.travel);
+    renderFinance(dashboard.finance);
+    renderIntake(dashboard.intake);
+    renderHermes(dashboard.hermes);
+    renderIntegrations(dashboard.integrations);
   } catch (error) {
     byId("status-strip").textContent = error instanceof Error ? error.message : String(error);
     byId("status-strip").className = "status-strip critical";

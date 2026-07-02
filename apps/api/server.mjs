@@ -4,7 +4,16 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { dashboardFixture } from "../../packages/fixtures/dashboard.mjs";
-import { normalizeHermesEvent } from "../../packages/integrations/hermes.mjs";
+import {
+  createHermesAction,
+  hermesCapabilities,
+  hermesContextFromDashboard,
+  normalizeHermesEvent
+} from "../../packages/integrations/hermes.mjs";
+import {
+  integrationCatalog,
+  normalizeSourceEvent
+} from "../../packages/integrations/sources.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "../..");
@@ -64,11 +73,64 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "GET" && url.pathname === "/api/integrations/catalog") {
+      json(response, 200, { integrations: integrationCatalog() });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/travel") {
+      json(response, 200, dashboardFixture().travel);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/finance") {
+      json(response, 200, dashboardFixture().finance);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/intake") {
+      json(response, 200, dashboardFixture().intake);
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/hermes/context") {
+      json(response, 200, hermesContextFromDashboard(dashboardFixture()));
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/hermes/capabilities") {
+      json(response, 200, { capabilities: hermesCapabilities() });
+      return;
+    }
+
+    if (
+      request.method === "POST" &&
+      (url.pathname === "/api/hermes/actions" ||
+        url.pathname === "/api/integrations/hermes/actions")
+    ) {
+      const payload = await readJson(request);
+      json(response, 202, {
+        accepted: true,
+        action: createHermesAction(payload)
+      });
+      return;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/integrations/hermes/events") {
       const payload = await readJson(request);
       json(response, 202, {
         accepted: true,
         normalized: normalizeHermesEvent(payload)
+      });
+      return;
+    }
+
+    const sourceEventMatch = url.pathname.match(/^\/api\/integrations\/([^/]+)\/events$/);
+    if (request.method === "POST" && sourceEventMatch) {
+      const payload = await readJson(request);
+      json(response, 202, {
+        accepted: true,
+        normalized: normalizeSourceEvent(sourceEventMatch[1], payload)
       });
       return;
     }
