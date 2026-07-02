@@ -11,6 +11,7 @@ bun build \
   packages/fixtures/dashboard.mjs \
   packages/integrations/hermes.mjs \
   packages/integrations/openclaw.mjs \
+  packages/integrations/sources.mjs \
   tests/contracts.test.mjs \
   tests/dev_script.test.mjs \
   tests/worktree_ports.test.mjs \

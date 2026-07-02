@@ -1,11 +1,13 @@
 # Architecture
 
-Personal Dashboard is a monorepo dashboard for personal spend, alerts, rewards, and agent-driven recommendations. The first version is deliberately small: it exposes stable contracts, realistic fixtures, and a runnable dashboard shell that can later be wired to Hermes, OpenClaw, Plaid, Gmail, Telegram, and Postgres.
+Personal Dashboard is a monorepo dashboard for personal spend, travel, alerts, rewards, and agent-driven recommendations. The first version is deliberately small: it exposes stable contracts, realistic fixtures, and a runnable dashboard shell that can later be wired to Hermes, OpenClaw, Plaid, Gmail, Telegram, and Postgres.
 
 ## Goals
 
 - Show the fast-path signal from Hermes: card alerts, suspicious transactions, duplicate charges, and reward estimates.
 - Show the slow-path source of truth from future Plaid sync and reconciliation jobs.
+- Track travel search state from hotel rate, Google Flights, Skyscanner, and Asia deal sources without baking scraper details into the UI.
+- Parse Gmail into reservations, finance statements, and important intake items through normalized contracts.
 - Surface OpenClaw tasks and recommendations next to the financial state they are meant to improve.
 - Keep provider-specific parsing out of the UI and API route handlers.
 
@@ -18,7 +20,7 @@ apps/
 packages/
   contracts/    Shared domain builders and dashboard contract shape
   fixtures/     Representative local development data
-  integrations/ Hermes and OpenClaw adapter boundaries
+  integrations/ Hermes, OpenClaw, travel, finance, and intake adapter boundaries
 scripts/        Conductor-aware dev, archive, port, and smoke-test scripts
 ```
 
@@ -36,6 +38,31 @@ OpenClaw
   -> apps/api /api/dashboard
   -> packages/integrations/openclaw
   -> apps/web action surfaces
+
+apps/web dashboard
+  -> apps/api /api/hermes/actions
+  -> Hermes action envelope
+  -> packages/integrations/sources
+  -> hotel_rate_finder / flights-extension / asiatraveldeals / Plaid / Gmail
+
+Hermes
+  -> apps/api /api/hermes/context
+  -> compact context for agent decisions
+
+Hermes
+  -> apps/api /api/hermes/actions
+  -> dashboard-visible action queue
+  -> future dispatcher into app adapters
+
+hotel_rate_finder / flights-extension / asiatraveldeals
+  -> packages/integrations/sources
+  -> apps/api /api/integrations/:source/events
+  -> apps/web travel surfaces
+
+Plaid / Gmail
+  -> packages/integrations/sources
+  -> apps/api /api/integrations/:source/events
+  -> apps/web finance, reservations, and intake surfaces
 ```
 
 The API currently uses local fixtures. The boundary is intentional: replacing fixtures with real Hermes and OpenClaw clients should not require rewriting dashboard rendering code.
@@ -49,6 +76,15 @@ Core entities:
 - `RewardInsight`: expected points, missed points, and card advice.
 - `OpenClawTask`: agent task or recommendation to act on.
 - `Metric`: summarized dashboard KPI.
+- `HotelRateWatch`: property/date/rate target from hotel search.
+- `FlightSearchWatch`: route/date/provider target from flight search.
+- `TravelDeal`: reviewed or candidate deal from Asia deal ingestion.
+- `Reservation`: parsed flight/hotel/travel confirmation.
+- `FinanceAccount`: Plaid-backed account sync state.
+- `IntakeItem`: classified Gmail item for review or automation.
+- `HermesCapability`: action Hermes is allowed to trigger.
+- `HermesAction`: versioned, idempotent, dashboard-visible request envelope for
+  Hermes/app work.
 
 The slow-path reconciliation system should stay narrow for now: pending-to-posted matching, merchant normalization, refund matching, transfer detection, and source-of-truth sync status.
 
@@ -57,6 +93,22 @@ The slow-path reconciliation system should stay narrow for now: pending-to-poste
 Hermes adapters should translate incoming messages into normalized alerts and transaction candidates. The dashboard should not know whether a signal came from Gmail, Telegram, bank email, or a future webhook shape.
 
 OpenClaw adapters should translate agent state into dashboard tasks, recommendations, and operational status. The dashboard should not depend on OpenClaw internals beyond the contract exported by `packages/integrations/openclaw`.
+
+Travel and intake adapters should translate existing repo outputs into
+contracts exported by `packages/integrations/sources`. The API accepts
+placeholder event posts at `/api/integrations/:source/events`; persistence and
+provider-specific clients can be added later without changing the web app.
+
+Hermes integration is bidirectional:
+
+- Dashboard-to-Hermes: the dashboard submits action envelopes at
+  `/api/hermes/actions`.
+- Hermes-to-dashboard: Hermes reads `/api/hermes/context` before acting and can
+  post source events back through `/api/integrations/:source/events`.
+
+When `PERSONAL_DASHBOARD_API_TOKEN` is configured, all `/api/hermes/*`
+endpoints require a bearer token. Action envelopes include a contract version
+and idempotency key before persistence/dispatch is implemented.
 
 ## Local Development
 
