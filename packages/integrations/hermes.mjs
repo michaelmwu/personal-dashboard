@@ -45,7 +45,8 @@ export function hermesCapabilities() {
       id: "flight_search",
       title: "Search flights",
       target: "flights-extension",
-      description: "Trigger Google Flights and Skyscanner route searches through the extension adapter.",
+      description:
+        "Trigger Google Flights and Skyscanner route searches through the extension adapter.",
       inputSchema: {
         origin: "IATA",
         destination: "IATA",
@@ -78,7 +79,8 @@ export function hermesCapabilities() {
       id: "gmail_intake_scan",
       title: "Scan Gmail intake",
       target: "gmail-intake",
-      description: "Read recent Gmail and classify reservations, statements, and important messages.",
+      description:
+        "Read recent Gmail and classify reservations, statements, and important messages.",
       inputSchema: {
         query: "string",
         limit: "number"

@@ -87,7 +87,13 @@ export function dashboardContract({
   travel = { hotelWatches: [], flightWatches: [], dealFeed: [], reservations: [] },
   finance = { accounts: [], sync: {} },
   intake = { items: [] },
-  hermes = { status: "unknown", contextEndpoint: "", actionEndpoint: "", capabilities: [], actions: [] },
+  hermes = {
+    status: "unknown",
+    contextEndpoint: "",
+    actionEndpoint: "",
+    capabilities: [],
+    actions: []
+  },
   integrations = []
 }) {
   return {

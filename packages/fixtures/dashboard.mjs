@@ -217,7 +217,8 @@ export function dashboardFixture() {
           id: "mail_001",
           source: "gmail",
           title: "Hotel confirmation needs parsing",
-          detail: "Reservation email has dates and cancellation deadline but no normalized trip yet.",
+          detail:
+            "Reservation email has dates and cancellation deadline but no normalized trip yet.",
           classification: "reservation",
           state: "needs-review",
           receivedAt: "2026-07-02T09:12:00.000Z"
