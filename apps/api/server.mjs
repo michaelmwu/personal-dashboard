@@ -12,6 +12,7 @@ import {
 } from "../../packages/integrations/hermes.mjs";
 import {
   integrationCatalog,
+  isSupportedSourceAdapter,
   normalizeSourceEvent
 } from "../../packages/integrations/sources.mjs";
 
@@ -29,6 +30,10 @@ function json(response, statusCode, payload) {
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
   });
   response.end(body);
+}
+
+function error(response, statusCode, code, message) {
+  json(response, statusCode, { error: code, message });
 }
 
 async function readJson(request) {
@@ -109,6 +114,16 @@ const server = http.createServer(async (request, response) => {
         url.pathname === "/api/integrations/hermes/actions")
     ) {
       const payload = await readJson(request);
+      const capabilityId = payload.capabilityId ?? payload.action;
+      if (!hermesCapabilities().some((capability) => capability.id === capabilityId)) {
+        error(
+          response,
+          400,
+          "unsupported_capability",
+          `Unsupported Hermes capability: ${capabilityId ?? "missing"}`
+        );
+        return;
+      }
       json(response, 202, {
         accepted: true,
         action: createHermesAction(payload)
@@ -127,10 +142,15 @@ const server = http.createServer(async (request, response) => {
 
     const sourceEventMatch = url.pathname.match(/^\/api\/integrations\/([^/]+)\/events$/);
     if (request.method === "POST" && sourceEventMatch) {
+      const source = sourceEventMatch[1];
+      if (!isSupportedSourceAdapter(source)) {
+        error(response, 404, "unsupported_source", `Unsupported integration source: ${source}`);
+        return;
+      }
       const payload = await readJson(request);
       json(response, 202, {
         accepted: true,
-        normalized: normalizeSourceEvent(sourceEventMatch[1], payload)
+        normalized: normalizeSourceEvent(source, payload)
       });
       return;
     }

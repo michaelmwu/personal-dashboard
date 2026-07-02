@@ -114,7 +114,7 @@ export function dashboardFixture() {
           checkOut: "2026-09-15",
           targetRate: 420,
           bestRate: 488,
-          source: "hotel_rate_finder",
+          source: "hotel-rate-finder",
           status: "above-target"
         }),
         hotelRateWatch({
@@ -125,7 +125,7 @@ export function dashboardFixture() {
           checkOut: "2026-10-08",
           targetRate: 520,
           bestRate: 501,
-          source: "hotel_rate_finder",
+          source: "hotel-rate-finder",
           status: "bookable"
         })
       ],
@@ -155,7 +155,7 @@ export function dashboardFixture() {
           title: "Taipei to Bangkok business class fare window",
           route: "TPE-BKK",
           price: 812,
-          source: "asiatraveldeals",
+          source: "asia-travel-deals",
           confidence: "needs-verification",
           status: "candidate"
         }),
@@ -164,7 +164,7 @@ export function dashboardFixture() {
           title: "Tokyo to Singapore premium economy sale",
           route: "TYO-SIN",
           price: 690,
-          source: "asiatraveldeals",
+          source: "asia-travel-deals",
           confidence: "medium",
           status: "review"
         })

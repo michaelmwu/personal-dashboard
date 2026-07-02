@@ -88,7 +88,8 @@ describe("contracts", () => {
       kind: "hotelRateWatch",
       value: {
         property: "Park Hyatt Tokyo",
-        bestRate: 455
+        bestRate: 455,
+        source: "hotel-rate-finder"
       }
     });
 
@@ -99,10 +100,23 @@ describe("contracts", () => {
         travelDate: "2026-09-01"
       })
     ).toMatchObject({
-      kind: "gmailIntake",
+      kind: "reservation",
       value: {
         type: "flight",
         status: "needs-review"
+      }
+    });
+
+    expect(
+      normalizeSourceEvent("gmail-intake", {
+        subject: "Important account notice",
+        snippet: "Please review this message."
+      })
+    ).toMatchObject({
+      kind: "intakeItem",
+      value: {
+        title: "Important account notice",
+        state: "needs-review"
       }
     });
   });

@@ -53,6 +53,14 @@ export function integrationCatalog() {
   ];
 }
 
+export function supportedSourceAdapters() {
+  return integrationCatalog().map((integration) => integration.adapter);
+}
+
+export function isSupportedSourceAdapter(source) {
+  return supportedSourceAdapters().includes(source);
+}
+
 export function normalizeHotelRatePayload(payload) {
   return hotelRateWatch({
     id: payload.id ?? `hotel_${Date.now()}`,
@@ -62,7 +70,7 @@ export function normalizeHotelRatePayload(payload) {
     checkOut: payload.checkOut ?? payload.check_out ?? "TBD",
     targetRate: Number(payload.targetRate ?? payload.target_rate ?? 0),
     bestRate: Number(payload.bestRate ?? payload.best_rate ?? payload.rate ?? 0),
-    source: payload.source ?? "hotel_rate_finder",
+    source: payload.source ?? "hotel-rate-finder",
     status: payload.status ?? "watching"
   });
 }
@@ -85,7 +93,7 @@ export function normalizeAsiaDealPayload(payload) {
     title: payload.title ?? "Untitled travel deal",
     route: payload.route ?? "Asia",
     price: Number(payload.price ?? payload.priceUsd ?? payload.price_usd ?? 0),
-    source: payload.source ?? "asiatraveldeals",
+    source: payload.source ?? "asia-travel-deals",
     confidence: payload.confidence ?? payload.score ?? "review",
     status: payload.status ?? "candidate"
   });
@@ -135,7 +143,13 @@ export function normalizeSourceEvent(source, payload) {
     case "plaid":
       return { kind: "financeAccount", value: normalizePlaidPayload(payload) };
     case "gmail-intake":
-      return { kind: "gmailIntake", value: normalizeGmailPayload(payload) };
+      return {
+        kind:
+          payload.reservationType || payload.travelDate || payload.confirmationCode
+            ? "reservation"
+            : "intakeItem",
+        value: normalizeGmailPayload(payload)
+      };
     default:
       return { kind: "unknown", value: payload };
   }
