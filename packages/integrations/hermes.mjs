@@ -101,7 +101,7 @@ export function hermesCapabilities() {
 export function createHermesAction(payload) {
   const capabilityId = payload.capabilityId ?? payload.action ?? "unknown";
   const capability = hermesCapabilities().find((item) => item.id === capabilityId);
-  const target = payload.target ?? capability?.target ?? "unknown";
+  const target = capability?.target ?? payload.target ?? "unknown";
   const id = payload.id ?? `ha_${Date.now()}`;
   return hermesAction({
     id,

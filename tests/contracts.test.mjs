@@ -80,6 +80,16 @@ describe("contracts", () => {
       status: "queued",
       idempotencyKey: action.id
     });
+
+    expect(
+      createHermesAction({
+        capabilityId: "flight_search",
+        target: "plaid"
+      })
+    ).toMatchObject({
+      capabilityId: "flight_search",
+      target: "flights-extension"
+    });
   });
 
   test("source events normalize into domain-specific placeholders", () => {
@@ -121,6 +131,20 @@ describe("contracts", () => {
       value: {
         title: "Important account notice",
         state: "needs-review"
+      }
+    });
+
+    expect(
+      normalizeSourceEvent("flights-extension", {
+        origin: "TYO",
+        destination: "SIN",
+        providers: "google-flights"
+      })
+    ).toMatchObject({
+      kind: "flightSearchWatch",
+      value: {
+        route: "TYO-SIN",
+        providers: ["google-flights"]
       }
     });
   });

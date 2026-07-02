@@ -76,11 +76,18 @@ export function normalizeHotelRatePayload(payload) {
 }
 
 export function normalizeFlightSearchPayload(payload) {
+  const defaultProviders = ["google-flights", "skyscanner"];
+  const providers = Array.isArray(payload.providers)
+    ? payload.providers
+    : typeof payload.providers === "string" && payload.providers.trim()
+      ? [payload.providers]
+      : defaultProviders;
+
   return flightSearchWatch({
     id: payload.id ?? `flight_${Date.now()}`,
     route: payload.route ?? `${payload.origin ?? "?"}-${payload.destination ?? "?"}`,
     dates: payload.dates ?? payload.dateRange ?? "Flexible",
-    providers: payload.providers ?? ["google-flights", "skyscanner"],
+    providers,
     targetPrice: Number(payload.targetPrice ?? payload.target_price ?? 0),
     bestPrice: Number(payload.bestPrice ?? payload.best_price ?? payload.price ?? 0),
     status: payload.status ?? "watching"

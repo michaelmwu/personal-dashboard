@@ -142,12 +142,22 @@ const server = http.createServer(async (request, response) => {
         payload.idempotencyKey = request.headers["idempotency-key"];
       }
       const capabilityId = payload.capabilityId ?? payload.action;
-      if (!hermesCapabilities().some((capability) => capability.id === capabilityId)) {
+      const capability = hermesCapabilities().find((item) => item.id === capabilityId);
+      if (!capability) {
         error(
           response,
           400,
           "unsupported_capability",
           `Unsupported Hermes capability: ${capabilityId ?? "missing"}`
+        );
+        return;
+      }
+      if (payload.target && payload.target !== capability.target) {
+        error(
+          response,
+          400,
+          "target_mismatch",
+          `Hermes capability ${capabilityId} must target ${capability.target}, not ${payload.target}.`
         );
         return;
       }
