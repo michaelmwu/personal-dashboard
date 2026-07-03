@@ -5,6 +5,7 @@ import {
   intakeItem,
   integrationStatus,
   reservation,
+  transaction,
   travelDeal
 } from "../contracts/index.mjs";
 
@@ -95,18 +96,42 @@ export function normalizeFlightSearchPayload(payload) {
 }
 
 export function normalizeAsiaDealPayload(payload) {
+  const originAirports = payload.originAirports ?? payload.origin_airports ?? [];
+  const destinationAirports = payload.destinationAirports ?? payload.destination_airports ?? [];
+  const route =
+    payload.route ??
+    `${originAirports.join(",") || "Asia"}-${destinationAirports.join(",") || "deal"}`;
+  const score = Number(payload.dealScore ?? payload.deal_score ?? payload.score ?? 0);
+  const status = payload.status ?? "candidate";
+
   return travelDeal({
-    id: payload.id ?? `deal_${Date.now()}`,
-    title: payload.title ?? "Untitled travel deal",
-    route: payload.route ?? "Asia",
+    id: payload.id ?? payload.dealId ?? payload.deal_id ?? `deal_${Date.now()}`,
+    title: payload.title ?? payload.headline ?? "Untitled travel deal",
+    route,
     price: Number(payload.price ?? payload.priceUsd ?? payload.price_usd ?? 0),
     source: payload.source ?? "asia-travel-deals",
-    confidence: payload.confidence ?? payload.score ?? "review",
-    status: payload.status ?? "candidate"
+    confidence: payload.confidence ?? (score ? `score ${score}` : "review"),
+    status,
+    dealGroupId: payload.dealGroupId ?? payload.deal_group_id,
+    score,
+    verificationStatus: payload.verificationStatus ?? payload.verification_status ?? status,
+    sourceUrl: payload.sourceUrl ?? payload.source_url ?? payload.reviewUrl ?? payload.review_url,
+    updatedAt: payload.updatedAt ?? payload.updated_at
   });
 }
 
 export function normalizePlaidPayload(payload) {
+  if (payload.merchant || payload.amount || payload.transactionId || payload.transaction_id) {
+    return transaction({
+      id: payload.id ?? payload.transactionId ?? payload.transaction_id ?? `txn_${Date.now()}`,
+      merchant: payload.merchant ?? payload.name ?? "Unknown merchant",
+      amount: Number(payload.amount ?? 0),
+      category: payload.category ?? "Unclassified",
+      card: payload.card ?? payload.accountName ?? payload.account_name ?? "Unknown card",
+      status: payload.status ?? (payload.pending ? "pending" : "posted")
+    });
+  }
+
   return financeAccount({
     id: payload.id ?? payload.account_id ?? `acct_${Date.now()}`,
     name: payload.name ?? "Unknown account",
@@ -148,7 +173,13 @@ export function normalizeSourceEvent(source, payload) {
     case "asia-travel-deals":
       return { kind: "travelDeal", value: normalizeAsiaDealPayload(payload) };
     case "plaid":
-      return { kind: "financeAccount", value: normalizePlaidPayload(payload) };
+      return {
+        kind:
+          payload.merchant || payload.amount || payload.transactionId || payload.transaction_id
+            ? "transaction"
+            : "financeAccount",
+        value: normalizePlaidPayload(payload)
+      };
     case "gmail-intake":
       return {
         kind:

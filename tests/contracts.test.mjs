@@ -2,12 +2,22 @@ import { describe, expect, test } from "bun:test";
 
 import { dashboardFixture } from "../packages/fixtures/dashboard.mjs";
 import {
+  createHermesBridgeRun,
+  HermesBridgeLoopError,
+  parseSseFrame
+} from "../packages/integrations/hermes-bridge.mjs";
+import {
   createHermesAction,
   hermesCapabilities,
   hermesContextFromDashboard,
   normalizeHermesEvent
 } from "../packages/integrations/hermes.mjs";
 import { integrationCatalog, normalizeSourceEvent } from "../packages/integrations/sources.mjs";
+import {
+  loadDashboard,
+  upsertHermesAction,
+  upsertNormalizedEvent
+} from "../packages/storage/dashboard-store.mjs";
 
 describe("contracts", () => {
   test("dashboard fixture exposes the core integration surfaces", () => {
@@ -78,6 +88,7 @@ describe("contracts", () => {
       capabilityId: "flight_search",
       target: "flights-extension",
       status: "queued",
+      origin: "hermes",
       idempotencyKey: action.id
     });
 
@@ -89,6 +100,81 @@ describe("contracts", () => {
     ).toMatchObject({
       capabilityId: "flight_search",
       target: "flights-extension"
+    });
+  });
+
+  test("Hermes Bridge dispatch passes idempotency and refuses Hermes-origin loops", async () => {
+    const requests = [];
+    const fetch = async (url, options) => {
+      requests.push({ url, options });
+      return Response.json({ run_id: "run_123", status: "started" }, { status: 202 });
+    };
+
+    const action = createHermesAction({
+      id: "action_bridge_001",
+      origin: "dashboard",
+      capabilityId: "reservation_parse",
+      idempotencyKey: "idem_action_bridge_001",
+      payload: {
+        messageId: "gmail_msg_001"
+      }
+    });
+    const dispatch = await createHermesBridgeRun(action, {
+      fetch,
+      config: {
+        baseUrl: "http://127.0.0.1:8642",
+        password: "bridge-secret",
+        sessionKey: "personal-dashboard-test"
+      }
+    });
+
+    expect(dispatch).toMatchObject({
+      dispatched: true,
+      runId: "run_123",
+      target: "hermes-bridge"
+    });
+    expect(requests[0].url).toBe("http://127.0.0.1:8642/v1/runs");
+    expect(requests[0].options.headers).toMatchObject({
+      Authorization: "Bearer bridge-secret",
+      "Idempotency-Key": "idem_action_bridge_001",
+      "X-Hermes-Session-Key": "personal-dashboard-test"
+    });
+    expect(JSON.parse(requests[0].options.body)).toMatchObject({
+      session_id: "dashboard:action_bridge_001"
+    });
+
+    await expect(
+      createHermesBridgeRun(
+        createHermesAction({
+          id: "action_loop_001",
+          origin: "hermes",
+          capabilityId: "reservation_parse"
+        }),
+        {
+          fetch,
+          config: {
+            baseUrl: "http://127.0.0.1:8642",
+            password: "bridge-secret",
+            sessionKey: "personal-dashboard-test"
+          }
+        }
+      )
+    ).rejects.toThrow(HermesBridgeLoopError);
+  });
+
+  test("Hermes Bridge SSE frames parse structured and text data", () => {
+    expect(
+      parseSseFrame('event: run.status\ndata: {"status":"running","run_id":"run_123"}')
+    ).toEqual({
+      event: "run.status",
+      data: {
+        status: "running",
+        run_id: "run_123"
+      }
+    });
+    expect(parseSseFrame("event: token\ndata: hello")).toEqual({
+      event: "token",
+      data: "hello"
     });
   });
 
@@ -147,5 +233,110 @@ describe("contracts", () => {
         providers: ["google-flights"]
       }
     });
+
+    expect(
+      normalizeSourceEvent("asia-travel-deals", {
+        id: "deal_candidate_123",
+        deal_group_id: "deal_group_123",
+        headline: "Taipei to Bangkok business class",
+        origin_airports: ["TPE"],
+        destination_airports: ["BKK"],
+        price_usd: 812,
+        deal_score: 82,
+        status: "needs_verification"
+      })
+    ).toMatchObject({
+      kind: "travelDeal",
+      value: {
+        id: "deal_candidate_123",
+        dealGroupId: "deal_group_123",
+        route: "TPE-BKK",
+        price: 812,
+        score: 82,
+        status: "needs_verification"
+      }
+    });
+
+    expect(
+      normalizeSourceEvent("plaid", {
+        transactionId: "plaid_txn_001",
+        merchant: "Hyatt",
+        amount: "455.12",
+        accountName: "Amex Platinum",
+        pending: true
+      })
+    ).toMatchObject({
+      kind: "transaction",
+      value: {
+        id: "plaid_txn_001",
+        merchant: "Hyatt",
+        amount: 455.12,
+        card: "Amex Platinum",
+        status: "pending"
+      }
+    });
+  });
+
+  test("dashboard store upserts normalized module events over the fixture contract", async () => {
+    const filePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-store-${Date.now()}.json`;
+
+    await upsertNormalizedEvent(filePath, {
+      kind: "travelDeal",
+      value: {
+        id: "deal_store_001",
+        title: "Tokyo to Seoul candidate",
+        route: "TYO-SEL",
+        price: 244,
+        source: "asia-travel-deals",
+        confidence: "score 91",
+        status: "needs_verification",
+        score: 91
+      }
+    });
+    await upsertNormalizedEvent(filePath, {
+      kind: "transaction",
+      value: {
+        id: "txn_store_001",
+        merchant: "Hyatt",
+        amount: 455.12,
+        category: "Travel",
+        card: "Amex Platinum",
+        status: "pending"
+      }
+    });
+    await upsertHermesAction(filePath, {
+      id: "action_store_001",
+      capabilityId: "asia_deal_verify",
+      target: "asia-travel-deals",
+      title: "Verify deal",
+      status: "queued",
+      payload: { dealId: "deal_store_001" }
+    });
+
+    const dashboard = await loadDashboard(dashboardFixture(), filePath);
+    expect(dashboard.travel.dealFeed).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "deal_store_001",
+          score: 91
+        })
+      ])
+    );
+    expect(dashboard.hermes.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "action_store_001",
+          capabilityId: "asia_deal_verify"
+        })
+      ])
+    );
+    expect(dashboard.transactions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "txn_store_001",
+          merchant: "Hyatt"
+        })
+      ])
+    );
   });
 });

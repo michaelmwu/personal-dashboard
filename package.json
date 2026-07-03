@@ -10,6 +10,7 @@
   ],
   "scripts": {
     "dev": "scripts/dev.sh",
+    "worker": "bun scripts/integration-worker.mjs",
     "check": "scripts/check-all.sh",
     "format": "biome format --write .",
     "format:check": "biome format .",
@@ -17,13 +18,15 @@
     "ports": "python3 scripts/worktree_ports.py env",
     "smoke": "scripts/smoke-test.sh",
     "test": "bun test tests/*.test.mjs",
+    "test:e2e": "playwright test",
     "typecheck": "scripts/typecheck.sh"
   },
   "engines": {
     "bun": ">=1.3"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.13"
+    "@biomejs/biome": "^2.4.13",
+    "@playwright/test": "^1.61.1"
   },
   "trustedDependencies": []
 }

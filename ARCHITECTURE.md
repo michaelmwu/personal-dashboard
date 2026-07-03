@@ -101,14 +101,16 @@ provider-specific clients can be added later without changing the web app.
 
 Hermes integration is bidirectional:
 
-- Dashboard-to-Hermes: the dashboard submits action envelopes at
-  `/api/hermes/actions`.
+- Dashboard-to-Hermes: the dashboard submits `origin: "dashboard"` action
+  envelopes at `/api/hermes/actions`; the API dispatches agentic work to Hermes
+  Bridge and streams run status back onto the stored action.
 - Hermes-to-dashboard: Hermes reads `/api/hermes/context` before acting and can
   post source events back through `/api/integrations/:source/events`.
 
 When `PERSONAL_DASHBOARD_API_TOKEN` is configured, all `/api/hermes/*`
 endpoints require a bearer token. Action envelopes include a contract version
-and idempotency key before persistence/dispatch is implemented.
+and idempotency key. Hermes-originated envelopes use `origin: "hermes"` so the
+dispatcher does not forward them back into Hermes.
 
 ## Local Development
 

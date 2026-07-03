@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
 set -eu
 
-exec bun test
+bun test tests/*.test.mjs
+bun run test:e2e
