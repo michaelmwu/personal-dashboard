@@ -233,6 +233,16 @@ async function syncHotelRateReservations({ reservationId, forceRefresh } = {}) {
   }
 
   const reservations = activeHotelRateReservations(await dashboardSnapshot(), { reservationId });
+  if (reservations.length === 0) {
+    return {
+      synced: false,
+      reason: reservationId
+        ? "reservation_not_found_or_not_watchable"
+        : "no_watchable_reservations",
+      reservationCount: 0,
+      results: []
+    };
+  }
   const results = [];
   for (const reservation of reservations) {
     results.push(await runHotelRateReservation(reservation, { forceRefresh }));
@@ -263,6 +273,14 @@ async function syncPlaidItem(item) {
 async function syncPlaidItems({ itemId } = {}) {
   const items = await listPlaidItems(storePath);
   const selectedItems = itemId ? items.filter((item) => item.id === itemId) : items;
+  if (selectedItems.length === 0) {
+    return {
+      synced: false,
+      reason: itemId ? "plaid_item_not_found" : "no_plaid_items",
+      itemCount: 0,
+      results: []
+    };
+  }
   const results = [];
   for (const item of selectedItems) {
     results.push({ itemId: item.id, ...(await syncPlaidItem(item)) });

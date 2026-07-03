@@ -67,6 +67,11 @@ function mergeById(baseItems, overlayItems) {
   return overlayItems.reduce((items, item) => upsertById(items, item), baseItems);
 }
 
+function publicPlaidItem(item) {
+  const { accessToken, cursor, ...publicItem } = item;
+  return publicItem;
+}
+
 export function mergeDashboardOverlay(baseDashboard, overlay) {
   return {
     ...baseDashboard,
@@ -87,9 +92,13 @@ export function mergeDashboardOverlay(baseDashboard, overlay) {
     },
     finance: {
       ...baseDashboard.finance,
-      sync: overlay.finance?.sync ?? baseDashboard.finance.sync,
+      sync: overlay.finance?.sync
+        ? { ...(baseDashboard.finance.sync ?? {}), ...overlay.finance.sync }
+        : baseDashboard.finance.sync,
       accounts: mergeById(baseDashboard.finance.accounts, overlay.finance?.accounts ?? []),
-      plaidItems: overlay.finance?.plaidItems ?? baseDashboard.finance.plaidItems ?? []
+      plaidItems: (overlay.finance?.plaidItems ?? baseDashboard.finance.plaidItems ?? []).map(
+        publicPlaidItem
+      )
     },
     intake: {
       ...baseDashboard.intake,
@@ -233,7 +242,7 @@ export async function applyPlaidSync(filePath, itemId, sync) {
     overlay.transactions = upsertById(overlay.transactions, item);
   }
   for (const item of sync.removed ?? []) {
-    overlay.transactions = upsertById(overlay.transactions, item);
+    overlay.transactions = overlay.transactions.filter((transaction) => transaction.id !== item.id);
   }
   overlay.finance.plaidItems = upsertById(overlay.finance.plaidItems ?? [], {
     id: itemId,
@@ -244,6 +253,9 @@ export async function applyPlaidSync(filePath, itemId, sync) {
   });
   overlay.finance.sync = {
     ...(overlay.finance.sync ?? {}),
+    state: sync.synced ? "synced" : "error",
+    provider: "plaid",
+    updatedAt: new Date().toISOString(),
     plaid: {
       status: sync.synced ? "synced" : "error",
       itemId,

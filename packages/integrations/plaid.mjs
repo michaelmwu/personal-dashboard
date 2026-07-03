@@ -2,6 +2,7 @@ import { Configuration, CountryCode, PlaidApi, PlaidEnvironments, Products } fro
 
 const PLAID_ENV_URLS = {
   sandbox: "https://sandbox.plaid.com",
+  development: "https://development.plaid.com",
   production: "https://production.plaid.com"
 };
 
@@ -15,11 +16,16 @@ const COUNTRY_CODE_MAP = {
 
 export function plaidConfig(env = process.env) {
   const plaidEnv = env.PLAID_ENV ?? "sandbox";
+  const explicitBaseUrl = env.PLAID_BASE_URL?.trim();
   return {
     clientId: env.PLAID_CLIENT_ID ?? "",
     secret: env.PLAID_SECRET ?? "",
     env: plaidEnv,
-    baseUrl: env.PLAID_BASE_URL ?? PLAID_ENV_URLS[plaidEnv] ?? PLAID_ENV_URLS.sandbox,
+    baseUrl:
+      explicitBaseUrl ||
+      PLAID_ENV_URLS[plaidEnv] ||
+      PlaidEnvironments[plaidEnv] ||
+      PlaidEnvironments.sandbox,
     clientName: env.PLAID_CLIENT_NAME ?? "Personal Dashboard",
     products: (env.PLAID_PRODUCTS ?? "transactions")
       .split(",")

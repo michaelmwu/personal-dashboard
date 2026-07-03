@@ -235,7 +235,8 @@ export function normalizeHotelReservationPayload(payload) {
     roomClass: payload.roomClass ?? payload.room_class,
     cancellationPolicy: payload.cancellationPolicy ?? payload.cancellation_policy,
     cancellationDeadline: payload.cancellationDeadline ?? payload.cancellation_deadline,
-    chain: payload.chain,
+    chain: payload.chain ?? payload.provider,
+    provider: payload.provider ?? payload.chain,
     propertyId:
       payload.propertyId ??
       payload.property_id ??
@@ -415,8 +416,9 @@ export function normalizeHotelRateWatchFromJob(reservation, job, options = {}) {
     rate?.candidate,
     reservation.paidCurrency ?? reservation.currency
   );
+  const terminalStatus = TERMINAL_JOB_STATUSES.has(job?.status);
   const failed =
-    job?.status === "failed" ||
+    (terminalStatus && job?.status !== "completed") ||
     (Array.isArray(report?.provider_errors) && report.provider_errors.length > 0 && !rate);
   const status = failed
     ? "failed"

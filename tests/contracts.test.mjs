@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
+import { createWebServer } from "../apps/web/server.mjs";
 import { dashboardFixture } from "../packages/fixtures/dashboard.mjs";
 import {
   createHermesBridgeRun,
@@ -32,6 +37,7 @@ import {
   exchangePlaidPublicToken,
   normalizePlaidAccount,
   normalizePlaidTransaction,
+  plaidConfig,
   syncPlaidTransactions
 } from "../packages/integrations/plaid.mjs";
 import {
@@ -47,6 +53,18 @@ import {
   upsertNormalizedEvent
 } from "../packages/storage/dashboard-store.mjs";
 import { runIngestion } from "../scripts/integration-worker.mjs";
+
+function listen(server) {
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve(server.address().port));
+  });
+}
+
+function closeServer(server) {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
 
 describe("contracts", () => {
   test("dashboard fixture exposes the core integration surfaces", () => {
@@ -127,6 +145,52 @@ describe("contracts", () => {
         })
       ])
     );
+  });
+
+  test("web server returns relative config and proxies API requests", async () => {
+    const apiRequests = [];
+    const apiServer = http.createServer((request, response) => {
+      apiRequests.push({
+        method: request.method,
+        url: request.url,
+        authorization: request.headers.authorization
+      });
+      response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ ok: true, path: request.url }));
+    });
+    const apiPort = await listen(apiServer);
+    const rootDir = await mkdtemp(join(tmpdir(), "personal-dashboard-web-"));
+    await writeFile(join(rootDir, "index.html"), "<!doctype html><html></html>");
+    const webServer = createWebServer({
+      rootDir,
+      proxyBaseUrl: `http://127.0.0.1:${apiPort}`
+    });
+    const webPort = await listen(webServer);
+
+    try {
+      const config = await fetch(`http://127.0.0.1:${webPort}/config.json`);
+      expect(config.ok).toBe(true);
+      expect(await config.json()).toEqual({ apiBaseUrl: "" });
+
+      const proxied = await fetch(`http://127.0.0.1:${webPort}/api/dashboard?source=test`, {
+        headers: {
+          Authorization: "Bearer dashboard-token"
+        }
+      });
+      expect(proxied.ok).toBe(true);
+      expect(await proxied.json()).toEqual({ ok: true, path: "/api/dashboard?source=test" });
+      expect(apiRequests).toEqual([
+        {
+          method: "GET",
+          url: "/api/dashboard?source=test",
+          authorization: "Bearer dashboard-token"
+        }
+      ]);
+    } finally {
+      await closeServer(webServer);
+      await closeServer(apiServer);
+      await rm(rootDir, { recursive: true, force: true });
+    }
   });
 
   test("Hermes can pull compact dashboard context and create action envelopes", () => {
@@ -310,6 +374,25 @@ describe("contracts", () => {
     expect(calls[1].body).toEqual({
       public_token: "public-sandbox-123"
     });
+  });
+
+  test("Plaid config treats blank base URL as unset and supports development", () => {
+    expect(
+      plaidConfig({
+        PLAID_CLIENT_ID: "client",
+        PLAID_SECRET: "secret",
+        PLAID_ENV: "sandbox",
+        PLAID_BASE_URL: ""
+      }).baseUrl
+    ).toBe("https://sandbox.plaid.com");
+
+    expect(
+      plaidConfig({
+        PLAID_CLIENT_ID: "client",
+        PLAID_SECRET: "secret",
+        PLAID_ENV: "development"
+      }).baseUrl
+    ).toBe("https://development.plaid.com");
   });
 
   test("Plaid transaction sync paginates with cursor and normalizes account data", async () => {
@@ -655,6 +738,53 @@ describe("contracts", () => {
     });
   });
 
+  test("Hotel reservation normalization preserves provider-only chain values", () => {
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_provider_001",
+      provider: "hyatt",
+      property: "Park Hyatt Tokyo",
+      propertyId: "tyoph",
+      checkIn: "2026-10-01",
+      checkOut: "2026-10-04",
+      paidRate: 520,
+      paidCurrency: "USD"
+    });
+
+    expect(reservation).toMatchObject({
+      chain: "hyatt",
+      provider: "hyatt"
+    });
+    expect(hotelSearchRequestFromReservation(reservation)).toMatchObject({
+      providers: ["hyatt"]
+    });
+  });
+
+  test("Canceled hotel jobs normalize as failed watches", () => {
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_hotel_canceled_001",
+      property: "Park Hyatt Tokyo",
+      chain: "hyatt",
+      propertyId: "tyoph",
+      checkIn: "2026-10-01",
+      checkOut: "2026-10-04",
+      paidRate: 520,
+      paidCurrency: "USD"
+    });
+    const watch = normalizeHotelRateWatchFromJob(reservation, {
+      id: "job_hotel_canceled_001",
+      status: "canceled",
+      error: "job canceled",
+      report: {
+        hotels: []
+      }
+    });
+
+    expect(watch).toMatchObject({
+      status: "failed",
+      error: "job canceled"
+    });
+  });
+
   test("source events normalize into domain-specific placeholders", () => {
     expect(
       normalizeSourceEvent("hotel-rate-finder", {
@@ -875,6 +1005,14 @@ describe("contracts", () => {
       modified: [],
       removed: []
     });
+    await applyPlaidSync(filePath, "item_123", {
+      synced: true,
+      cursor: "cursor_2",
+      accounts: [],
+      added: [],
+      modified: [],
+      removed: [{ id: "plaid_txn_001" }]
+    });
 
     const dashboard = await loadDashboard(dashboardFixture(), filePath);
     const items = await listPlaidItems(filePath);
@@ -882,11 +1020,26 @@ describe("contracts", () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: "item_123",
-          cursor: "cursor_1",
+          cursor: "cursor_2",
           syncStatus: "synced"
         })
       ])
     );
+    const publicPlaidItem = dashboard.finance.plaidItems.find((item) => item.id === "item_123");
+    expect(publicPlaidItem).toMatchObject({
+      id: "item_123",
+      syncStatus: "synced"
+    });
+    expect(publicPlaidItem.accessToken).toBeUndefined();
+    expect(publicPlaidItem.cursor).toBeUndefined();
+    expect(dashboard.finance.sync).toMatchObject({
+      state: "synced",
+      provider: "plaid",
+      plaid: {
+        status: "synced",
+        itemId: "item_123"
+      }
+    });
     expect(dashboard.finance.accounts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -896,10 +1049,9 @@ describe("contracts", () => {
       ])
     );
     expect(dashboard.transactions).toEqual(
-      expect.arrayContaining([
+      expect.not.arrayContaining([
         expect.objectContaining({
-          id: "plaid_txn_001",
-          source: "plaid"
+          id: "plaid_txn_001"
         })
       ])
     );
