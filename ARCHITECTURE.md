@@ -22,6 +22,8 @@ packages/
   fixtures/     Representative local development data
   integrations/ Hermes, OpenClaw, travel, finance, and intake adapter boundaries
 scripts/        Conductor-aware dev, archive, port, and smoke-test scripts
+dashboard.config.yaml
+                 Enabled app registry, panel order, and app manifest paths
 ```
 
 ## Runtime Shape
@@ -80,6 +82,12 @@ Manual hotel reservation / Gmail reservation
   -> packages/integrations/hotel-rates
   -> hotel_rate_finder FastAPI saved searches and jobs
   -> apps/web hotel watches and alerts
+
+App manifest
+  -> dashboard.config.yaml
+  -> packages/integrations/registry
+  -> apps/api /api/apps and /api/hermes/capabilities
+  -> apps/web generic plugin panel summary
 ```
 
 The API currently uses local fixtures. The boundary is intentional: replacing fixtures with real Hermes and OpenClaw clients should not require rewriting dashboard rendering code.
@@ -102,10 +110,31 @@ Core entities:
 - `HermesCapability`: action Hermes is allowed to trigger.
 - `HermesAction`: versioned, idempotent, dashboard-visible request envelope for
   Hermes/app work.
+- `AppManifest`, `AppPanel`, `AppItem`: lightweight plugin tier for enabled
+  apps, generic panel declarations, and opaque app-specific payloads.
 
 The slow-path reconciliation system should stay narrow for now: pending-to-posted matching, merchant normalization, refund matching, transfer detection, and source-of-truth sync status.
 
 ## Integration Boundaries
+
+The dashboard uses a two-tier contract. Core shared types are small and blessed:
+transactions, alerts, reservations, watches, feed items, metrics, and actions.
+Cross-app joins and Hermes context should depend only on those core types.
+Everything app-specific uses the generic item envelope
+`{ app, type, externalId, ts, status, payload }` and is rendered by generic
+panels or deep-linked to the owning app UI.
+
+Each app declares itself with a `dashboard-manifest.json` contract:
+
+- identity: app id, name, version, base URL or env-backed base URL
+- panels: id, type, title, data source, default position
+- capabilities: id, kind (`deterministic` or `agentic`), target, endpoint, input schema
+- event types: app-specific item/event names accepted by the dashboard
+
+`dashboard.config.yaml` decides which apps are enabled and panel order/position.
+The current local manifests live under `packages/integrations/manifests/` as a
+bootstrap; app-owned repos should eventually commit their own manifests and have
+this config point at them.
 
 Hermes adapters should translate incoming messages into normalized alerts and transaction candidates. The dashboard should not know whether a signal came from Gmail, Telegram, bank email, or a future webhook shape.
 
@@ -139,6 +168,11 @@ Hermes integration is bidirectional:
   Bridge and streams run status back onto the stored action.
 - Hermes-to-dashboard: Hermes reads `/api/hermes/context` before acting and can
   post source events back through `/api/integrations/:source/events`.
+- Capability discovery: `/api/hermes/capabilities` folds over enabled app
+  manifests. Disabling an app in `dashboard.config.yaml` removes its
+  capabilities from Hermes. Deterministic capabilities route to declared
+  endpoints; agentic capabilities route to Hermes Bridge with the existing
+  origin loop guard.
 
 When `PERSONAL_DASHBOARD_API_TOKEN` is configured, all `/api/hermes/*`
 endpoints require a bearer token. Action envelopes include a contract version

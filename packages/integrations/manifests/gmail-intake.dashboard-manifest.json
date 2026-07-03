@@ -1,0 +1,39 @@
+{
+  "id": "gmail-intake",
+  "name": "Gmail Intake",
+  "version": "dashboard-app.v1",
+  "baseUrl": "external:gmail",
+  "panels": [
+    {
+      "id": "intake-queue",
+      "type": "feed",
+      "title": "Gmail Intake",
+      "dataSource": "/api/apps/gmail-intake/items?type=intake",
+      "defaultPosition": "operations"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "gmail_intake_scan",
+      "title": "Scan Gmail intake",
+      "kind": "agentic",
+      "target": "gmail-intake",
+      "description": "Read recent Gmail and classify reservations, statements, and important messages.",
+      "inputSchema": {
+        "query": "string",
+        "limit": "number"
+      }
+    },
+    {
+      "id": "reservation_parse",
+      "title": "Parse reservation",
+      "kind": "agentic",
+      "target": "gmail-intake",
+      "description": "Parse one email or attachment into a normalized travel reservation.",
+      "inputSchema": {
+        "messageId": "string"
+      }
+    }
+  ],
+  "eventTypes": ["reservation", "intake"]
+}

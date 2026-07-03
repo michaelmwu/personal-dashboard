@@ -12,6 +12,10 @@ import {
   hermesContextFromDashboard,
   normalizeHermesEvent
 } from "../packages/integrations/hermes.mjs";
+import {
+  genericAppItemsFromDashboard,
+  loadPluginRegistry
+} from "../packages/integrations/registry.mjs";
 import { integrationCatalog, normalizeSourceEvent } from "../packages/integrations/sources.mjs";
 import {
   createHotelSavedSearch,
@@ -32,10 +36,12 @@ import {
 import {
   applyHotelRateWatch,
   applyPlaidSync,
+  listAppItems,
   listPlaidItems,
   loadDashboard,
   upsertPlaidItem,
   upsertHotelReservation,
+  upsertAppItem,
   upsertHermesAction,
   upsertNormalizedEvent
 } from "../packages/storage/dashboard-store.mjs";
@@ -86,6 +92,39 @@ describe("contracts", () => {
     expect(ids).toContain("flights_extension");
     expect(ids).toContain("asia_travel_deals");
     expect(ids).toContain("gmail_intake");
+  });
+
+  test("plugin registry loads enabled manifests and panel positions from config", async () => {
+    const registry = await loadPluginRegistry(new URL("..", import.meta.url).pathname);
+
+    expect(registry.apps.map((app) => app.id)).toEqual(
+      expect.arrayContaining(["asia-travel-deals", "hotel-rate-finder", "plaid"])
+    );
+    expect(registry.panels).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "hotel-watches",
+          appId: "hotel-rate-finder",
+          type: "watch-table",
+          defaultPosition: "travel",
+          order: 20
+        })
+      ])
+    );
+    expect(registry.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "hotel_rate_search",
+          kind: "deterministic",
+          endpoint: "/api/integrations/hotel-rate-finder/sync"
+        }),
+        expect.objectContaining({
+          id: "reservation_parse",
+          kind: "agentic",
+          target: "gmail-intake"
+        })
+      ])
+    );
   });
 
   test("Hermes can pull compact dashboard context and create action envelopes", () => {
@@ -831,6 +870,44 @@ describe("contracts", () => {
         expect.objectContaining({
           id: "alert_hotel_store_001",
           source: "hotel-rate-finder"
+        })
+      ])
+    );
+  });
+
+  test("generic app items persist opaque plugin payloads alongside core projections", async () => {
+    const filePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-app-items-${Date.now()}.json`;
+
+    await upsertAppItem(filePath, {
+      app: "hotel-rate-finder",
+      type: "status",
+      externalId: "job-health",
+      status: "warning",
+      title: "Hotel Rate Finder stale",
+      detail: "Last scrape failed.",
+      payload: {
+        failedJobs: 1
+      }
+    });
+
+    const stored = await listAppItems(filePath, { app: "hotel-rate-finder", type: "status" });
+    const projected = genericAppItemsFromDashboard(dashboardFixture(), "asia-travel-deals");
+
+    expect(stored).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          app: "hotel-rate-finder",
+          type: "status",
+          status: "warning"
+        })
+      ])
+    );
+    expect(projected).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          app: "asia-travel-deals",
+          type: "deal",
+          title: "Taipei to Bangkok business class fare window"
         })
       ])
     );

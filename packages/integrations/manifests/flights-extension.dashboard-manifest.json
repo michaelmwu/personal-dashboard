@@ -1,0 +1,31 @@
+{
+  "id": "flights-extension",
+  "name": "Flight Finder",
+  "version": "dashboard-app.v1",
+  "baseUrl": "external:browser-extension",
+  "panels": [
+    {
+      "id": "flight-watches",
+      "type": "watch-table",
+      "title": "Flight Watches",
+      "dataSource": "/api/apps/flights-extension/items?type=flight-watch",
+      "defaultPosition": "travel"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "flight_search",
+      "title": "Search flights",
+      "kind": "agentic",
+      "target": "flights-extension",
+      "description": "Trigger Google Flights and Skyscanner route searches through the extension adapter.",
+      "inputSchema": {
+        "origin": "IATA",
+        "destination": "IATA",
+        "dates": "string",
+        "targetPrice": "number"
+      }
+    }
+  ],
+  "eventTypes": ["flight-watch"]
+}

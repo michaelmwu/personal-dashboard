@@ -1,5 +1,6 @@
 export const DASHBOARD_CONTRACT_VERSION = "dashboard.v1";
 export const HERMES_ACTION_VERSION = "hermes-action.v1";
+export const DASHBOARD_APP_MANIFEST_VERSION = "dashboard-app.v1";
 
 export function metric(label, value, delta) {
   return { label, value, delta };
@@ -47,6 +48,47 @@ export function openClawTask({ id, title, owner = "OpenClaw", state, priority })
 
 export function integrationStatus({ id, name, sourceRepo, adapter, stage, nextStep }) {
   return { id, name, sourceRepo, adapter, stage, nextStep };
+}
+
+export function appPanel({
+  id,
+  appId,
+  type,
+  title,
+  dataSource,
+  defaultPosition = "main",
+  order = 100,
+  enabled = true
+}) {
+  return { id, appId, type, title, dataSource, defaultPosition, order, enabled };
+}
+
+export function appManifest({
+  id,
+  name,
+  version = DASHBOARD_APP_MANIFEST_VERSION,
+  baseUrl,
+  healthUrl,
+  panels = [],
+  capabilities = [],
+  eventTypes = [],
+  deepLink
+}) {
+  return { id, name, version, baseUrl, healthUrl, panels, capabilities, eventTypes, deepLink };
+}
+
+export function appItem({
+  id,
+  app,
+  type,
+  externalId,
+  ts,
+  status = "active",
+  title,
+  detail,
+  payload = {}
+}) {
+  return { id, app, type, externalId, ts, status, title, detail, payload };
 }
 
 export function hotelRateWatch({
@@ -238,6 +280,7 @@ export function dashboardContract({
   travel = { hotelWatches: [], flightWatches: [], dealFeed: [], reservations: [] },
   finance = { accounts: [], sync: {} },
   intake = { items: [] },
+  apps = { manifests: [], panels: [], items: [] },
   hermes = {
     status: "unknown",
     contextEndpoint: "",
@@ -259,6 +302,7 @@ export function dashboardContract({
     travel,
     finance,
     intake,
+    apps,
     hermes,
     integrations
   };

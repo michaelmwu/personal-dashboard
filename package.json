@@ -30,6 +30,7 @@
   },
   "trustedDependencies": [],
   "dependencies": {
-    "plaid": "^42.2.0"
+    "plaid": "^42.2.0",
+    "yaml": "^2.9.0"
   }
 }

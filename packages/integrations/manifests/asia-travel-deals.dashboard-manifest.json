@@ -1,0 +1,44 @@
+{
+  "id": "asia-travel-deals",
+  "name": "Asia Travel Deals",
+  "version": "dashboard-app.v1",
+  "baseUrlEnv": "ASIA_TRAVEL_DEALS_API_BASE_URL",
+  "healthUrl": "/health",
+  "panels": [
+    {
+      "id": "deal-feed",
+      "type": "feed",
+      "title": "Asia Deal Feed",
+      "dataSource": "/api/apps/asia-travel-deals/items?type=deal",
+      "defaultPosition": "travel"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "asia_deals_refresh",
+      "title": "Refresh Asia deals",
+      "kind": "agentic",
+      "target": "asia-travel-deals",
+      "description": "Refresh the candidate feed and surface cheap Asia travel deals for review.",
+      "inputSchema": {
+        "region": "string",
+        "cabin": "string",
+        "maxPrice": "number"
+      }
+    },
+    {
+      "id": "asia_deal_verify",
+      "title": "Verify Asia deal",
+      "kind": "deterministic",
+      "target": "asia-travel-deals",
+      "endpoint": "/deals/{dealId}/verify",
+      "description": "Dispatch verification for one candidate-stage Asia travel deal.",
+      "inputSchema": {
+        "dealId": "uuid",
+        "provider": "string?"
+      }
+    }
+  ],
+  "eventTypes": ["deal", "verification"],
+  "deepLink": "/"
+}

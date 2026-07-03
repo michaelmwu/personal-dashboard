@@ -61,3 +61,44 @@ test("Hotel Rate Finder sync endpoint fails closed without service URL", async (
     reason: "missing_hotel_rate_finder_api_base_url"
   });
 });
+
+test("plugin registry exposes enabled apps and accepts opaque app events", async ({ request }) => {
+  const registry = await request.get("/api/apps");
+  expect(registry.status()).toBe(200);
+  await expect(registry.json()).resolves.toMatchObject({
+    apps: expect.arrayContaining([
+      expect.objectContaining({
+        id: "hotel-rate-finder"
+      })
+    ]),
+    panels: expect.arrayContaining([
+      expect.objectContaining({
+        id: "hotel-watches",
+        appId: "hotel-rate-finder"
+      })
+    ])
+  });
+
+  const event = await request.post("/api/apps/hotel-rate-finder/events", {
+    data: {
+      type: "status",
+      externalId: "e2e-status",
+      status: "warning",
+      title: "Hotel scraper stale",
+      detail: "Last job failed."
+    }
+  });
+  expect(event.status()).toBe(202);
+
+  const items = await request.get("/api/apps/hotel-rate-finder/items?type=status");
+  expect(items.status()).toBe(200);
+  await expect(items.json()).resolves.toMatchObject({
+    items: expect.arrayContaining([
+      expect.objectContaining({
+        app: "hotel-rate-finder",
+        type: "status",
+        status: "warning"
+      })
+    ])
+  });
+});

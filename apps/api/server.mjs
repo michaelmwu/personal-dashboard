@@ -21,6 +21,10 @@ import {
   normalizeSourceEvent
 } from "../../packages/integrations/sources.mjs";
 import {
+  genericAppItemsFromDashboard,
+  loadPluginRegistry
+} from "../../packages/integrations/registry.mjs";
+import {
   createHotelSavedSearch,
   hotelRateDropAlert,
   hotelRateFailureAlert,
@@ -46,10 +50,12 @@ import {
   applyHotelRateWatch,
   applyPlaidSync,
   dashboardStorePath,
+  listAppItems,
   listPlaidItems,
   loadDashboard,
   patchHermesAction,
   patchHotelReservation,
+  upsertAppItem,
   upsertPlaidItem,
   upsertHotelReservation,
   upsertHermesAction,
@@ -68,7 +74,35 @@ const asiaTravelDealsApiToken = process.env.ASIA_TRAVEL_DEALS_API_TOKEN ?? "";
 const hotelRateFinderConfig = hotelRatesConfig();
 
 async function dashboardSnapshot() {
-  return loadDashboard(dashboardFixture(), storePath);
+  const dashboard = await loadDashboard(dashboardFixture(), storePath);
+  const registry = await pluginRegistry();
+  const registryItems = registry.apps.flatMap((app) =>
+    genericAppItemsFromDashboard(dashboard, app.id)
+  );
+  return {
+    ...dashboard,
+    apps: {
+      manifests: registry.apps,
+      panels: registry.panels,
+      items: [...registryItems, ...(dashboard.apps?.items ?? [])]
+    }
+  };
+}
+
+async function pluginRegistry() {
+  return loadPluginRegistry(root);
+}
+
+async function enabledHermesCapabilities() {
+  const registry = await pluginRegistry();
+  return registry.capabilities.length ? registry.capabilities : hermesCapabilities();
+}
+
+async function appItems(appId, { type } = {}) {
+  const dashboard = await dashboardSnapshot();
+  const projectedItems = genericAppItemsFromDashboard(dashboard, appId);
+  const overlayItems = await listAppItems(storePath, { app: appId, type });
+  return [...projectedItems, ...overlayItems].filter((item) => !type || item.type === type);
 }
 
 function activeHotelRateReservations(dashboard, { reservationId } = {}) {
@@ -259,20 +293,42 @@ async function streamBridgeRunOntoAction(action, runId) {
   }
 }
 
-async function dispatchHermesAction(action) {
-  if (action.capabilityId !== "asia_deal_verify" && action.origin === "hermes") {
+async function dispatchHermesAction(action, capability) {
+  if (capability?.kind === "deterministic") {
+    return dispatchDeterministicCapability(action, capability);
+  }
+
+  if (action.origin === "hermes") {
     return { dispatched: false, reason: "hermes_origin_loop_guard" };
   }
 
-  if (action.capabilityId !== "asia_deal_verify") {
-    const dispatch = await createHermesBridgeRun(action);
-    if (dispatch.dispatched && dispatch.runId) {
-      queueMicrotask(() => {
-        streamBridgeRunOntoAction(action, dispatch.runId);
-      });
-    }
-    return dispatch;
+  const dispatch = await createHermesBridgeRun(action);
+  if (dispatch.dispatched && dispatch.runId) {
+    queueMicrotask(() => {
+      streamBridgeRunOntoAction(action, dispatch.runId);
+    });
   }
+  return dispatch;
+}
+
+async function dispatchDeterministicCapability(action, capability) {
+  if (capability.endpoint === "/api/integrations/plaid/sync") {
+    const response = await syncPlaidItems({
+      itemId: action.payload.itemId ?? action.payload.item_id
+    });
+    return { dispatched: response.synced, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/integrations/hotel-rate-finder/sync") {
+    const response = await syncHotelRateReservations({
+      reservationId: action.payload.reservationId ?? action.payload.reservation_id,
+      forceRefresh: action.payload.forceRefresh ?? action.payload.force_refresh
+    });
+    return { dispatched: response.synced, target: capability.target, response };
+  }
+  if (action.capabilityId !== "asia_deal_verify") {
+    return { dispatched: false, reason: "unsupported_deterministic_capability" };
+  }
+
   const dealId = action.payload.dealId ?? action.payload.deal_id;
   if (!dealId) {
     return { dispatched: false, reason: "missing_deal_id" };
@@ -297,6 +353,7 @@ async function dispatchHermesAction(action) {
   );
   return {
     dispatched: response.ok,
+    target: capability.target,
     statusCode: response.status,
     response: response.ok ? await response.json() : await response.text()
   };
@@ -374,7 +431,49 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && url.pathname === "/api/integrations/catalog") {
-      json(response, 200, { integrations: integrationCatalog() });
+      const registry = await pluginRegistry();
+      json(response, 200, { integrations: integrationCatalog(), apps: registry.apps });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/apps") {
+      const registry = await pluginRegistry();
+      json(response, 200, {
+        apps: registry.apps,
+        panels: registry.panels
+      });
+      return;
+    }
+
+    const appItemsMatch = url.pathname.match(/^\/api\/apps\/([^/]+)\/items$/);
+    if (request.method === "GET" && appItemsMatch) {
+      json(response, 200, {
+        app: appItemsMatch[1],
+        items: await appItems(appItemsMatch[1], { type: url.searchParams.get("type") })
+      });
+      return;
+    }
+
+    const appEventsMatch = url.pathname.match(/^\/api\/apps\/([^/]+)\/events$/);
+    if (request.method === "POST" && appEventsMatch) {
+      if (!requireHermesAuth(request, response)) {
+        return;
+      }
+      const payload = await readJson(request);
+      const item = {
+        app: appEventsMatch[1],
+        type: payload.type ?? "event",
+        externalId: payload.externalId ?? payload.external_id ?? payload.id,
+        status: payload.status ?? "active",
+        title: payload.title,
+        detail: payload.detail,
+        payload: payload.payload ?? payload
+      };
+      await upsertAppItem(storePath, item);
+      json(response, 202, {
+        accepted: true,
+        item
+      });
       return;
     }
 
@@ -509,7 +608,7 @@ const server = http.createServer(async (request, response) => {
       if (!requireHermesAuth(request, response)) {
         return;
       }
-      json(response, 200, { capabilities: hermesCapabilities() });
+      json(response, 200, { capabilities: await enabledHermesCapabilities() });
       return;
     }
 
@@ -526,7 +625,9 @@ const server = http.createServer(async (request, response) => {
         payload.idempotencyKey = request.headers["idempotency-key"];
       }
       const capabilityId = payload.capabilityId ?? payload.action;
-      const capability = hermesCapabilities().find((item) => item.id === capabilityId);
+      const capability = (await enabledHermesCapabilities()).find(
+        (item) => item.id === capabilityId
+      );
       if (!capability) {
         error(
           response,
@@ -549,9 +650,17 @@ const server = http.createServer(async (request, response) => {
         ...payload,
         origin: payload.origin ?? "hermes"
       });
+      action = {
+        ...action,
+        target: capability.target,
+        title:
+          payload.title ??
+          capability.title ??
+          (action.title === "Unknown Hermes action" ? capability.id : action.title)
+      };
       let dispatch;
       try {
-        dispatch = await dispatchHermesAction(action);
+        dispatch = await dispatchHermesAction(action, capability);
       } catch (dispatchError) {
         if (dispatchError instanceof HermesBridgeLoopError) {
           dispatch = { dispatched: false, reason: "hermes_origin_loop_guard" };

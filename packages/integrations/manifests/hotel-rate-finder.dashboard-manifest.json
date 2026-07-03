@@ -1,0 +1,50 @@
+{
+  "id": "hotel-rate-finder",
+  "name": "Hotel Rate Finder",
+  "version": "dashboard-app.v1",
+  "baseUrlEnv": "HOTEL_RATE_FINDER_API_BASE_URL",
+  "healthUrl": "/api/providers",
+  "panels": [
+    {
+      "id": "hotel-watches",
+      "type": "watch-table",
+      "title": "Hotel Rate Watches",
+      "dataSource": "/api/apps/hotel-rate-finder/items?type=rate-watch",
+      "defaultPosition": "travel"
+    },
+    {
+      "id": "hotel-status",
+      "type": "status",
+      "title": "Hotel Rate Finder",
+      "dataSource": "/api/apps/hotel-rate-finder/items?type=status",
+      "defaultPosition": "operations"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "hotel_rate_search",
+      "title": "Search hotel rates",
+      "kind": "deterministic",
+      "target": "hotel-rate-finder",
+      "endpoint": "/api/integrations/hotel-rate-finder/sync",
+      "description": "Refresh Hotel Rate Finder saved searches for active refundable hotel reservations.",
+      "inputSchema": {
+        "reservationId": "string?",
+        "forceRefresh": "boolean?"
+      }
+    },
+    {
+      "id": "evaluate_rebook",
+      "title": "Evaluate hotel rebook",
+      "kind": "agentic",
+      "target": "hotel-rate-finder",
+      "description": "Ask Hermes to reason over rate evidence, cancellation policy, and points alternatives before recommending rebook or wait.",
+      "inputSchema": {
+        "reservationId": "string",
+        "watchId": "string"
+      }
+    }
+  ],
+  "eventTypes": ["reservation", "rate-watch", "status"],
+  "deepLink": "/"
+}

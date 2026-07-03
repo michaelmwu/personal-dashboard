@@ -14,6 +14,7 @@ bun build \
   packages/integrations/hotel-rates.mjs \
   packages/integrations/openclaw.mjs \
   packages/integrations/plaid.mjs \
+  packages/integrations/registry.mjs \
   packages/integrations/sources.mjs \
   packages/storage/dashboard-store.mjs \
   scripts/integration-worker.mjs \

@@ -16,6 +16,7 @@ The first version is runnable with local fixtures. It models the dashboard you d
 - `packages/integrations`: Hermes, OpenClaw, travel, finance, and intake adapter boundaries.
 - `packages/fixtures`: realistic development data.
 - `scripts/`: Conductor-aware worktree ports, dev launch, archive, stop, and smoke-test scripts.
+- `dashboard.config.yaml`: enabled app registry and panel ordering.
 
 ## Quick Start
 
@@ -56,6 +57,20 @@ The dashboard now has placeholder contracts for the next personal surfaces:
 These are fixture-backed today. Real provider code should land in
 `packages/integrations/` first, then flow through `/api/dashboard` without
 provider-specific parsing in the web app.
+
+Plugin-facing endpoints:
+
+- `GET /api/apps`: enabled app manifests and configured panels from
+  `dashboard.config.yaml`.
+- `GET /api/apps/:appId/items?type=...`: generic app-specific items projected
+  from core dashboard state plus opaque app events.
+- `POST /api/apps/:appId/events`: generic event envelope for app-specific
+  payloads that do not need a blessed core dashboard type.
+
+Apps should declare `dashboard-manifest.json` files with panels, event types,
+and Hermes capabilities. The dashboard keeps a small blessed set of core types
+for cross-app joins, while app-specific details ride as opaque item payloads and
+can deep-link back to the owning app.
 
 Hermes-facing endpoints:
 

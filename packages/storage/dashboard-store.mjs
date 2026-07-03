@@ -19,6 +19,9 @@ function emptyOverlay() {
     intake: {
       items: []
     },
+    apps: {
+      items: []
+    },
     hermes: {
       actions: []
     }
@@ -89,6 +92,10 @@ export function mergeDashboardOverlay(baseDashboard, overlay) {
     intake: {
       ...baseDashboard.intake,
       items: mergeById(baseDashboard.intake.items, overlay.intake?.items ?? [])
+    },
+    apps: {
+      ...baseDashboard.apps,
+      items: mergeById(baseDashboard.apps?.items ?? [], overlay.apps?.items ?? [])
     },
     hermes: {
       ...baseDashboard.hermes,
@@ -192,6 +199,25 @@ export async function applyHotelRateWatch(filePath, reservation, watch, alerts =
   for (const alert of alerts.filter(Boolean)) {
     overlay.alerts = upsertById(overlay.alerts, alert);
   }
+  await writeOverlay(filePath, overlay);
+  return overlay;
+}
+
+export async function listAppItems(filePath, { app, type } = {}) {
+  const overlay = await readOverlay(filePath);
+  return (overlay.apps.items ?? []).filter(
+    (item) => (!app || item.app === app) && (!type || item.type === type)
+  );
+}
+
+export async function upsertAppItem(filePath, item) {
+  const overlay = await readOverlay(filePath);
+  const id = item.id ?? `${item.app}:${item.type}:${item.externalId ?? Date.now()}`;
+  overlay.apps.items = upsertById(overlay.apps.items ?? [], {
+    ...item,
+    id,
+    ts: item.ts ?? new Date().toISOString()
+  });
   await writeOverlay(filePath, overlay);
   return overlay;
 }

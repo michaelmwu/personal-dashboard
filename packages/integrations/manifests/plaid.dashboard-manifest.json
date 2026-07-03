@@ -1,0 +1,29 @@
+{
+  "id": "plaid",
+  "name": "Plaid",
+  "version": "dashboard-app.v1",
+  "baseUrl": "external:plaid",
+  "panels": [
+    {
+      "id": "plaid-sync",
+      "type": "status",
+      "title": "Plaid Sync",
+      "dataSource": "/api/apps/plaid/items?type=sync",
+      "defaultPosition": "finance"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "plaid_sync",
+      "title": "Sync Plaid transactions",
+      "kind": "deterministic",
+      "target": "plaid",
+      "endpoint": "/api/integrations/plaid/sync",
+      "description": "Pull latest card transactions and queue reconciliation work.",
+      "inputSchema": {
+        "itemId": "string?"
+      }
+    }
+  ],
+  "eventTypes": ["account", "transaction", "sync"]
+}

@@ -1,0 +1,45 @@
+apps:
+  - id: asia-travel-deals
+    enabled: true
+    manifest: packages/integrations/manifests/asia-travel-deals.dashboard-manifest.json
+    panels:
+      - id: deal-feed
+        enabled: true
+        position: travel
+        order: 10
+  - id: hotel-rate-finder
+    enabled: true
+    manifest: packages/integrations/manifests/hotel-rate-finder.dashboard-manifest.json
+    panels:
+      - id: hotel-watches
+        enabled: true
+        position: travel
+        order: 20
+      - id: hotel-status
+        enabled: true
+        position: operations
+        order: 50
+  - id: plaid
+    enabled: true
+    manifest: packages/integrations/manifests/plaid.dashboard-manifest.json
+    panels:
+      - id: plaid-sync
+        enabled: true
+        position: finance
+        order: 10
+  - id: gmail-intake
+    enabled: true
+    manifest: packages/integrations/manifests/gmail-intake.dashboard-manifest.json
+    panels:
+      - id: intake-queue
+        enabled: true
+        position: operations
+        order: 20
+  - id: flights-extension
+    enabled: true
+    manifest: packages/integrations/manifests/flights-extension.dashboard-manifest.json
+    panels:
+      - id: flight-watches
+        enabled: true
+        position: travel
+        order: 30
