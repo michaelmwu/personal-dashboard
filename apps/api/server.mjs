@@ -50,6 +50,7 @@ import {
   applyHotelRateWatch,
   applyPlaidSync,
   dashboardStorePath,
+  findHermesActionByIdempotencyKey,
   listAppItems,
   listPlaidItems,
   loadDashboard,
@@ -85,6 +86,12 @@ async function dashboardSnapshot() {
       manifests: registry.apps,
       panels: registry.panels,
       items: [...registryItems, ...(dashboard.apps?.items ?? [])]
+    },
+    hermes: {
+      ...dashboard.hermes,
+      capabilities: registry.capabilities.length
+        ? registry.capabilities
+        : dashboard.hermes.capabilities
     }
   };
 }
@@ -562,6 +569,10 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && url.pathname === "/api/integrations/plaid/webhook") {
+      if (!requireHermesAuth(request, response)) {
+        return;
+      }
+      // TODO: verify Plaid webhook JWTs before this endpoint is exposed beyond loopback/tailnet.
       const payload = await readJson(request);
       if (
         payload.webhook_type === "TRANSACTIONS" &&
@@ -623,6 +634,19 @@ const server = http.createServer(async (request, response) => {
       const payload = await readJson(request);
       if (!payload.idempotencyKey && request.headers["idempotency-key"]) {
         payload.idempotencyKey = request.headers["idempotency-key"];
+      }
+      const existingAction = await findHermesActionByIdempotencyKey(
+        storePath,
+        payload.idempotencyKey
+      );
+      if (existingAction) {
+        json(response, 202, {
+          accepted: true,
+          deduped: true,
+          action: existingAction,
+          dispatch: existingAction.dispatch ?? { dispatched: false, reason: "already_dispatched" }
+        });
+        return;
       }
       const capabilityId = payload.capabilityId ?? payload.action;
       const capability = (await enabledHermesCapabilities()).find(
@@ -687,6 +711,9 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && url.pathname === "/api/integrations/hermes/events") {
+      if (!requireHermesAuth(request, response)) {
+        return;
+      }
       const payload = await readJson(request);
       const normalized = normalizeHermesEvent(payload);
       await upsertHermesEvent(storePath, normalized);
@@ -699,6 +726,9 @@ const server = http.createServer(async (request, response) => {
 
     const sourceEventMatch = url.pathname.match(/^\/api\/integrations\/([^/]+)\/events$/);
     if (request.method === "POST" && sourceEventMatch) {
+      if (!requireHermesAuth(request, response)) {
+        return;
+      }
       const source = sourceEventMatch[1];
       if (!isSupportedSourceAdapter(source)) {
         error(response, 404, "unsupported_source", `Unsupported integration source: ${source}`);

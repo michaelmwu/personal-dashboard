@@ -35,9 +35,9 @@ apps:
         enabled: true
         position: operations
         order: 20
-  - id: flights-extension
+  - id: flight-searcher
     enabled: true
-    manifest: packages/integrations/manifests/flights-extension.dashboard-manifest.json
+    manifest: packages/integrations/manifests/flight-searcher.dashboard-manifest.json
     panels:
       - id: flight-watches
         enabled: true

@@ -2,7 +2,6 @@ import { Configuration, CountryCode, PlaidApi, PlaidEnvironments, Products } fro
 
 const PLAID_ENV_URLS = {
   sandbox: "https://sandbox.plaid.com",
-  development: "https://development.plaid.com",
   production: "https://production.plaid.com"
 };
 

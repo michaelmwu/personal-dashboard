@@ -271,17 +271,21 @@ function candidateAmount(candidate, currency) {
   }
   const targetCurrency = String(currency ?? "").toUpperCase();
   const fx = targetCurrency ? candidate.fx?.[targetCurrency] : undefined;
-  for (const value of [
-    fx?.total_after_tax,
-    fx?.rate_after_tax,
-    candidate.adjusted_total_after_tax,
-    candidate.total_after_tax,
-    candidate.rate_after_tax,
-    candidate.amount,
-    candidate.adjusted_total_before_tax,
-    candidate.total_before_tax,
-    candidate.rate_before_tax
-  ]) {
+  const nativeCurrency = String(candidate.currency ?? "").toUpperCase();
+  const values = fx
+    ? [fx.total_after_tax, fx.rate_after_tax, fx.total_before_tax, fx.rate_before_tax]
+    : nativeCurrency && nativeCurrency === targetCurrency
+      ? [
+          candidate.adjusted_total_after_tax,
+          candidate.total_after_tax,
+          candidate.rate_after_tax,
+          candidate.amount,
+          candidate.adjusted_total_before_tax,
+          candidate.total_before_tax,
+          candidate.rate_before_tax
+        ]
+      : [];
+  for (const value of values) {
     if (typeof value === "number" && Number.isFinite(value)) {
       return value;
     }
@@ -290,7 +294,7 @@ function candidateAmount(candidate, currency) {
 }
 
 function candidateCurrency(candidate, fallback) {
-  return String(candidate?.currency ?? fallback ?? "USD").toUpperCase();
+  return String(fallback ?? candidate?.currency ?? "USD").toUpperCase();
 }
 
 function candidatePolicy(candidate) {
@@ -460,7 +464,7 @@ export function hotelRateDropAlert(reservation, watch) {
     ? ` Points option: ${watch.pointsAlternative.points.toLocaleString("en-US")} points.`
     : "";
   return {
-    id: `hotel_rate_drop_${reservation.id}_${watch.jobId ?? Date.now()}`,
+    id: `hotel_rate_drop_${reservation.id}_${watch.currency ?? "USD"}_${watch.bestRate}`,
     title: `${watch.property} cancellable rate dropped`,
     detail: `Current cancellable rate is ${currency} ${watch.bestRate}; paid rate was ${currency} ${paidRate}${delta ? `, down ${currency} ${delta.toFixed(2)}` : ""}. Cancellation deadline: ${watch.cancellationDeadline ?? "unknown"}.${points}`,
     severity: "medium",

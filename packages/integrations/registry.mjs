@@ -159,7 +159,7 @@ export function genericAppItemsFromDashboard(dashboard, appId) {
         detail: `${item.checkIn ?? "TBD"} to ${item.checkOut ?? "TBD"}`,
         payload: item
       }));
-    case "flights-extension":
+    case "flight-searcher":
       return dashboard.travel.flightWatches.map((item) => ({
         id: item.id,
         app: appId,

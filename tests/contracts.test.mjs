@@ -8,6 +8,7 @@ import {
 } from "../packages/integrations/hermes-bridge.mjs";
 import {
   createHermesAction,
+  hermesActionIdFromIdempotencyKey,
   hermesCapabilities,
   hermesContextFromDashboard,
   normalizeHermesEvent
@@ -45,6 +46,7 @@ import {
   upsertHermesAction,
   upsertNormalizedEvent
 } from "../packages/storage/dashboard-store.mjs";
+import { runIngestion } from "../scripts/integration-worker.mjs";
 
 describe("contracts", () => {
   test("dashboard fixture exposes the core integration surfaces", () => {
@@ -89,7 +91,7 @@ describe("contracts", () => {
     const ids = integrationCatalog().map((integration) => integration.id);
 
     expect(ids).toContain("hotel_rate_finder");
-    expect(ids).toContain("flights_extension");
+    expect(ids).toContain("flight_searcher");
     expect(ids).toContain("asia_travel_deals");
     expect(ids).toContain("gmail_intake");
   });
@@ -146,7 +148,7 @@ describe("contracts", () => {
     expect(action).toMatchObject({
       version: "hermes-action.v1",
       capabilityId: "flight_search",
-      target: "flights-extension",
+      target: "flight-searcher",
       status: "queued",
       origin: "hermes",
       idempotencyKey: action.id
@@ -159,7 +161,17 @@ describe("contracts", () => {
       })
     ).toMatchObject({
       capabilityId: "flight_search",
-      target: "flights-extension"
+      target: "flight-searcher"
+    });
+
+    expect(
+      createHermesAction({
+        capabilityId: "flight_search",
+        idempotencyKey: "flight-search-2026-09"
+      })
+    ).toMatchObject({
+      id: hermesActionIdFromIdempotencyKey("flight-search-2026-09"),
+      idempotencyKey: "flight-search-2026-09"
     });
   });
 
@@ -555,6 +567,94 @@ describe("contracts", () => {
     expect(alert.detail).toContain("Cancellation deadline: 2026-09-25T18:00:00+09:00");
   });
 
+  test("Hotel rate comparison skips candidates without the paid currency", () => {
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_hotel_currency_001",
+      property: "Park Hyatt Kyoto",
+      chain: "hyatt",
+      propertyId: "kyoto",
+      checkIn: "2026-10-01",
+      checkOut: "2026-10-04",
+      paidRate: 520,
+      paidCurrency: "USD"
+    });
+    const watch = normalizeHotelRateWatchFromJob(reservation, {
+      id: "job_hotel_currency_001",
+      status: "completed",
+      report: {
+        hotels: [
+          {
+            hotel_id: "kyoto",
+            hotel_name: "Park Hyatt Kyoto",
+            rates: [
+              {
+                comparison: "cheapest_flexible",
+                candidate: {
+                  amount: 455,
+                  currency: "JPY",
+                  cancellation_policy: "Fully refundable before Sep 25, 2026"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(watch).toMatchObject({
+      status: "completed",
+      bestRate: undefined,
+      currency: "USD"
+    });
+    expect(hotelRateDropAlert(reservation, watch)).toBeUndefined();
+  });
+
+  test("Hotel rate comparison uses paid-currency FX values when present", () => {
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_hotel_fx_001",
+      property: "Park Hyatt Kyoto",
+      chain: "hyatt",
+      propertyId: "kyoto",
+      checkIn: "2026-10-01",
+      checkOut: "2026-10-04",
+      paidRate: 520,
+      paidCurrency: "USD"
+    });
+    const watch = normalizeHotelRateWatchFromJob(reservation, {
+      id: "job_hotel_fx_001",
+      status: "completed",
+      report: {
+        hotels: [
+          {
+            hotel_id: "kyoto",
+            hotel_name: "Park Hyatt Kyoto",
+            rates: [
+              {
+                comparison: "cheapest_flexible",
+                candidate: {
+                  amount: 70000,
+                  currency: "JPY",
+                  cancellation_policy: "Fully refundable before Sep 25, 2026",
+                  fx: {
+                    USD: {
+                      total_after_tax: 455
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(watch).toMatchObject({
+      status: "price-drop",
+      bestRate: 455,
+      currency: "USD"
+    });
+  });
+
   test("source events normalize into domain-specific placeholders", () => {
     expect(
       normalizeSourceEvent("hotel-rate-finder", {
@@ -620,7 +720,7 @@ describe("contracts", () => {
     });
 
     expect(
-      normalizeSourceEvent("flights-extension", {
+      normalizeSourceEvent("flight-searcher", {
         origin: "TYO",
         destination: "SIN",
         providers: "google-flights"
@@ -911,5 +1011,17 @@ describe("contracts", () => {
         })
       ])
     );
+  });
+
+  test("integration worker records per-source errors without throwing", async () => {
+    const result = await runIngestion("asia-travel-deals", async () => {
+      throw new Error("upstream 500");
+    });
+
+    expect(result).toEqual({
+      source: "asia-travel-deals",
+      error: true,
+      message: "upstream 500"
+    });
   });
 });

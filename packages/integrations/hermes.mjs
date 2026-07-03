@@ -1,3 +1,5 @@
+import { createHash, randomUUID } from "node:crypto";
+
 import { alert, hermesAction, hermesCapability, transaction } from "../contracts/index.mjs";
 
 export function normalizeHermesEvent(payload) {
@@ -44,9 +46,8 @@ export function hermesCapabilities() {
     hermesCapability({
       id: "flight_search",
       title: "Search flights",
-      target: "flights-extension",
-      description:
-        "Trigger Google Flights and Skyscanner route searches through the extension adapter.",
+      target: "flight-searcher",
+      description: "Trigger browser-driven Flight Searcher route watches.",
       inputSchema: {
         origin: "IATA",
         destination: "IATA",
@@ -108,11 +109,19 @@ export function hermesCapabilities() {
   ];
 }
 
+export function hermesActionIdFromIdempotencyKey(idempotencyKey) {
+  const hash = createHash("sha256").update(String(idempotencyKey)).digest("hex").slice(0, 24);
+  return `ha_${hash}`;
+}
+
 export function createHermesAction(payload) {
   const capabilityId = payload.capabilityId ?? payload.action ?? "unknown";
   const capability = hermesCapabilities().find((item) => item.id === capabilityId);
   const target = capability?.target ?? payload.target ?? "unknown";
-  const id = payload.id ?? `ha_${Date.now()}`;
+  const idempotencyKey = payload.idempotencyKey ?? payload.id;
+  const id =
+    payload.id ??
+    (idempotencyKey ? hermesActionIdFromIdempotencyKey(idempotencyKey) : `ha_${randomUUID()}`);
   return hermesAction({
     id,
     capabilityId,
@@ -121,7 +130,7 @@ export function createHermesAction(payload) {
     status: payload.status ?? "queued",
     origin: payload.origin ?? "hermes",
     payload: payload.payload ?? {},
-    idempotencyKey: payload.idempotencyKey ?? id,
+    idempotencyKey: idempotencyKey ?? id,
     createdAt: payload.createdAt ?? new Date().toISOString(),
     updatedAt: payload.updatedAt,
     dispatch: payload.dispatch,
@@ -150,7 +159,7 @@ export function hermesContextFromDashboard(dashboard) {
     intake: {
       needsReview: dashboard.intake.items.filter((item) => item.state !== "done")
     },
-    capabilities: hermesCapabilities(),
+    capabilities: dashboard.hermes?.capabilities ?? hermesCapabilities(),
     integrations: dashboard.integrations
   };
 }

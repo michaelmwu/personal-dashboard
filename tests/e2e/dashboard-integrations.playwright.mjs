@@ -102,3 +102,44 @@ test("plugin registry exposes enabled apps and accepts opaque app events", async
     ])
   });
 });
+
+test("Hermes actions dedupe by Idempotency-Key before dispatch", async ({ request }) => {
+  const first = await request.post("/api/hermes/actions", {
+    headers: {
+      "Idempotency-Key": "verify-deal-e2e-001"
+    },
+    data: {
+      capabilityId: "asia_deal_verify",
+      origin: "dashboard",
+      payload: {
+        dealId: "deal_e2e_001"
+      }
+    }
+  });
+  expect(first.status()).toBe(202);
+  const firstBody = await first.json();
+
+  const second = await request.post("/api/hermes/actions", {
+    headers: {
+      "Idempotency-Key": "verify-deal-e2e-001"
+    },
+    data: {
+      capabilityId: "asia_deal_verify",
+      origin: "dashboard",
+      payload: {
+        dealId: "deal_e2e_001"
+      }
+    }
+  });
+  expect(second.status()).toBe(202);
+  const secondBody = await second.json();
+
+  expect(secondBody).toMatchObject({
+    accepted: true,
+    deduped: true,
+    action: {
+      id: firstBody.action.id,
+      idempotencyKey: "verify-deal-e2e-001"
+    }
+  });
+});

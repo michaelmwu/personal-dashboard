@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 function emptyOverlay() {
@@ -45,7 +45,9 @@ async function readOverlay(filePath) {
 
 async function writeOverlay(filePath, overlay) {
   await mkdir(dirname(filePath), { recursive: true });
-  await writeFile(filePath, `${JSON.stringify(overlay, null, 2)}\n`, "utf8");
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  await writeFile(tempPath, `${JSON.stringify(overlay, null, 2)}\n`, "utf8");
+  await rename(tempPath, filePath);
 }
 
 function upsertById(items, item) {
@@ -272,6 +274,14 @@ export async function upsertHermesAction(filePath, action) {
   overlay.hermes.actions = upsertById(overlay.hermes.actions, action);
   await writeOverlay(filePath, overlay);
   return overlay;
+}
+
+export async function findHermesActionByIdempotencyKey(filePath, idempotencyKey) {
+  if (!idempotencyKey) {
+    return undefined;
+  }
+  const overlay = await readOverlay(filePath);
+  return overlay.hermes.actions.find((action) => action.idempotencyKey === idempotencyKey);
 }
 
 export async function patchHermesAction(filePath, actionId, patch) {

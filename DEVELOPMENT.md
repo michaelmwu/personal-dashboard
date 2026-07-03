@@ -56,7 +56,7 @@ scripts/archive-workspace.sh --dry-run
 - `GET /api/hermes/capabilities`: triggerable app capabilities exposed to Hermes.
 - `POST /api/hermes/actions`: dashboard/Hermes action envelope for future dispatch.
 - `POST /api/integrations/:source/events`: normalized event intake for
-  `hotel-rate-finder`, `flights-extension`, `asia-travel-deals`, `plaid`, and
+  `hotel-rate-finder`, `flight-searcher`, `asia-travel-deals`, `plaid`, and
   `gmail-intake`.
 
 When `PERSONAL_DASHBOARD_API_TOKEN` is set, call Hermes endpoints with:

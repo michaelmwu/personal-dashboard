@@ -25,12 +25,12 @@ export function integrationCatalog() {
       nextStep: "Run active Hyatt/IHG reservation watches against saved searches."
     }),
     integrationStatus({
-      id: "flights_extension",
-      name: "Flight finder",
-      sourceRepo: "~/dev/flights-extension",
-      adapter: "flights-extension",
+      id: "flight_searcher",
+      name: "Flight Searcher",
+      sourceRepo: "future:~/dev/flight-searcher",
+      adapter: "flight-searcher",
       stage: "adapter-contract",
-      nextStep: "Port Google Flights and Skyscanner search payloads behind one route watch."
+      nextStep: "Run Playwright/cloakbrowser flight searches behind a saved route-watch API."
     }),
     integrationStatus({
       id: "asia_travel_deals",
@@ -195,7 +195,7 @@ export function normalizeSourceEvent(source, payload) {
             : "hotelRateWatch",
         value: normalizeHotelRatePayload(payload)
       };
-    case "flights-extension":
+    case "flight-searcher":
       return { kind: "flightSearchWatch", value: normalizeFlightSearchPayload(payload) };
     case "asia-travel-deals":
       return { kind: "travelDeal", value: normalizeAsiaDealPayload(payload) };

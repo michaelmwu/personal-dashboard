@@ -13,6 +13,7 @@ Report security concerns through the private maintainer channel configured for t
 - Use `.env.example` for documented configuration only.
 - Use `.worktreeinclude` only for short allowlists of local config files that should copy into sibling worktrees.
 - Plaid access tokens and sync cursors are stored only in the ignored local dashboard store during the personal-host bootstrap. Move them to encrypted storage before any multi-user or public deployment.
+- Mutating dashboard API endpoints share the `PERSONAL_DASHBOARD_API_TOKEN` bearer-token gate when it is configured. Plaid webhooks still need Plaid JWT verification before being exposed on the public internet.
 - Keep `HOTEL_RATE_FINDER_API_BASE_URL` on loopback or a private tailnet. The dashboard should talk only to the Hotel Rate Finder FastAPI agent API, never expose provider credentials or browser controls to the web client, and treat failed/stale scraper jobs as alertable states.
 - Treat app manifests and `dashboard.config.yaml` as trusted server-side configuration. They can add Hermes capabilities and deterministic endpoints, so do not load manifests from untrusted public URLs or expose manifest editing to the web client without validation and review.
 

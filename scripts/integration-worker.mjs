@@ -89,6 +89,18 @@ async function ingestJsonFeed({ source, envName }) {
   return { source, fetched: items.length, upserts };
 }
 
+export async function runIngestion(source, task) {
+  try {
+    return { source, ...(await task()) };
+  } catch (error) {
+    return {
+      source,
+      error: true,
+      message: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
 export async function pollAsiaTravelDeals() {
   const response = await fetch(asiaDealsUrl(), {
     headers: authHeaders(process.env.ASIA_TRAVEL_DEALS_API_TOKEN)
@@ -109,27 +121,27 @@ export async function pollAsiaTravelDeals() {
 export async function runConfiguredIngestions() {
   const results = [];
   if (process.env.ASIA_TRAVEL_DEALS_API_BASE_URL) {
-    results.push({ source: "asia-travel-deals", ...(await pollAsiaTravelDeals()) });
+    results.push(await runIngestion("asia-travel-deals", pollAsiaTravelDeals));
   }
   for (const feed of [
     { source: "hotel-rate-finder", envName: "HOTEL_RATE_FINDER_EVENTS_FILE" },
-    { source: "flights-extension", envName: "FLIGHTS_EXTENSION_EVENTS_FILE" },
+    { source: "flight-searcher", envName: "FLIGHT_SEARCHER_EVENTS_FILE" },
     { source: "plaid", envName: "PLAID_EVENTS_FILE" },
     { source: "gmail-intake", envName: "GMAIL_INTAKE_EVENTS_FILE" }
   ]) {
-    results.push(await ingestJsonFeed(feed));
+    results.push(await runIngestion(feed.source, () => ingestJsonFeed(feed)));
   }
   if (process.env.PLAID_SYNC_ENABLED === "true") {
-    results.push({
-      source: "plaid",
-      ...(await postDashboardAction("/api/integrations/plaid/sync"))
-    });
+    results.push(
+      await runIngestion("plaid", () => postDashboardAction("/api/integrations/plaid/sync"))
+    );
   }
   if (process.env.HOTEL_RATE_SYNC_ENABLED === "true") {
-    results.push({
-      source: "hotel-rate-finder",
-      ...(await postDashboardAction("/api/integrations/hotel-rate-finder/sync"))
-    });
+    results.push(
+      await runIngestion("hotel-rate-finder", () =>
+        postDashboardAction("/api/integrations/hotel-rate-finder/sync")
+      )
+    );
   }
   return results;
 }

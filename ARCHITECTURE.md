@@ -45,7 +45,7 @@ apps/web dashboard
   -> apps/api /api/hermes/actions
   -> Hermes action envelope
   -> packages/integrations/sources
-  -> hotel_rate_finder / flights-extension / asiatraveldeals / Plaid / Gmail
+  -> hotel_rate_finder / flight-searcher / asiatraveldeals / Plaid / Gmail
 
 Hermes
   -> apps/api /api/hermes/context
@@ -56,7 +56,7 @@ Hermes
   -> dashboard-visible action queue
   -> future dispatcher into app adapters
 
-hotel_rate_finder / flights-extension / asiatraveldeals
+hotel_rate_finder / flight-searcher / asiatraveldeals
   -> packages/integrations/sources
   -> apps/api /api/integrations/:source/events
   -> apps/web travel surfaces
@@ -154,6 +154,12 @@ refundable hotel reservation's paid rate against the cheapest cancellable rate
 for the same room class when the scraper identifies room names; otherwise the
 comparison is explicitly marked as the service's cheapest cancellable evidence.
 Failed jobs and provider errors are alertable states.
+
+`flight-searcher` should follow the same ownership pattern for flights: it owns
+Playwright/cloakbrowser execution, provider parsing, route-watch jobs, cache,
+and any deeper UI. `mooflights-extension` can remain a separate published
+open-source repository; it is not the dashboard ingestion path for private route
+watches.
 
 Plaid is the first provider client. `packages/integrations/plaid` wraps the
 official Plaid Node SDK for Link token creation, public-token exchange, and

@@ -49,7 +49,8 @@ bun run check
 The dashboard now has placeholder contracts for the next personal surfaces:
 
 - Hotel rate watches from `~/dev/hotel_rate_finder`.
-- Flight searches from `~/dev/flights-extension` for Google Flights and Skyscanner.
+- Flight watches from a future `~/dev/flight-searcher` service that owns
+  Playwright/cloakbrowser search execution.
 - Asia deal candidates from `~/dev/asiatraveldeals`.
 - Plaid account/transaction sync through the official Plaid Node SDK.
 - Gmail intake for reservations, statements, and important email.
