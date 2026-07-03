@@ -12,6 +12,7 @@ bun build \
   packages/integrations/hermes-bridge.mjs \
   packages/integrations/hermes.mjs \
   packages/integrations/openclaw.mjs \
+  packages/integrations/plaid.mjs \
   packages/integrations/sources.mjs \
   packages/storage/dashboard-store.mjs \
   scripts/integration-worker.mjs \

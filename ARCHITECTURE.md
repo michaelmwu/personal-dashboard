@@ -63,6 +63,15 @@ Plaid / Gmail
   -> packages/integrations/sources
   -> apps/api /api/integrations/:source/events
   -> apps/web finance, reservations, and intake surfaces
+
+Plaid Link
+  -> apps/api /api/integrations/plaid/link-token
+  -> Plaid Link browser flow
+  -> apps/api /api/integrations/plaid/exchange-public-token
+  -> local ignored access-token/cursor store
+  -> apps/api /api/integrations/plaid/sync
+  -> packages/integrations/plaid
+  -> apps/web finance and transaction surfaces
 ```
 
 The API currently uses local fixtures. The boundary is intentional: replacing fixtures with real Hermes and OpenClaw clients should not require rewriting dashboard rendering code.
@@ -98,6 +107,12 @@ Travel and intake adapters should translate existing repo outputs into
 contracts exported by `packages/integrations/sources`. The API accepts
 placeholder event posts at `/api/integrations/:source/events`; persistence and
 provider-specific clients can be added later without changing the web app.
+
+Plaid is the first provider client. `packages/integrations/plaid` wraps the
+official Plaid Node SDK for Link token creation, public-token exchange, and
+cursor-based `/transactions/sync`. The dashboard stores Plaid access tokens and
+cursors in the ignored local dashboard store for the personal-host bootstrap;
+before multi-user or public deployment, replace that with encrypted storage.
 
 Hermes integration is bidirectional:
 

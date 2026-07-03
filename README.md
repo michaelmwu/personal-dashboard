@@ -50,7 +50,7 @@ The dashboard now has placeholder contracts for the next personal surfaces:
 - Hotel rate watches from `~/dev/hotel_rate_finder`.
 - Flight searches from `~/dev/flights-extension` for Google Flights and Skyscanner.
 - Asia deal candidates from `~/dev/asiatraveldeals`.
-- Plaid account/transaction sync.
+- Plaid account/transaction sync through the official Plaid Node SDK.
 - Gmail intake for reservations, statements, and important email.
 
 These are fixture-backed today. Real provider code should land in
@@ -69,3 +69,19 @@ Hermes-facing endpoints:
 Set `PERSONAL_DASHBOARD_API_TOKEN` to require `Authorization: Bearer ...` on
 the Hermes endpoints. The Bridge password stays server-side in the API process;
 it must never be sent to the web client.
+
+Plaid-facing endpoints:
+
+- `POST /api/integrations/plaid/link-token`: create a Plaid Link token for the
+  browser Link flow.
+- `POST /api/integrations/plaid/exchange-public-token`: exchange Link's
+  `public_token` for an access token and store it in the ignored local
+  dashboard store.
+- `POST /api/integrations/plaid/sync`: run deterministic `/transactions/sync`
+  for linked Items and upsert accounts/transactions into the dashboard.
+- `POST /api/integrations/plaid/webhook`: accept Plaid transaction webhooks and
+  trigger sync on `SYNC_UPDATES_AVAILABLE`.
+
+Set `PLAID_CLIENT_ID`, `PLAID_SECRET`, and `PLAID_ENV`. The access token store
+is local ignored data for now; move it behind encrypted storage before using
+this outside a personal trusted host.

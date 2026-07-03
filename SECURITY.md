@@ -12,6 +12,7 @@ Report security concerns through the private maintainer channel configured for t
 - Never commit real `.env` files, tokens, private keys, credentials, or production data.
 - Use `.env.example` for documented configuration only.
 - Use `.worktreeinclude` only for short allowlists of local config files that should copy into sibling worktrees.
+- Plaid access tokens and sync cursors are stored only in the ignored local dashboard store during the personal-host bootstrap. Move them to encrypted storage before any multi-user or public deployment.
 
 ## Dependency Policy
 

@@ -8,6 +8,7 @@ import {
   transaction,
   travelDeal
 } from "../contracts/index.mjs";
+import { normalizePlaidAccount, normalizePlaidTransaction } from "./plaid.mjs";
 
 export function integrationCatalog() {
   return [
@@ -40,8 +41,8 @@ export function integrationCatalog() {
       name: "Plaid transactions",
       sourceRepo: "external:plaid",
       adapter: "plaid",
-      stage: "placeholder",
-      nextStep: "Sync account and card transactions into reconciliation surfaces."
+      stage: "link-and-sync",
+      nextStep: "Connect a personal Plaid account and run deterministic /transactions/sync."
     }),
     integrationStatus({
       id: "gmail_intake",
@@ -121,6 +122,14 @@ export function normalizeAsiaDealPayload(payload) {
 }
 
 export function normalizePlaidPayload(payload) {
+  if (payload.account_id && (payload.balances || payload.mask || payload.official_name)) {
+    return normalizePlaidAccount(payload);
+  }
+
+  if (payload.transaction_id || payload.personal_finance_category) {
+    return normalizePlaidTransaction(payload);
+  }
+
   if (payload.merchant || payload.amount || payload.transactionId || payload.transaction_id) {
     return transaction({
       id: payload.id ?? payload.transactionId ?? payload.transaction_id ?? `txn_${Date.now()}`,

@@ -21,9 +21,20 @@ import {
   normalizeSourceEvent
 } from "../../packages/integrations/sources.mjs";
 import {
+  createPlaidLinkToken,
+  exchangePlaidPublicToken,
+  normalizePlaidAccount,
+  normalizePlaidTransaction,
+  normalizeRemovedPlaidTransaction,
+  syncPlaidTransactions
+} from "../../packages/integrations/plaid.mjs";
+import {
+  applyPlaidSync,
   dashboardStorePath,
+  listPlaidItems,
   loadDashboard,
   patchHermesAction,
+  upsertPlaidItem,
   upsertHermesAction,
   upsertHermesEvent,
   upsertNormalizedEvent
@@ -40,6 +51,36 @@ const asiaTravelDealsApiToken = process.env.ASIA_TRAVEL_DEALS_API_TOKEN ?? "";
 
 async function dashboardSnapshot() {
   return loadDashboard(dashboardFixture(), storePath);
+}
+
+async function syncPlaidItem(item) {
+  const sync = await syncPlaidTransactions({
+    accessToken: item.accessToken,
+    cursor: item.cursor
+  });
+  const normalizedSync = {
+    ...sync,
+    accounts: sync.accounts.map(normalizePlaidAccount),
+    added: sync.added.map(normalizePlaidTransaction),
+    modified: sync.modified.map(normalizePlaidTransaction),
+    removed: sync.removed.map(normalizeRemovedPlaidTransaction)
+  };
+  await applyPlaidSync(storePath, item.id, normalizedSync);
+  return normalizedSync;
+}
+
+async function syncPlaidItems({ itemId } = {}) {
+  const items = await listPlaidItems(storePath);
+  const selectedItems = itemId ? items.filter((item) => item.id === itemId) : items;
+  const results = [];
+  for (const item of selectedItems) {
+    results.push({ itemId: item.id, ...(await syncPlaidItem(item)) });
+  }
+  return {
+    synced: results.every((result) => result.synced),
+    itemCount: selectedItems.length,
+    results
+  };
 }
 
 async function streamBridgeRunOntoAction(action, runId) {
@@ -199,6 +240,83 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "GET" && url.pathname === "/api/intake") {
       json(response, 200, (await dashboardSnapshot()).intake);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/integrations/plaid/link-token") {
+      if (!requireHermesAuth(request, response)) {
+        return;
+      }
+      const payload = await readJson(request);
+      const linkToken = await createPlaidLinkToken({
+        userId: payload.userId ?? "personal-dashboard"
+      });
+      json(response, linkToken.created ? 200 : 503, linkToken);
+      return;
+    }
+
+    if (
+      request.method === "POST" &&
+      url.pathname === "/api/integrations/plaid/exchange-public-token"
+    ) {
+      if (!requireHermesAuth(request, response)) {
+        return;
+      }
+      const payload = await readJson(request);
+      if (!payload.publicToken && !payload.public_token) {
+        error(response, 400, "missing_public_token", "Plaid public token is required.");
+        return;
+      }
+      const exchange = await exchangePlaidPublicToken(payload.publicToken ?? payload.public_token);
+      if (!exchange.exchanged) {
+        json(response, 502, exchange);
+        return;
+      }
+      await upsertPlaidItem(storePath, {
+        id: exchange.itemId,
+        accessToken: exchange.accessToken,
+        cursor: undefined,
+        institutionName: payload.institutionName ?? payload.institution_name,
+        syncStatus: "linked",
+        linkedAt: new Date().toISOString()
+      });
+      json(response, 202, {
+        accepted: true,
+        itemId: exchange.itemId,
+        requestId: exchange.requestId
+      });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/integrations/plaid/sync") {
+      if (!requireHermesAuth(request, response)) {
+        return;
+      }
+      const payload = await readJson(request);
+      const result = await syncPlaidItems({ itemId: payload.itemId ?? payload.item_id });
+      json(response, result.synced ? 202 : 207, result);
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/integrations/plaid/webhook") {
+      const payload = await readJson(request);
+      if (
+        payload.webhook_type === "TRANSACTIONS" &&
+        payload.webhook_code === "SYNC_UPDATES_AVAILABLE"
+      ) {
+        const result = await syncPlaidItems({ itemId: payload.item_id });
+        json(response, result.synced ? 202 : 207, {
+          accepted: true,
+          webhook: payload,
+          result
+        });
+        return;
+      }
+      json(response, 202, {
+        accepted: true,
+        ignored: true,
+        webhook: payload
+      });
       return;
     }
 

@@ -14,7 +14,17 @@ import {
 } from "../packages/integrations/hermes.mjs";
 import { integrationCatalog, normalizeSourceEvent } from "../packages/integrations/sources.mjs";
 import {
+  createPlaidLinkToken,
+  exchangePlaidPublicToken,
+  normalizePlaidAccount,
+  normalizePlaidTransaction,
+  syncPlaidTransactions
+} from "../packages/integrations/plaid.mjs";
+import {
+  applyPlaidSync,
+  listPlaidItems,
   loadDashboard,
+  upsertPlaidItem,
   upsertHermesAction,
   upsertNormalizedEvent
 } from "../packages/storage/dashboard-store.mjs";
@@ -178,6 +188,166 @@ describe("contracts", () => {
     });
   });
 
+  test("Plaid Link and token exchange call the documented REST endpoints", async () => {
+    const calls = [];
+    const client = {
+      async linkTokenCreate(body) {
+        calls.push({ method: "linkTokenCreate", body });
+        return {
+          data: {
+            link_token: "link-sandbox-123",
+            expiration: "2026-07-03T00:00:00Z",
+            request_id: "req_link"
+          }
+        };
+      },
+      async itemPublicTokenExchange(body) {
+        calls.push({ method: "itemPublicTokenExchange", body });
+        return {
+          data: {
+            access_token: "access-sandbox-123",
+            item_id: "item_123",
+            request_id: "req_exchange"
+          }
+        };
+      }
+    };
+    const config = {
+      baseUrl: "https://sandbox.plaid.com",
+      clientId: "client-id",
+      secret: "secret",
+      clientName: "Personal Dashboard",
+      products: ["transactions"],
+      countryCodes: ["US"],
+      language: "en",
+      webhook: "https://dashboard.example.test/api/integrations/plaid/webhook"
+    };
+
+    const linkToken = await createPlaidLinkToken({ userId: "michael" }, { client, config });
+    const exchange = await exchangePlaidPublicToken("public-sandbox-123", { client, config });
+
+    expect(linkToken).toMatchObject({
+      created: true,
+      linkToken: "link-sandbox-123"
+    });
+    expect(exchange).toMatchObject({
+      exchanged: true,
+      accessToken: "access-sandbox-123",
+      itemId: "item_123"
+    });
+    expect(calls.map((call) => call.method)).toEqual([
+      "linkTokenCreate",
+      "itemPublicTokenExchange"
+    ]);
+    expect(calls[0].body).toMatchObject({
+      products: ["transactions"],
+      user: {
+        client_user_id: "michael"
+      }
+    });
+    expect(calls[1].body).toEqual({
+      public_token: "public-sandbox-123"
+    });
+  });
+
+  test("Plaid transaction sync paginates with cursor and normalizes account data", async () => {
+    const cursors = [];
+    const client = {
+      async transactionsSync(body) {
+        cursors.push(body.cursor);
+        if (!body.cursor) {
+          return {
+            data: {
+              added: [
+                {
+                  transaction_id: "plaid_txn_001",
+                  account_id: "plaid_account_001",
+                  merchant_name: "Hyatt",
+                  amount: 455.12,
+                  pending: true,
+                  date: "2026-07-01",
+                  personal_finance_category: {
+                    primary: "TRAVEL"
+                  }
+                }
+              ],
+              modified: [],
+              removed: [],
+              accounts: [
+                {
+                  account_id: "plaid_account_001",
+                  name: "Amex Platinum",
+                  subtype: "credit card",
+                  mask: "1001",
+                  balances: {
+                    current: 455.12
+                  }
+                }
+              ],
+              next_cursor: "cursor_1",
+              has_more: true,
+              request_id: "req_sync_1"
+            }
+          };
+        }
+        return {
+          data: {
+            added: [],
+            modified: [
+              {
+                transaction_id: "plaid_txn_001",
+                account_id: "plaid_account_001",
+                merchant_name: "Hyatt Regency",
+                amount: 455.12,
+                pending: false,
+                pending_transaction_id: "pending_001",
+                date: "2026-07-02"
+              }
+            ],
+            removed: [{ transaction_id: "pending_001", account_id: "plaid_account_001" }],
+            accounts: [],
+            next_cursor: "cursor_2",
+            has_more: false,
+            request_id: "req_sync_2"
+          }
+        };
+      }
+    };
+
+    const sync = await syncPlaidTransactions(
+      { accessToken: "access-sandbox-123" },
+      {
+        client,
+        config: {
+          baseUrl: "https://sandbox.plaid.com",
+          clientId: "client-id",
+          secret: "secret",
+          daysRequested: 730
+        }
+      }
+    );
+
+    expect(sync).toMatchObject({
+      synced: true,
+      cursor: "cursor_2"
+    });
+    expect(cursors).toEqual([undefined, "cursor_1"]);
+    expect(normalizePlaidTransaction(sync.added[0])).toMatchObject({
+      id: "plaid_txn_001",
+      merchant: "Hyatt",
+      category: "TRAVEL",
+      status: "pending",
+      source: "plaid"
+    });
+    expect(normalizePlaidAccount(sync.accounts[0])).toMatchObject({
+      id: "plaid_account_001",
+      name: "Amex Platinum",
+      kind: "credit card",
+      last4: "1001",
+      balance: 455.12
+    });
+  });
+
   test("source events normalize into domain-specific placeholders", () => {
     expect(
       normalizeSourceEvent("hotel-rate-finder", {
@@ -335,6 +505,72 @@ describe("contracts", () => {
         expect.objectContaining({
           id: "txn_store_001",
           merchant: "Hyatt"
+        })
+      ])
+    );
+  });
+
+  test("dashboard store persists Plaid item cursors and synced transactions", async () => {
+    const filePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-plaid-store-${Date.now()}.json`;
+
+    await upsertPlaidItem(filePath, {
+      id: "item_123",
+      accessToken: "access-sandbox-123",
+      cursor: "cursor_0"
+    });
+    await applyPlaidSync(filePath, "item_123", {
+      synced: true,
+      cursor: "cursor_1",
+      accounts: [
+        {
+          id: "plaid_account_001",
+          name: "Amex Platinum",
+          kind: "credit card",
+          last4: "1001",
+          syncStatus: "synced",
+          source: "plaid"
+        }
+      ],
+      added: [
+        {
+          id: "plaid_txn_001",
+          accountId: "plaid_account_001",
+          merchant: "Hyatt",
+          amount: 455.12,
+          category: "TRAVEL",
+          card: "Amex Platinum",
+          status: "posted",
+          source: "plaid"
+        }
+      ],
+      modified: [],
+      removed: []
+    });
+
+    const dashboard = await loadDashboard(dashboardFixture(), filePath);
+    const items = await listPlaidItems(filePath);
+    expect(items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "item_123",
+          cursor: "cursor_1",
+          syncStatus: "synced"
+        })
+      ])
+    );
+    expect(dashboard.finance.accounts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "plaid_account_001",
+          source: "plaid"
+        })
+      ])
+    );
+    expect(dashboard.transactions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "plaid_txn_001",
+          source: "plaid"
         })
       ])
     );

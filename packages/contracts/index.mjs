@@ -9,8 +9,32 @@ export function alert({ id, title, detail, severity = "low", source = "Hermes" }
   return { id, title, detail, severity, source };
 }
 
-export function transaction({ id, merchant, amount, category, card, status }) {
-  return { id, merchant, amount, category, card, status };
+export function transaction({
+  id,
+  merchant,
+  amount,
+  category,
+  card,
+  status,
+  accountId,
+  date,
+  authorizedDate,
+  pendingTransactionId,
+  source
+}) {
+  return {
+    id,
+    merchant,
+    amount,
+    category,
+    card,
+    status,
+    accountId,
+    date,
+    authorizedDate,
+    pendingTransactionId,
+    source
+  };
 }
 
 export function rewardInsight({ id, title, detail, pointsImpact }) {
@@ -77,8 +101,17 @@ export function reservation({ id, type, title, dates, source, status }) {
   return { id, type, title, dates, source, status };
 }
 
-export function financeAccount({ id, name, kind, last4, syncStatus }) {
-  return { id, name, kind, last4, syncStatus };
+export function financeAccount({
+  id,
+  name,
+  kind,
+  last4,
+  syncStatus,
+  institutionName,
+  source,
+  balance
+}) {
+  return { id, name, kind, last4, syncStatus, institutionName, source, balance };
 }
 
 export function intakeItem({ id, source, title, detail, classification, state, receivedAt }) {

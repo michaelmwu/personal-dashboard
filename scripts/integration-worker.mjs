@@ -53,6 +53,22 @@ async function postDashboardEvent(source, payload) {
   return response.json();
 }
 
+async function postDashboardAction(path, payload = {}) {
+  const baseUrl = process.env.PERSONAL_DASHBOARD_API_BASE_URL ?? "http://127.0.0.1:8810";
+  const response = await fetch(`${baseUrl.replace(/\/$/, "")}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(process.env.PERSONAL_DASHBOARD_API_TOKEN)
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    throw new Error(`Dashboard POST ${path} failed with HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
 async function readJsonFeed(filePath) {
   const payload = JSON.parse(await readFile(filePath, "utf8"));
   return Array.isArray(payload) ? payload : [payload];
@@ -102,6 +118,12 @@ export async function runConfiguredIngestions() {
     { source: "gmail-intake", envName: "GMAIL_INTAKE_EVENTS_FILE" }
   ]) {
     results.push(await ingestJsonFeed(feed));
+  }
+  if (process.env.PLAID_SYNC_ENABLED === "true") {
+    results.push({
+      source: "plaid",
+      ...(await postDashboardAction("/api/integrations/plaid/sync"))
+    });
   }
   return results;
 }

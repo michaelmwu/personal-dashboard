@@ -13,7 +13,8 @@ function emptyOverlay() {
     },
     finance: {
       accounts: [],
-      sync: undefined
+      sync: undefined,
+      plaidItems: []
     },
     intake: {
       items: []
@@ -82,7 +83,8 @@ export function mergeDashboardOverlay(baseDashboard, overlay) {
     finance: {
       ...baseDashboard.finance,
       sync: overlay.finance?.sync ?? baseDashboard.finance.sync,
-      accounts: mergeById(baseDashboard.finance.accounts, overlay.finance?.accounts ?? [])
+      accounts: mergeById(baseDashboard.finance.accounts, overlay.finance?.accounts ?? []),
+      plaidItems: overlay.finance?.plaidItems ?? baseDashboard.finance.plaidItems ?? []
     },
     intake: {
       ...baseDashboard.intake,
@@ -126,6 +128,55 @@ export async function upsertNormalizedEvent(filePath, normalized) {
     default:
       break;
   }
+  await writeOverlay(filePath, overlay);
+  return overlay;
+}
+
+export async function listPlaidItems(filePath) {
+  const overlay = await readOverlay(filePath);
+  return overlay.finance.plaidItems ?? [];
+}
+
+export async function upsertPlaidItem(filePath, item) {
+  const overlay = await readOverlay(filePath);
+  overlay.finance.plaidItems = upsertById(overlay.finance.plaidItems ?? [], {
+    ...item,
+    syncStatus: item.syncStatus ?? "linked",
+    updatedAt: item.updatedAt ?? new Date().toISOString()
+  });
+  await writeOverlay(filePath, overlay);
+  return overlay;
+}
+
+export async function applyPlaidSync(filePath, itemId, sync) {
+  const overlay = await readOverlay(filePath);
+  for (const account of sync.accounts ?? []) {
+    overlay.finance.accounts = upsertById(overlay.finance.accounts, account);
+  }
+  for (const item of [...(sync.added ?? []), ...(sync.modified ?? [])]) {
+    overlay.transactions = upsertById(overlay.transactions, item);
+  }
+  for (const item of sync.removed ?? []) {
+    overlay.transactions = upsertById(overlay.transactions, item);
+  }
+  overlay.finance.plaidItems = upsertById(overlay.finance.plaidItems ?? [], {
+    id: itemId,
+    cursor: sync.cursor,
+    syncStatus: sync.synced ? "synced" : "error",
+    lastSyncedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+  overlay.finance.sync = {
+    ...(overlay.finance.sync ?? {}),
+    plaid: {
+      status: sync.synced ? "synced" : "error",
+      itemId,
+      added: sync.added?.length ?? 0,
+      modified: sync.modified?.length ?? 0,
+      removed: sync.removed?.length ?? 0,
+      lastSyncedAt: new Date().toISOString()
+    }
+  };
   await writeOverlay(filePath, overlay);
   return overlay;
 }

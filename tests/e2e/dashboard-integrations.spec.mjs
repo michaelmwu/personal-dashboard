@@ -31,3 +31,19 @@ test("source events upsert into the dashboard contract", async ({ request }) => 
     ])
   );
 });
+
+test("Plaid Link token endpoint fails closed without server credentials", async ({ request }) => {
+  const response = await request.post("/api/integrations/plaid/link-token", {
+    data: {
+      userId: "e2e-user"
+    }
+  });
+
+  expect(response.status()).toBe(503);
+  await expect(response.json()).resolves.toMatchObject({
+    created: false,
+    response: {
+      error: "missing_plaid_config"
+    }
+  });
+});
