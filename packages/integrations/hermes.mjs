@@ -66,6 +66,16 @@ export function hermesCapabilities() {
       }
     }),
     hermesCapability({
+      id: "asia_deal_verify",
+      title: "Verify Asia deal",
+      target: "asia-travel-deals",
+      description: "Dispatch verification for one candidate-stage Asia travel deal.",
+      inputSchema: {
+        dealId: "uuid",
+        provider: "string?"
+      }
+    }),
+    hermesCapability({
       id: "plaid_sync",
       title: "Sync Plaid transactions",
       target: "plaid",
@@ -109,9 +119,13 @@ export function createHermesAction(payload) {
     target,
     title: payload.title ?? capability?.title ?? "Unknown Hermes action",
     status: payload.status ?? "queued",
+    origin: payload.origin ?? "hermes",
     payload: payload.payload ?? {},
     idempotencyKey: payload.idempotencyKey ?? id,
-    createdAt: payload.createdAt ?? new Date().toISOString()
+    createdAt: payload.createdAt ?? new Date().toISOString(),
+    updatedAt: payload.updatedAt,
+    dispatch: payload.dispatch,
+    bridgeRunId: payload.bridgeRunId
   });
 }
 

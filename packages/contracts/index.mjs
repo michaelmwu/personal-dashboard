@@ -43,8 +43,34 @@ export function flightSearchWatch({ id, route, dates, providers, targetPrice, be
   return { id, route, dates, providers, targetPrice, bestPrice, status };
 }
 
-export function travelDeal({ id, title, route, price, source, confidence, status }) {
-  return { id, title, route, price, source, confidence, status };
+export function travelDeal({
+  id,
+  title,
+  route,
+  price,
+  source,
+  confidence,
+  status,
+  dealGroupId,
+  score,
+  verificationStatus,
+  sourceUrl,
+  updatedAt
+}) {
+  return {
+    id,
+    title,
+    route,
+    price,
+    source,
+    confidence,
+    status,
+    dealGroupId,
+    score,
+    verificationStatus,
+    sourceUrl,
+    updatedAt
+  };
 }
 
 export function reservation({ id, type, title, dates, source, status }) {
@@ -69,12 +95,30 @@ export function hermesAction({
   target,
   title,
   status,
+  origin = "hermes",
   payload = {},
   idempotencyKey,
   createdAt,
+  updatedAt,
+  dispatch,
+  bridgeRunId,
   version = HERMES_ACTION_VERSION
 }) {
-  return { id, version, idempotencyKey, capabilityId, target, title, status, payload, createdAt };
+  return {
+    id,
+    version,
+    idempotencyKey,
+    capabilityId,
+    target,
+    title,
+    status,
+    origin,
+    payload,
+    createdAt,
+    updatedAt,
+    dispatch,
+    bridgeRunId
+  };
 }
 
 export function dashboardContract({

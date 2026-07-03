@@ -11,16 +11,105 @@ import {
   normalizeHermesEvent
 } from "../../packages/integrations/hermes.mjs";
 import {
+  createHermesBridgeRun,
+  HermesBridgeLoopError,
+  streamHermesBridgeRunEvents
+} from "../../packages/integrations/hermes-bridge.mjs";
+import {
   integrationCatalog,
   isSupportedSourceAdapter,
   normalizeSourceEvent
 } from "../../packages/integrations/sources.mjs";
+import {
+  dashboardStorePath,
+  loadDashboard,
+  patchHermesAction,
+  upsertHermesAction,
+  upsertHermesEvent,
+  upsertNormalizedEvent
+} from "../../packages/storage/dashboard-store.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "../..");
 const port = Number.parseInt(process.env.API_PORT ?? "8810", 10);
 const webPort = Number.parseInt(process.env.WEB_PORT ?? "8811", 10);
 const hermesApiToken = process.env.PERSONAL_DASHBOARD_API_TOKEN ?? "";
+const storePath = dashboardStorePath(root);
+const asiaTravelDealsApiBaseUrl = process.env.ASIA_TRAVEL_DEALS_API_BASE_URL ?? "";
+const asiaTravelDealsApiToken = process.env.ASIA_TRAVEL_DEALS_API_TOKEN ?? "";
+
+async function dashboardSnapshot() {
+  return loadDashboard(dashboardFixture(), storePath);
+}
+
+async function streamBridgeRunOntoAction(action, runId) {
+  try {
+    await streamHermesBridgeRunEvents(runId, async (event) => {
+      const status = event.data?.status;
+      await patchHermesAction(storePath, action.id, {
+        status: typeof status === "string" ? status : "running",
+        bridgeRunId: runId,
+        dispatch: {
+          target: "hermes-bridge",
+          runId,
+          lastEvent: event
+        }
+      });
+    });
+  } catch (error) {
+    await patchHermesAction(storePath, action.id, {
+      status: "dispatch_error",
+      dispatch: {
+        target: "hermes-bridge",
+        runId,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    });
+  }
+}
+
+async function dispatchHermesAction(action) {
+  if (action.capabilityId !== "asia_deal_verify" && action.origin === "hermes") {
+    return { dispatched: false, reason: "hermes_origin_loop_guard" };
+  }
+
+  if (action.capabilityId !== "asia_deal_verify") {
+    const dispatch = await createHermesBridgeRun(action);
+    if (dispatch.dispatched && dispatch.runId) {
+      queueMicrotask(() => {
+        streamBridgeRunOntoAction(action, dispatch.runId);
+      });
+    }
+    return dispatch;
+  }
+  const dealId = action.payload.dealId ?? action.payload.deal_id;
+  if (!dealId) {
+    return { dispatched: false, reason: "missing_deal_id" };
+  }
+  if (!asiaTravelDealsApiBaseUrl) {
+    return { dispatched: false, reason: "missing_asia_travel_deals_api_base_url" };
+  }
+
+  const response = await fetch(
+    `${asiaTravelDealsApiBaseUrl.replace(/\/$/, "")}/deals/${encodeURIComponent(dealId)}/verify`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(asiaTravelDealsApiToken ? { Authorization: `Bearer ${asiaTravelDealsApiToken}` } : {})
+      },
+      body: JSON.stringify({
+        provider: action.payload.provider ?? "dashboard",
+        query: action.payload.query ?? { requestedBy: "hermes" }
+      })
+    }
+  );
+  return {
+    dispatched: response.ok,
+    statusCode: response.status,
+    response: response.ok ? await response.json() : await response.text()
+  };
+}
 
 function json(response, statusCode, payload) {
   const body = JSON.stringify(payload, null, 2);
@@ -89,7 +178,7 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && url.pathname === "/api/dashboard") {
-      json(response, 200, dashboardFixture());
+      json(response, 200, await dashboardSnapshot());
       return;
     }
 
@@ -99,17 +188,17 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "GET" && url.pathname === "/api/travel") {
-      json(response, 200, dashboardFixture().travel);
+      json(response, 200, (await dashboardSnapshot()).travel);
       return;
     }
 
     if (request.method === "GET" && url.pathname === "/api/finance") {
-      json(response, 200, dashboardFixture().finance);
+      json(response, 200, (await dashboardSnapshot()).finance);
       return;
     }
 
     if (request.method === "GET" && url.pathname === "/api/intake") {
-      json(response, 200, dashboardFixture().intake);
+      json(response, 200, (await dashboardSnapshot()).intake);
       return;
     }
 
@@ -117,7 +206,7 @@ const server = http.createServer(async (request, response) => {
       if (!requireHermesAuth(request, response)) {
         return;
       }
-      json(response, 200, hermesContextFromDashboard(dashboardFixture()));
+      json(response, 200, hermesContextFromDashboard(await dashboardSnapshot()));
       return;
     }
 
@@ -161,18 +250,45 @@ const server = http.createServer(async (request, response) => {
         );
         return;
       }
+      let action = createHermesAction({
+        ...payload,
+        origin: payload.origin ?? "hermes"
+      });
+      let dispatch;
+      try {
+        dispatch = await dispatchHermesAction(action);
+      } catch (dispatchError) {
+        if (dispatchError instanceof HermesBridgeLoopError) {
+          dispatch = { dispatched: false, reason: "hermes_origin_loop_guard" };
+        } else {
+          throw dispatchError;
+        }
+      }
+      if (dispatch.dispatched) {
+        action = {
+          ...action,
+          status: dispatch.runId ? "running" : "dispatched",
+          bridgeRunId: dispatch.runId,
+          payload: { ...action.payload, dispatch },
+          dispatch
+        };
+      }
+      await upsertHermesAction(storePath, action);
       json(response, 202, {
         accepted: true,
-        action: createHermesAction(payload)
+        action,
+        dispatch
       });
       return;
     }
 
     if (request.method === "POST" && url.pathname === "/api/integrations/hermes/events") {
       const payload = await readJson(request);
+      const normalized = normalizeHermesEvent(payload);
+      await upsertHermesEvent(storePath, normalized);
       json(response, 202, {
         accepted: true,
-        normalized: normalizeHermesEvent(payload)
+        normalized
       });
       return;
     }
@@ -185,9 +301,11 @@ const server = http.createServer(async (request, response) => {
         return;
       }
       const payload = await readJson(request);
+      const normalized = normalizeSourceEvent(source, payload);
+      await upsertNormalizedEvent(storePath, normalized);
       json(response, 202, {
         accepted: true,
-        normalized: normalizeSourceEvent(source, payload)
+        normalized
       });
       return;
     }

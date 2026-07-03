@@ -61,7 +61,11 @@ Hermes-facing endpoints:
 
 - `GET /api/hermes/context`: compact dashboard context for agent prompts.
 - `GET /api/hermes/capabilities`: actions Hermes is allowed to trigger.
-- `POST /api/hermes/actions`: normalized action envelope for future dispatch.
+- `POST /api/hermes/actions`: normalized action envelope. Hermes-originated
+  envelopes are kept in the dashboard queue; dashboard-originated envelopes can
+  dispatch to Hermes Bridge when `HERMES_BRIDGE_URL` and
+  `HERMES_BRIDGE_PASSWORD` are configured.
 
 Set `PERSONAL_DASHBOARD_API_TOKEN` to require `Authorization: Bearer ...` on
-the Hermes endpoints.
+the Hermes endpoints. The Bridge password stays server-side in the API process;
+it must never be sent to the web client.

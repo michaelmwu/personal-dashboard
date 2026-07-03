@@ -9,9 +9,12 @@ bun build \
   scripts/dev.mjs \
   packages/contracts/index.mjs \
   packages/fixtures/dashboard.mjs \
+  packages/integrations/hermes-bridge.mjs \
   packages/integrations/hermes.mjs \
   packages/integrations/openclaw.mjs \
   packages/integrations/sources.mjs \
+  packages/storage/dashboard-store.mjs \
+  scripts/integration-worker.mjs \
   tests/contracts.test.mjs \
   tests/dev_script.test.mjs \
   tests/worktree_ports.test.mjs \
