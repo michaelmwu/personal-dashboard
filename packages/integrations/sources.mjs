@@ -8,6 +8,10 @@ import {
   transaction,
   travelDeal
 } from "../contracts/index.mjs";
+import {
+  normalizeHotelRateWatchFromJob,
+  normalizeHotelReservationPayload
+} from "./hotel-rates.mjs";
 import { normalizePlaidAccount, normalizePlaidTransaction } from "./plaid.mjs";
 
 export function integrationCatalog() {
@@ -17,8 +21,8 @@ export function integrationCatalog() {
       name: "Hotel rate finder",
       sourceRepo: "~/dev/hotel_rate_finder",
       adapter: "hotel-rate-finder",
-      stage: "adapter-contract",
-      nextStep: "Emit property/date/rate observations into dashboard watches."
+      stage: "saved-search-sync",
+      nextStep: "Run active Hyatt/IHG reservation watches against saved searches."
     }),
     integrationStatus({
       id: "flights_extension",
@@ -64,6 +68,14 @@ export function isSupportedSourceAdapter(source) {
 }
 
 export function normalizeHotelRatePayload(payload) {
+  if (payload.reservation && payload.job) {
+    return normalizeHotelRateWatchFromJob(payload.reservation, payload.job);
+  }
+
+  if (payload.type === "hotel" || payload.confirmationNumber || payload.confirmation_number) {
+    return normalizeHotelReservationPayload(payload);
+  }
+
   return hotelRateWatch({
     id: payload.id ?? `hotel_${Date.now()}`,
     property: payload.property ?? payload.hotelName ?? "Unknown hotel",
@@ -176,7 +188,13 @@ export function normalizeGmailPayload(payload) {
 export function normalizeSourceEvent(source, payload) {
   switch (source) {
     case "hotel-rate-finder":
-      return { kind: "hotelRateWatch", value: normalizeHotelRatePayload(payload) };
+      return {
+        kind:
+          payload.type === "hotel" || payload.confirmationNumber || payload.confirmation_number
+            ? "reservation"
+            : "hotelRateWatch",
+        value: normalizeHotelRatePayload(payload)
+      };
     case "flights-extension":
       return { kind: "flightSearchWatch", value: normalizeFlightSearchPayload(payload) };
     case "asia-travel-deals":

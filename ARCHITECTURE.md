@@ -72,6 +72,14 @@ Plaid Link
   -> apps/api /api/integrations/plaid/sync
   -> packages/integrations/plaid
   -> apps/web finance and transaction surfaces
+
+Manual hotel reservation / Gmail reservation
+  -> apps/api /api/travel/reservations
+  -> local ignored dashboard reservation store
+  -> apps/api /api/integrations/hotel-rate-finder/sync
+  -> packages/integrations/hotel-rates
+  -> hotel_rate_finder FastAPI saved searches and jobs
+  -> apps/web hotel watches and alerts
 ```
 
 The API currently uses local fixtures. The boundary is intentional: replacing fixtures with real Hermes and OpenClaw clients should not require rewriting dashboard rendering code.
@@ -107,6 +115,16 @@ Travel and intake adapters should translate existing repo outputs into
 contracts exported by `packages/integrations/sources`. The API accepts
 placeholder event posts at `/api/integrations/:source/events`; persistence and
 provider-specific clients can be added later without changing the web app.
+
+`hotel_rate_finder` stays the owner of Hyatt/IHG scraping, stealth browser
+runtime, saved searches, job status, cache TTL, provider errors, and raw rate
+evidence. The dashboard client in `packages/integrations/hotel-rates.mjs` only
+speaks the documented FastAPI agent API: create/reuse saved searches, run them,
+poll jobs, and normalize completed reports. The watcher compares an active
+refundable hotel reservation's paid rate against the cheapest cancellable rate
+for the same room class when the scraper identifies room names; otherwise the
+comparison is explicitly marked as the service's cheapest cancellable evidence.
+Failed jobs and provider errors are alertable states.
 
 Plaid is the first provider client. `packages/integrations/plaid` wraps the
 official Plaid Node SDK for Link token creation, public-token exchange, and

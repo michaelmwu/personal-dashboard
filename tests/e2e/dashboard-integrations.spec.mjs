@@ -47,3 +47,17 @@ test("Plaid Link token endpoint fails closed without server credentials", async 
     }
   });
 });
+
+test("Hotel Rate Finder sync endpoint fails closed without service URL", async ({ request }) => {
+  const response = await request.post("/api/integrations/hotel-rate-finder/sync", {
+    data: {
+      reservationId: "reservation_hotel_e2e_001"
+    }
+  });
+
+  expect(response.status()).toBe(503);
+  await expect(response.json()).resolves.toMatchObject({
+    synced: false,
+    reason: "missing_hotel_rate_finder_api_base_url"
+  });
+});

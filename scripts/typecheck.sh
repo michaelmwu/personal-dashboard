@@ -11,6 +11,7 @@ bun build \
   packages/fixtures/dashboard.mjs \
   packages/integrations/hermes-bridge.mjs \
   packages/integrations/hermes.mjs \
+  packages/integrations/hotel-rates.mjs \
   packages/integrations/openclaw.mjs \
   packages/integrations/plaid.mjs \
   packages/integrations/sources.mjs \

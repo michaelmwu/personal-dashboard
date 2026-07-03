@@ -148,6 +148,54 @@ export async function upsertPlaidItem(filePath, item) {
   return overlay;
 }
 
+export async function upsertHotelReservation(filePath, reservation) {
+  const overlay = await readOverlay(filePath);
+  overlay.travel.reservations = upsertById(overlay.travel.reservations, {
+    ...reservation,
+    type: "hotel",
+    updatedAt: reservation.updatedAt ?? new Date().toISOString()
+  });
+  await writeOverlay(filePath, overlay);
+  return overlay;
+}
+
+export async function patchHotelReservation(filePath, reservationId, patch) {
+  const overlay = await readOverlay(filePath);
+  const existing = overlay.travel.reservations.find(
+    (reservation) => reservation.id === reservationId
+  );
+  overlay.travel.reservations = upsertById(overlay.travel.reservations, {
+    ...(existing ?? { id: reservationId, type: "hotel" }),
+    ...patch,
+    id: reservationId,
+    updatedAt: patch.updatedAt ?? new Date().toISOString()
+  });
+  await writeOverlay(filePath, overlay);
+  return overlay;
+}
+
+export async function applyHotelRateWatch(filePath, reservation, watch, alerts = []) {
+  const overlay = await readOverlay(filePath);
+  overlay.travel.hotelWatches = upsertById(overlay.travel.hotelWatches, watch);
+  overlay.travel.reservations = upsertById(overlay.travel.reservations, {
+    ...reservation,
+    hotelRateFinder: {
+      ...(reservation.hotelRateFinder ?? {}),
+      savedSearchId: watch.savedSearchId,
+      lastJobId: watch.jobId,
+      lastStatus: watch.status,
+      lastCheckedAt: new Date().toISOString()
+    },
+    status: watch.status === "failed" ? "watch-error" : "watching",
+    updatedAt: new Date().toISOString()
+  });
+  for (const alert of alerts.filter(Boolean)) {
+    overlay.alerts = upsertById(overlay.alerts, alert);
+  }
+  await writeOverlay(filePath, overlay);
+  return overlay;
+}
+
 export async function applyPlaidSync(filePath, itemId, sync) {
   const overlay = await readOverlay(filePath);
   for (const account of sync.accounts ?? []) {

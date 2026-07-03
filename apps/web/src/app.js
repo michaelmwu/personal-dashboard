@@ -139,6 +139,20 @@ function rateLabel(value) {
   return value > 0 ? money.format(value) : "TBD";
 }
 
+function currencyRateLabel(value, currency = "USD") {
+  if (!(value > 0)) {
+    return "TBD";
+  }
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency
+    }).format(value);
+  } catch {
+    return `${escapeHtml(currency)} ${Number(value).toFixed(2)}`;
+  }
+}
+
 function renderTravel(travel) {
   const hotelRows = travel.hotelWatches.map(
     (watch) => `
@@ -146,9 +160,9 @@ function renderTravel(travel) {
         <span class="pill">${escapeHtml(watch.status)}</span>
         <div>
           <strong>${escapeHtml(watch.property)}</strong>
-          <p>${escapeHtml(watch.location)} · ${escapeHtml(watch.checkIn)} to ${escapeHtml(watch.checkOut)}</p>
+          <p>${escapeHtml(watch.location)} · ${escapeHtml(watch.checkIn)} to ${escapeHtml(watch.checkOut)}${watch.cancellationDeadline ? ` · cancel by ${escapeHtml(watch.cancellationDeadline)}` : ""}</p>
         </div>
-        <small>${rateLabel(watch.bestRate)} / target ${rateLabel(watch.targetRate)}</small>
+        <small>${currencyRateLabel(watch.bestRate, watch.currency)} / paid ${currencyRateLabel(watch.targetRate, watch.currency)}</small>
       </article>
     `
   );
@@ -189,9 +203,9 @@ function renderTravel(travel) {
           <span class="pill">${escapeHtml(reservation.type)}</span>
           <div>
             <strong>${escapeHtml(reservation.title)}</strong>
-            <p>${escapeHtml(reservation.dates)} · ${escapeHtml(reservation.source)}</p>
+            <p>${escapeHtml(reservation.dates)} · ${escapeHtml(reservation.source)}${reservation.cancellationDeadline ? ` · cancel by ${escapeHtml(reservation.cancellationDeadline)}` : ""}</p>
           </div>
-          <small>${escapeHtml(reservation.status)}</small>
+          <small>${reservation.paidRate ? currencyRateLabel(reservation.paidRate, reservation.paidCurrency) : escapeHtml(reservation.status)}</small>
         </article>
       `
     )

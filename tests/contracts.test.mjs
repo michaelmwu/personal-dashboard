@@ -14,6 +14,15 @@ import {
 } from "../packages/integrations/hermes.mjs";
 import { integrationCatalog, normalizeSourceEvent } from "../packages/integrations/sources.mjs";
 import {
+  createHotelSavedSearch,
+  hotelRateDropAlert,
+  hotelSearchRequestFromReservation,
+  normalizeHotelRateWatchFromJob,
+  normalizeHotelReservationPayload,
+  runHotelSavedSearch,
+  waitForHotelJob
+} from "../packages/integrations/hotel-rates.mjs";
+import {
   createPlaidLinkToken,
   exchangePlaidPublicToken,
   normalizePlaidAccount,
@@ -21,10 +30,12 @@ import {
   syncPlaidTransactions
 } from "../packages/integrations/plaid.mjs";
 import {
+  applyHotelRateWatch,
   applyPlaidSync,
   listPlaidItems,
   loadDashboard,
   upsertPlaidItem,
+  upsertHotelReservation,
   upsertHermesAction,
   upsertNormalizedEvent
 } from "../packages/storage/dashboard-store.mjs";
@@ -348,6 +359,163 @@ describe("contracts", () => {
     });
   });
 
+  test("Hotel Rate Finder client creates saved searches, runs jobs, and polls status", async () => {
+    const calls = [];
+    const fetch = async (url, options) => {
+      calls.push({ url, options });
+      if (url.endsWith("/api/saved-searches")) {
+        return Response.json(
+          {
+            id: "saved_hotel_001",
+            name: "Park Hyatt Tokyo",
+            request: JSON.parse(options.body).request
+          },
+          { status: 200 }
+        );
+      }
+      if (url.endsWith("/api/saved-searches/saved_hotel_001/run")) {
+        return Response.json({ job_id: "job_hotel_001", status: "queued" }, { status: 200 });
+      }
+      return Response.json(
+        {
+          id: "job_hotel_001",
+          status: "completed",
+          report: {
+            hotels: []
+          }
+        },
+        { status: 200 }
+      );
+    };
+    const config = {
+      baseUrl: "http://127.0.0.1:8720",
+      pollAttempts: 1,
+      pollIntervalMs: 0
+    };
+
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_hotel_001",
+      property: "Park Hyatt Tokyo",
+      chain: "hyatt",
+      propertyId: "tyoph",
+      checkIn: "2026-09-12",
+      checkOut: "2026-09-15",
+      paidRate: 455,
+      paidCurrency: "USD"
+    });
+    const request = hotelSearchRequestFromReservation(reservation);
+    const saved = await createHotelSavedSearch(
+      {
+        name: "Park Hyatt Tokyo",
+        request
+      },
+      { fetch, config }
+    );
+    const run = await runHotelSavedSearch(
+      "saved_hotel_001",
+      { forceRefresh: true },
+      { fetch, config }
+    );
+    const job = await waitForHotelJob("job_hotel_001", { fetch, config, sleep: async () => {} });
+
+    expect(saved).toMatchObject({
+      ok: true,
+      body: {
+        id: "saved_hotel_001"
+      }
+    });
+    expect(request).toMatchObject({
+      providers: ["hyatt"],
+      mode: "hotel",
+      hotel_id: "tyoph",
+      checkin: "2026-09-12",
+      checkout: "2026-09-15",
+      display_currency: "USD"
+    });
+    expect(run.body).toMatchObject({ job_id: "job_hotel_001" });
+    expect(job.body).toMatchObject({ status: "completed" });
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://127.0.0.1:8720/api/saved-searches",
+      "http://127.0.0.1:8720/api/saved-searches/saved_hotel_001/run",
+      "http://127.0.0.1:8720/api/jobs/job_hotel_001"
+    ]);
+  });
+
+  test("Hotel rate jobs normalize cheapest cancellable drops with cancellation deadline", () => {
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_hotel_002",
+      property: "InterContinental Osaka",
+      chain: "ihg",
+      propertyId: "OSAHA",
+      checkIn: "2026-10-01",
+      checkOut: "2026-10-04",
+      paidRate: 520,
+      paidCurrency: "USD",
+      roomClass: "classic",
+      cancellationDeadline: "2026-09-25T18:00:00+09:00"
+    });
+    const watch = normalizeHotelRateWatchFromJob(
+      {
+        ...reservation,
+        hotelRateFinder: {
+          savedSearchId: "saved_hotel_002"
+        }
+      },
+      {
+        id: "job_hotel_002",
+        status: "completed",
+        report: {
+          hotels: [
+            {
+              hotel_id: "OSAHA",
+              hotel_name: "InterContinental Osaka",
+              rates: [
+                {
+                  comparison: "cheapest_non_corp",
+                  candidate: {
+                    amount: 430,
+                    currency: "USD",
+                    room_name: "Classic room",
+                    cancellation_policy: "Non-refundable. Full prepayment required."
+                  }
+                },
+                {
+                  comparison: "cheapest_flexible",
+                  candidate: {
+                    amount: 455,
+                    currency: "USD",
+                    room_name: "Classic room",
+                    cancellation_policy: "Fully refundable before Sep 25, 2026",
+                    points_rate: {
+                      points: 35000
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      { priceDropThreshold: 25 }
+    );
+    const alert = hotelRateDropAlert(reservation, watch);
+
+    expect(watch).toMatchObject({
+      id: "hotel_reservation_hotel_002",
+      status: "price-drop",
+      bestRate: 455,
+      targetRate: 520,
+      cancellationDeadline: "2026-09-25T18:00:00+09:00",
+      savedSearchId: "saved_hotel_002"
+    });
+    expect(watch.cancellationPolicy).toBe("Fully refundable before Sep 25, 2026");
+    expect(alert).toMatchObject({
+      severity: "medium",
+      source: "hotel-rate-finder"
+    });
+    expect(alert.detail).toContain("Cancellation deadline: 2026-09-25T18:00:00+09:00");
+  });
+
   test("source events normalize into domain-specific placeholders", () => {
     expect(
       normalizeSourceEvent("hotel-rate-finder", {
@@ -360,6 +528,28 @@ describe("contracts", () => {
         property: "Park Hyatt Tokyo",
         bestRate: 455,
         source: "hotel-rate-finder"
+      }
+    });
+
+    expect(
+      normalizeSourceEvent("hotel-rate-finder", {
+        id: "reservation_hotel_003",
+        type: "hotel",
+        property: "Andaz Tokyo",
+        chain: "hyatt",
+        propertyId: "tyoaz",
+        checkIn: "2026-09-12",
+        checkOut: "2026-09-15",
+        paidRate: "488",
+        cancellationDeadline: "2026-09-10T18:00:00+09:00"
+      })
+    ).toMatchObject({
+      kind: "reservation",
+      value: {
+        id: "reservation_hotel_003",
+        property: "Andaz Tokyo",
+        paidRate: 488,
+        status: "watching"
       }
     });
 
@@ -571,6 +761,76 @@ describe("contracts", () => {
         expect.objectContaining({
           id: "plaid_txn_001",
           source: "plaid"
+        })
+      ])
+    );
+  });
+
+  test("dashboard store persists hotel reservations, watches, and rate alerts", async () => {
+    const filePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-hotel-store-${Date.now()}.json`;
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_hotel_store_001",
+      property: "Park Hyatt Kyoto",
+      chain: "hyatt",
+      propertyId: "kyoto",
+      checkIn: "2026-08-20",
+      checkOut: "2026-08-23",
+      paidRate: 700,
+      paidCurrency: "USD"
+    });
+    const watch = {
+      id: "hotel_reservation_hotel_store_001",
+      reservationId: reservation.id,
+      property: "Park Hyatt Kyoto",
+      location: "Kyoto",
+      checkIn: "2026-08-20",
+      checkOut: "2026-08-23",
+      targetRate: 700,
+      bestRate: 640,
+      currency: "USD",
+      source: "hotel-rate-finder",
+      status: "price-drop",
+      jobId: "job_hotel_store_001",
+      savedSearchId: "saved_hotel_store_001"
+    };
+
+    await upsertHotelReservation(filePath, reservation);
+    await applyHotelRateWatch(filePath, reservation, watch, [
+      {
+        id: "alert_hotel_store_001",
+        title: "Park Hyatt Kyoto cancellable rate dropped",
+        detail: "Current cancellable rate is USD 640.",
+        severity: "medium",
+        source: "hotel-rate-finder"
+      }
+    ]);
+
+    const dashboard = await loadDashboard(dashboardFixture(), filePath);
+    expect(dashboard.travel.reservations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "reservation_hotel_store_001",
+          hotelRateFinder: expect.objectContaining({
+            savedSearchId: "saved_hotel_store_001",
+            lastJobId: "job_hotel_store_001"
+          })
+        })
+      ])
+    );
+    expect(dashboard.travel.hotelWatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "hotel_reservation_hotel_store_001",
+          status: "price-drop",
+          bestRate: 640
+        })
+      ])
+    );
+    expect(dashboard.alerts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "alert_hotel_store_001",
+          source: "hotel-rate-finder"
         })
       ])
     );

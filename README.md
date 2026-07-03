@@ -85,3 +85,18 @@ Plaid-facing endpoints:
 Set `PLAID_CLIENT_ID`, `PLAID_SECRET`, and `PLAID_ENV`. The access token store
 is local ignored data for now; move it behind encrypted storage before using
 this outside a personal trusted host.
+
+Hotel Rate Finder endpoints:
+
+- `POST /api/travel/reservations`: upsert a manual hotel reservation with
+  confirmation number, paid rate/currency, room class, cancellation policy, and
+  Hyatt/IHG property metadata.
+- `POST /api/integrations/hotel-rate-finder/sync`: ensure each active
+  refundable Hyatt/IHG hotel reservation has a saved search in
+  `hotel_rate_finder`, run it through the service's agent API, poll the job,
+  and snapshot the cheapest cancellable comparable rate into travel watches.
+
+Set `HOTEL_RATE_FINDER_API_BASE_URL` to the local or tailnet FastAPI service.
+The dashboard never imports provider internals or runs browser scrapes; failed
+or stale hotel jobs become dashboard alerts so a broken scraper does not look
+like "no price drop."

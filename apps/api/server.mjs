@@ -21,6 +21,20 @@ import {
   normalizeSourceEvent
 } from "../../packages/integrations/sources.mjs";
 import {
+  createHotelSavedSearch,
+  hotelRateDropAlert,
+  hotelRateFailureAlert,
+  hotelRatesConfig,
+  hotelReservationIsWatchable,
+  hotelSavedSearchName,
+  hotelSearchRequestFromReservation,
+  isHotelRatesConfigured,
+  normalizeHotelRateWatchFromJob,
+  normalizeHotelReservationPayload,
+  runHotelSavedSearch,
+  waitForHotelJob
+} from "../../packages/integrations/hotel-rates.mjs";
+import {
   createPlaidLinkToken,
   exchangePlaidPublicToken,
   normalizePlaidAccount,
@@ -29,12 +43,15 @@ import {
   syncPlaidTransactions
 } from "../../packages/integrations/plaid.mjs";
 import {
+  applyHotelRateWatch,
   applyPlaidSync,
   dashboardStorePath,
   listPlaidItems,
   loadDashboard,
   patchHermesAction,
+  patchHotelReservation,
   upsertPlaidItem,
+  upsertHotelReservation,
   upsertHermesAction,
   upsertHermesEvent,
   upsertNormalizedEvent
@@ -48,9 +65,142 @@ const hermesApiToken = process.env.PERSONAL_DASHBOARD_API_TOKEN ?? "";
 const storePath = dashboardStorePath(root);
 const asiaTravelDealsApiBaseUrl = process.env.ASIA_TRAVEL_DEALS_API_BASE_URL ?? "";
 const asiaTravelDealsApiToken = process.env.ASIA_TRAVEL_DEALS_API_TOKEN ?? "";
+const hotelRateFinderConfig = hotelRatesConfig();
 
 async function dashboardSnapshot() {
   return loadDashboard(dashboardFixture(), storePath);
+}
+
+function activeHotelRateReservations(dashboard, { reservationId } = {}) {
+  return dashboard.travel.reservations.filter(
+    (reservation) =>
+      (!reservationId || reservation.id === reservationId) &&
+      reservation.refundable !== false &&
+      hotelReservationIsWatchable(reservation)
+  );
+}
+
+async function ensureHotelSavedSearch(reservation) {
+  const existingSavedSearchId =
+    reservation.hotelRateFinder?.savedSearchId ??
+    reservation.savedSearchId ??
+    reservation.saved_search_id;
+  if (existingSavedSearchId) {
+    return { reservation, savedSearchId: existingSavedSearchId, created: false };
+  }
+
+  const savedSearch = await createHotelSavedSearch(
+    {
+      name: hotelSavedSearchName(reservation),
+      request: hotelSearchRequestFromReservation(reservation)
+    },
+    { config: hotelRateFinderConfig }
+  );
+  if (!savedSearch.ok) {
+    return {
+      reservation,
+      savedSearchId: undefined,
+      created: false,
+      error: savedSearch.body,
+      statusCode: savedSearch.status
+    };
+  }
+
+  const savedSearchId = savedSearch.body.id;
+  const updatedReservation = {
+    ...reservation,
+    hotelRateFinder: {
+      ...(reservation.hotelRateFinder ?? {}),
+      savedSearchId,
+      request: savedSearch.body.request,
+      savedAt: new Date().toISOString()
+    }
+  };
+  await patchHotelReservation(storePath, reservation.id, {
+    hotelRateFinder: updatedReservation.hotelRateFinder
+  });
+  return { reservation: updatedReservation, savedSearchId, created: true };
+}
+
+async function runHotelRateReservation(reservation, { forceRefresh } = {}) {
+  const savedSearch = await ensureHotelSavedSearch(reservation);
+  if (!savedSearch.savedSearchId) {
+    return {
+      reservationId: reservation.id,
+      synced: false,
+      reason: "saved_search_failed",
+      statusCode: savedSearch.statusCode,
+      response: savedSearch.error
+    };
+  }
+
+  const run = await runHotelSavedSearch(
+    savedSearch.savedSearchId,
+    { forceRefresh: forceRefresh ?? hotelRateFinderConfig.forceRefresh },
+    { config: hotelRateFinderConfig }
+  );
+  if (!run.ok) {
+    return {
+      reservationId: reservation.id,
+      savedSearchId: savedSearch.savedSearchId,
+      synced: false,
+      reason: "run_failed",
+      statusCode: run.status,
+      response: run.body
+    };
+  }
+
+  const jobId = run.body.job_id ?? run.body.id;
+  if (!jobId) {
+    return {
+      reservationId: reservation.id,
+      savedSearchId: savedSearch.savedSearchId,
+      synced: false,
+      reason: "missing_job_id",
+      response: run.body
+    };
+  }
+  const jobResponse = await waitForHotelJob(jobId, { config: hotelRateFinderConfig });
+  const job = { ...(jobResponse.body ?? {}), id: jobResponse.body?.id ?? jobId, job_id: jobId };
+  const watch = normalizeHotelRateWatchFromJob(savedSearch.reservation, job, {
+    priceDropThreshold: hotelRateFinderConfig.priceDropThreshold
+  });
+  const alerts = [
+    hotelRateDropAlert(savedSearch.reservation, watch),
+    hotelRateFailureAlert(savedSearch.reservation, watch)
+  ];
+  await applyHotelRateWatch(storePath, savedSearch.reservation, watch, alerts);
+  return {
+    reservationId: reservation.id,
+    savedSearchId: savedSearch.savedSearchId,
+    jobId,
+    synced: jobResponse.ok && !jobResponse.timedOut && watch.status !== "failed",
+    timedOut: jobResponse.timedOut,
+    status: watch.status,
+    watch
+  };
+}
+
+async function syncHotelRateReservations({ reservationId, forceRefresh } = {}) {
+  if (!isHotelRatesConfigured(hotelRateFinderConfig)) {
+    return {
+      synced: false,
+      reason: "missing_hotel_rate_finder_api_base_url",
+      reservationCount: 0,
+      results: []
+    };
+  }
+
+  const reservations = activeHotelRateReservations(await dashboardSnapshot(), { reservationId });
+  const results = [];
+  for (const reservation of reservations) {
+    results.push(await runHotelRateReservation(reservation, { forceRefresh }));
+  }
+  return {
+    synced: results.every((result) => result.synced),
+    reservationCount: reservations.length,
+    results
+  };
 }
 
 async function syncPlaidItem(item) {
@@ -233,6 +383,20 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/travel/reservations") {
+      if (!requireHermesAuth(request, response)) {
+        return;
+      }
+      const payload = await readJson(request);
+      const reservation = normalizeHotelReservationPayload(payload);
+      await upsertHotelReservation(storePath, reservation);
+      json(response, 202, {
+        accepted: true,
+        reservation
+      });
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/api/finance") {
       json(response, 200, (await dashboardSnapshot()).finance);
       return;
@@ -317,6 +481,19 @@ const server = http.createServer(async (request, response) => {
         ignored: true,
         webhook: payload
       });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/integrations/hotel-rate-finder/sync") {
+      if (!requireHermesAuth(request, response)) {
+        return;
+      }
+      const payload = await readJson(request);
+      const result = await syncHotelRateReservations({
+        reservationId: payload.reservationId ?? payload.reservation_id,
+        forceRefresh: payload.forceRefresh ?? payload.force_refresh
+      });
+      json(response, result.synced ? 202 : 503, result);
       return;
     }
 

@@ -51,16 +51,48 @@ export function integrationStatus({ id, name, sourceRepo, adapter, stage, nextSt
 
 export function hotelRateWatch({
   id,
+  reservationId,
   property,
   location,
   checkIn,
   checkOut,
   targetRate,
   bestRate,
+  currency,
   source,
-  status
+  status,
+  jobId,
+  savedSearchId,
+  cancellationDeadline,
+  cancellationPolicy,
+  comparableRate,
+  comparisonBasis,
+  pointsAlternative,
+  error,
+  providerErrors
 }) {
-  return { id, property, location, checkIn, checkOut, targetRate, bestRate, source, status };
+  return {
+    id,
+    reservationId,
+    property,
+    location,
+    checkIn,
+    checkOut,
+    targetRate,
+    bestRate,
+    currency,
+    source,
+    status,
+    jobId,
+    savedSearchId,
+    cancellationDeadline,
+    cancellationPolicy,
+    comparableRate,
+    comparisonBasis,
+    pointsAlternative,
+    error,
+    providerErrors
+  };
 }
 
 export function flightSearchWatch({ id, route, dates, providers, targetPrice, bestPrice, status }) {
@@ -97,8 +129,50 @@ export function travelDeal({
   };
 }
 
-export function reservation({ id, type, title, dates, source, status }) {
-  return { id, type, title, dates, source, status };
+export function reservation({
+  id,
+  type,
+  title,
+  dates,
+  source,
+  status,
+  property,
+  location,
+  checkIn,
+  checkOut,
+  confirmationNumber,
+  paidRate,
+  paidCurrency,
+  roomClass,
+  cancellationPolicy,
+  cancellationDeadline,
+  chain,
+  propertyId,
+  refundable,
+  hotelRateFinder
+}) {
+  return {
+    id,
+    type,
+    title,
+    dates,
+    source,
+    status,
+    property,
+    location,
+    checkIn,
+    checkOut,
+    confirmationNumber,
+    paidRate,
+    paidCurrency,
+    roomClass,
+    cancellationPolicy,
+    cancellationDeadline,
+    chain,
+    propertyId,
+    refundable,
+    hotelRateFinder
+  };
 }
 
 export function financeAccount({

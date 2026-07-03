@@ -125,6 +125,12 @@ export async function runConfiguredIngestions() {
       ...(await postDashboardAction("/api/integrations/plaid/sync"))
     });
   }
+  if (process.env.HOTEL_RATE_SYNC_ENABLED === "true") {
+    results.push({
+      source: "hotel-rate-finder",
+      ...(await postDashboardAction("/api/integrations/hotel-rate-finder/sync"))
+    });
+  }
   return results;
 }
 

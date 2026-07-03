@@ -13,6 +13,7 @@ Report security concerns through the private maintainer channel configured for t
 - Use `.env.example` for documented configuration only.
 - Use `.worktreeinclude` only for short allowlists of local config files that should copy into sibling worktrees.
 - Plaid access tokens and sync cursors are stored only in the ignored local dashboard store during the personal-host bootstrap. Move them to encrypted storage before any multi-user or public deployment.
+- Keep `HOTEL_RATE_FINDER_API_BASE_URL` on loopback or a private tailnet. The dashboard should talk only to the Hotel Rate Finder FastAPI agent API, never expose provider credentials or browser controls to the web client, and treat failed/stale scraper jobs as alertable states.
 
 ## Dependency Policy
 
