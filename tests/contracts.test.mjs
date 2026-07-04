@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
@@ -26,6 +27,7 @@ import { integrationCatalog, normalizeSourceEvent } from "../packages/integratio
 import {
   createHotelSavedSearch,
   hotelRateDropAlert,
+  hotelRateWatchFromJobResponse,
   hotelSearchRequestFromReservation,
   normalizeHotelRateWatchFromJob,
   normalizeHotelReservationPayload,
@@ -38,7 +40,8 @@ import {
   normalizePlaidAccount,
   normalizePlaidTransaction,
   plaidConfig,
-  syncPlaidTransactions
+  syncPlaidTransactions,
+  verifyPlaidWebhook
 } from "../packages/integrations/plaid.mjs";
 import {
   applyHotelRateWatch,
@@ -64,6 +67,33 @@ function closeServer(server) {
   return new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
+}
+
+function base64UrlJson(payload) {
+  return Buffer.from(JSON.stringify(payload)).toString("base64url");
+}
+
+function signedPlaidWebhookJwt({ body, keyId = "plaid-key-001", now = Date.now() } = {}) {
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const header = base64UrlJson({ alg: "ES256", kid: keyId, typ: "JWT" });
+  const payload = base64UrlJson({
+    iat: Math.floor(now / 1000),
+    request_body_sha256: createHash("sha256").update(body).digest("hex")
+  });
+  const signingInput = `${header}.${payload}`;
+  const signature = sign("sha256", Buffer.from(signingInput), {
+    key: privateKey,
+    dsaEncoding: "ieee-p1363"
+  }).toString("base64url");
+  return {
+    jwt: `${signingInput}.${signature}`,
+    jwk: {
+      ...publicKey.export({ format: "jwk" }),
+      alg: "ES256",
+      kid: keyId,
+      use: "sig"
+    }
+  };
 }
 
 describe("contracts", () => {
@@ -393,6 +423,40 @@ describe("contracts", () => {
         PLAID_ENV: "development"
       }).baseUrl
     ).toBe("https://development.plaid.com");
+  });
+
+  test("Plaid webhook verification validates JWT signature and raw body hash", async () => {
+    const body = Buffer.from(
+      JSON.stringify({
+        webhook_type: "TRANSACTIONS",
+        webhook_code: "SYNC_UPDATES_AVAILABLE",
+        item_id: "item_123"
+      })
+    );
+    const now = Date.UTC(2026, 6, 4, 12, 0, 0);
+    const { jwt, jwk } = signedPlaidWebhookJwt({ body, now });
+    const client = {
+      async webhookVerificationKeyGet(request) {
+        expect(request).toEqual({ key_id: "plaid-key-001" });
+        return { data: { key: jwk } };
+      }
+    };
+    const config = {
+      clientId: "client",
+      secret: "secret",
+      baseUrl: "https://sandbox.plaid.com"
+    };
+
+    await expect(verifyPlaidWebhook(body, jwt, { client, config, now })).resolves.toMatchObject({
+      ok: true,
+      keyId: "plaid-key-001"
+    });
+    await expect(
+      verifyPlaidWebhook(Buffer.from("{}"), jwt, { client, config, now })
+    ).resolves.toMatchObject({
+      ok: false,
+      reason: "plaid_body_hash_mismatch"
+    });
   });
 
   test("Plaid transaction sync paginates with cursor and normalizes account data", async () => {
@@ -738,6 +802,54 @@ describe("contracts", () => {
     });
   });
 
+  test("Hotel rate scoring accepts snake_case reservation money fields", () => {
+    const reservation = {
+      id: "reservation_hotel_snake_001",
+      type: "hotel",
+      property: "Park Hyatt Kyoto",
+      chain: "hyatt",
+      property_id: "kyoto",
+      check_in: "2026-10-01",
+      check_out: "2026-10-04",
+      paid_total: 520,
+      paid_currency: "USD"
+    };
+    const watch = normalizeHotelRateWatchFromJob(reservation, {
+      id: "job_hotel_snake_001",
+      status: "completed",
+      report: {
+        hotels: [
+          {
+            hotel_id: "kyoto",
+            hotel_name: "Park Hyatt Kyoto",
+            rates: [
+              {
+                comparison: "cheapest_flexible",
+                candidate: {
+                  amount: 70000,
+                  currency: "JPY",
+                  cancellation_policy: "Fully refundable before Sep 25, 2026",
+                  fx: {
+                    USD: {
+                      total_after_tax: 455
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(watch).toMatchObject({
+      status: "price-drop",
+      bestRate: 455,
+      targetRate: 520,
+      currency: "USD"
+    });
+  });
+
   test("Hotel reservation normalization preserves provider-only chain values", () => {
     const reservation = normalizeHotelReservationPayload({
       id: "reservation_provider_001",
@@ -782,6 +894,36 @@ describe("contracts", () => {
     expect(watch).toMatchObject({
       status: "failed",
       error: "job canceled"
+    });
+  });
+
+  test("Failed hotel job polls normalize as failed watches", () => {
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_hotel_poll_failed_001",
+      property: "Park Hyatt Tokyo",
+      chain: "hyatt",
+      propertyId: "tyoph",
+      checkIn: "2026-10-01",
+      checkOut: "2026-10-04",
+      paidRate: 520,
+      paidCurrency: "USD"
+    });
+    const { watch } = hotelRateWatchFromJobResponse(reservation, "job_hotel_poll_failed_001", {
+      ok: false,
+      status: 500,
+      timedOut: false,
+      body: {
+        status: "running",
+        report: {
+          hotels: []
+        }
+      }
+    });
+
+    expect(watch).toMatchObject({
+      id: "hotel_reservation_hotel_poll_failed_001",
+      status: "failed",
+      error: "Hotel Rate Finder job poll failed with status 500."
     });
   });
 

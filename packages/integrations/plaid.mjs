@@ -1,3 +1,9 @@
+import {
+  createHash,
+  createPublicKey,
+  timingSafeEqual,
+  verify as verifySignature
+} from "node:crypto";
 import { Configuration, CountryCode, PlaidApi, PlaidEnvironments, Products } from "plaid";
 
 const PLAID_ENV_URLS = {
@@ -13,6 +19,8 @@ const PRODUCT_MAP = {
 const COUNTRY_CODE_MAP = {
   US: CountryCode.Us
 };
+
+const webhookVerificationKeys = new Map();
 
 export function plaidConfig(env = process.env) {
   const plaidEnv = env.PLAID_ENV ?? "sandbox";
@@ -79,6 +87,106 @@ function errorResponse(error) {
       error: error instanceof Error ? error.message : String(error)
     }
   };
+}
+
+function decodeJwtJson(segment) {
+  return JSON.parse(Buffer.from(segment, "base64url").toString("utf8"));
+}
+
+function bodyBuffer(body) {
+  if (Buffer.isBuffer(body)) {
+    return body;
+  }
+  if (body instanceof Uint8Array) {
+    return Buffer.from(body);
+  }
+  return Buffer.from(String(body ?? ""), "utf8");
+}
+
+function timingSafeHexEqual(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+  const leftBuffer = Buffer.from(left, "hex");
+  const rightBuffer = Buffer.from(right, "hex");
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+async function plaidWebhookVerificationKey(keyId, options = {}) {
+  if (webhookVerificationKeys.has(keyId)) {
+    return webhookVerificationKeys.get(keyId);
+  }
+  const config = options.config ?? plaidConfig();
+  if (!isPlaidConfigured(config)) {
+    return undefined;
+  }
+  const client = options.client ?? createPlaidClient(config);
+  const response = await client.webhookVerificationKeyGet({ key_id: keyId });
+  const key = responseData(response).key;
+  if (key) {
+    webhookVerificationKeys.set(keyId, key);
+  }
+  return key;
+}
+
+export async function verifyPlaidWebhook(body, verificationHeader, options = {}) {
+  if (!verificationHeader) {
+    return { ok: false, reason: "missing_plaid_verification" };
+  }
+
+  const parts = String(verificationHeader).split(".");
+  if (parts.length !== 3) {
+    return { ok: false, reason: "invalid_plaid_verification" };
+  }
+
+  let header;
+  let payload;
+  try {
+    header = decodeJwtJson(parts[0]);
+    payload = decodeJwtJson(parts[1]);
+  } catch {
+    return { ok: false, reason: "invalid_plaid_verification" };
+  }
+
+  if (header.alg !== "ES256" || !header.kid) {
+    return { ok: false, reason: "unsupported_plaid_verification" };
+  }
+
+  let key;
+  try {
+    key = await plaidWebhookVerificationKey(header.kid, options);
+  } catch {
+    return { ok: false, reason: "plaid_verification_key_failed" };
+  }
+  if (!key) {
+    return { ok: false, reason: "missing_plaid_verification_key" };
+  }
+
+  const signedPayload = Buffer.from(`${parts[0]}.${parts[1]}`, "utf8");
+  const signature = Buffer.from(parts[2], "base64url");
+  const publicKey = createPublicKey({ key, format: "jwk" });
+  const signatureValid = verifySignature(
+    "sha256",
+    signedPayload,
+    { key: publicKey, dsaEncoding: "ieee-p1363" },
+    signature
+  );
+  if (!signatureValid) {
+    return { ok: false, reason: "invalid_plaid_signature" };
+  }
+
+  const issuedAt = Number(payload.iat);
+  const now = Math.floor((options.now ?? Date.now()) / 1000);
+  if (!Number.isFinite(issuedAt) || issuedAt > now + 60 || now - issuedAt > 300) {
+    return { ok: false, reason: "stale_plaid_verification" };
+  }
+
+  const actualHash = createHash("sha256").update(bodyBuffer(body)).digest("hex");
+  if (!timingSafeHexEqual(actualHash, payload.request_body_sha256)) {
+    return { ok: false, reason: "plaid_body_hash_mismatch" };
+  }
+
+  return { ok: true, keyId: header.kid };
 }
 
 async function plaidSdkCall(methodName, body, options = {}) {

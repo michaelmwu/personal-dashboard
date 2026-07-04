@@ -28,12 +28,12 @@ import {
   createHotelSavedSearch,
   hotelRateDropAlert,
   hotelRateFailureAlert,
+  hotelRateWatchFromJobResponse,
   hotelRatesConfig,
   hotelReservationIsWatchable,
   hotelSavedSearchName,
   hotelSearchRequestFromReservation,
   isHotelRatesConfigured,
-  normalizeHotelRateWatchFromJob,
   normalizeHotelReservationPayload,
   runHotelSavedSearch,
   waitForHotelJob
@@ -44,7 +44,8 @@ import {
   normalizePlaidAccount,
   normalizePlaidTransaction,
   normalizeRemovedPlaidTransaction,
-  syncPlaidTransactions
+  syncPlaidTransactions,
+  verifyPlaidWebhook
 } from "../../packages/integrations/plaid.mjs";
 import {
   applyHotelRateWatch,
@@ -202,8 +203,7 @@ async function runHotelRateReservation(reservation, { forceRefresh } = {}) {
     };
   }
   const jobResponse = await waitForHotelJob(jobId, { config: hotelRateFinderConfig });
-  const job = { ...(jobResponse.body ?? {}), id: jobResponse.body?.id ?? jobId, job_id: jobId };
-  const watch = normalizeHotelRateWatchFromJob(savedSearch.reservation, job, {
+  const { watch } = hotelRateWatchFromJobResponse(savedSearch.reservation, jobId, jobResponse, {
     priceDropThreshold: hotelRateFinderConfig.priceDropThreshold
   });
   const alerts = [
@@ -413,13 +413,39 @@ function requireHermesAuth(request, response) {
   return false;
 }
 
-async function readJson(request) {
+async function requirePlaidWebhookAuth(request, response, rawBody) {
+  if (request.headers.authorization === `Bearer ${hermesApiToken}`) {
+    return true;
+  }
+
+  const verification = await verifyPlaidWebhook(rawBody, request.headers["plaid-verification"]);
+  if (verification.ok) {
+    return true;
+  }
+
+  if (!hermesApiToken && !request.headers["plaid-verification"]) {
+    return true;
+  }
+
+  error(response, 401, "unauthorized", "Missing or invalid Plaid webhook verification.");
+  return false;
+}
+
+async function readRawBody(request) {
   const chunks = [];
   for await (const chunk of request) {
     chunks.push(chunk);
   }
-  const raw = Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
+}
+
+function parseJson(rawBody) {
+  const raw = rawBody.toString("utf8");
   return raw ? JSON.parse(raw) : {};
+}
+
+async function readJson(request) {
+  return parseJson(await readRawBody(request));
 }
 
 async function packageInfo() {
@@ -587,11 +613,11 @@ const server = http.createServer(async (request, response) => {
     }
 
     if (request.method === "POST" && url.pathname === "/api/integrations/plaid/webhook") {
-      if (!requireHermesAuth(request, response)) {
+      const rawBody = await readRawBody(request);
+      if (!(await requirePlaidWebhookAuth(request, response, rawBody))) {
         return;
       }
-      // TODO: verify Plaid webhook JWTs before this endpoint is exposed beyond loopback/tailnet.
-      const payload = await readJson(request);
+      const payload = parseJson(rawBody);
       if (
         payload.webhook_type === "TRANSACTIONS" &&
         payload.webhook_code === "SYNC_UPDATES_AVAILABLE"

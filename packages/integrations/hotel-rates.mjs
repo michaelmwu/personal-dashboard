@@ -231,7 +231,7 @@ export function normalizeHotelReservationPayload(payload) {
     paidRate: numberOrUndefined(
       payload.paidRate ?? payload.paid_rate ?? payload.paidTotal ?? payload.paid_total
     ),
-    paidCurrency: payload.paidCurrency ?? payload.currency ?? "USD",
+    paidCurrency: payload.paidCurrency ?? payload.paid_currency ?? payload.currency ?? "USD",
     roomClass: payload.roomClass ?? payload.room_class,
     cancellationPolicy: payload.cancellationPolicy ?? payload.cancellation_policy,
     cancellationDeadline: payload.cancellationDeadline ?? payload.cancellation_deadline,
@@ -259,6 +259,18 @@ function numberOrUndefined(value) {
   }
   const number = Number(value);
   return Number.isFinite(number) ? number : undefined;
+}
+
+function reservationPaidCurrency(reservation) {
+  return String(
+    reservation.paidCurrency ?? reservation.paid_currency ?? reservation.currency ?? "USD"
+  ).toUpperCase();
+}
+
+function reservationPaidRate(reservation) {
+  return numberOrUndefined(
+    reservation.paidRate ?? reservation.paid_rate ?? reservation.paidTotal ?? reservation.paid_total
+  );
 }
 
 function isNonRefundableText(text) {
@@ -342,7 +354,7 @@ function scoreRateRow(row, reservation) {
   if (!candidate) {
     return undefined;
   }
-  const amount = candidateAmount(candidate, reservation.paidCurrency ?? reservation.currency);
+  const amount = candidateAmount(candidate, reservationPaidCurrency(reservation));
   if (amount === undefined) {
     return undefined;
   }
@@ -405,17 +417,12 @@ function pointsAlternative(hotel) {
 
 export function normalizeHotelRateWatchFromJob(reservation, job, options = {}) {
   const threshold = Number(options.priceDropThreshold ?? hotelRatesConfig().priceDropThreshold);
-  const paidRate = numberOrUndefined(
-    reservation.paidRate ?? reservation.paid_rate ?? reservation.paidTotal
-  );
+  const paidRate = reservationPaidRate(reservation);
   const report = job?.report;
   const hotel = matchingHotel(report, reservation);
   const rate = comparableRate(hotel, reservation);
   const bestRate = rate?.amount;
-  const currency = candidateCurrency(
-    rate?.candidate,
-    reservation.paidCurrency ?? reservation.currency
-  );
+  const currency = candidateCurrency(rate?.candidate, reservationPaidCurrency(reservation));
   const terminalStatus = TERMINAL_JOB_STATUSES.has(job?.status);
   const failed =
     (terminalStatus && job?.status !== "completed") ||
@@ -452,14 +459,31 @@ export function normalizeHotelRateWatchFromJob(reservation, job, options = {}) {
   };
 }
 
+export function hotelRateWatchFromJobResponse(reservation, jobId, jobResponse, options = {}) {
+  const job = { ...(jobResponse.body ?? {}), id: jobResponse.body?.id ?? jobId, job_id: jobId };
+  const watch = normalizeHotelRateWatchFromJob(reservation, job, options);
+  const failedPoll = !jobResponse.ok || jobResponse.timedOut;
+  if (!failedPoll || watch.status === "failed") {
+    return { job, watch };
+  }
+  return {
+    job,
+    watch: {
+      ...watch,
+      status: "failed",
+      error: jobResponse.timedOut
+        ? "Timed out waiting for Hotel Rate Finder job."
+        : `Hotel Rate Finder job poll failed with status ${jobResponse.status}.`
+    }
+  };
+}
+
 export function hotelRateDropAlert(reservation, watch) {
   if (watch.status !== "price-drop") {
     return undefined;
   }
-  const currency = watch.currency ?? reservation.paidCurrency ?? "USD";
-  const paidRate = numberOrUndefined(
-    reservation.paidRate ?? reservation.paid_rate ?? reservation.paidTotal
-  );
+  const currency = watch.currency ?? reservationPaidCurrency(reservation);
+  const paidRate = reservationPaidRate(reservation);
   const delta =
     paidRate !== undefined && watch.bestRate !== undefined ? paidRate - watch.bestRate : undefined;
   const points = watch.pointsAlternative?.points
