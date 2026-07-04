@@ -28,5 +28,9 @@
     "@biomejs/biome": "^2.4.13",
     "@playwright/test": "^1.61.1"
   },
-  "trustedDependencies": []
+  "trustedDependencies": [],
+  "dependencies": {
+    "plaid": "^42.2.0",
+    "yaml": "^2.9.0"
+  }
 }

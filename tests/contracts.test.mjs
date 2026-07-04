@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
+import { createWebServer } from "../apps/web/server.mjs";
 import { dashboardFixture } from "../packages/fixtures/dashboard.mjs";
 import {
   createHermesBridgeRun,
@@ -8,16 +14,87 @@ import {
 } from "../packages/integrations/hermes-bridge.mjs";
 import {
   createHermesAction,
+  hermesActionIdFromIdempotencyKey,
   hermesCapabilities,
   hermesContextFromDashboard,
   normalizeHermesEvent
 } from "../packages/integrations/hermes.mjs";
+import {
+  genericAppItemsFromDashboard,
+  loadPluginRegistry
+} from "../packages/integrations/registry.mjs";
 import { integrationCatalog, normalizeSourceEvent } from "../packages/integrations/sources.mjs";
 import {
+  createHotelSavedSearch,
+  hotelRateDropAlert,
+  hotelRateWatchFromJobResponse,
+  hotelSearchRequestFromReservation,
+  normalizeHotelRateWatchFromJob,
+  normalizeHotelReservationPayload,
+  runHotelSavedSearch,
+  waitForHotelJob
+} from "../packages/integrations/hotel-rates.mjs";
+import {
+  createPlaidLinkToken,
+  exchangePlaidPublicToken,
+  normalizePlaidAccount,
+  normalizePlaidTransaction,
+  plaidConfig,
+  syncPlaidTransactions,
+  verifyPlaidWebhook
+} from "../packages/integrations/plaid.mjs";
+import {
+  applyHotelRateWatch,
+  applyPlaidSync,
+  listAppItems,
+  listPlaidItems,
   loadDashboard,
+  upsertPlaidItem,
+  upsertHotelReservation,
+  upsertAppItem,
   upsertHermesAction,
   upsertNormalizedEvent
 } from "../packages/storage/dashboard-store.mjs";
+import { runIngestion } from "../scripts/integration-worker.mjs";
+
+function listen(server) {
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve(server.address().port));
+  });
+}
+
+function closeServer(server) {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function base64UrlJson(payload) {
+  return Buffer.from(JSON.stringify(payload)).toString("base64url");
+}
+
+function signedPlaidWebhookJwt({ body, keyId = "plaid-key-001", now = Date.now() } = {}) {
+  const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  const header = base64UrlJson({ alg: "ES256", kid: keyId, typ: "JWT" });
+  const payload = base64UrlJson({
+    iat: Math.floor(now / 1000),
+    request_body_sha256: createHash("sha256").update(body).digest("hex")
+  });
+  const signingInput = `${header}.${payload}`;
+  const signature = sign("sha256", Buffer.from(signingInput), {
+    key: privateKey,
+    dsaEncoding: "ieee-p1363"
+  }).toString("base64url");
+  return {
+    jwt: `${signingInput}.${signature}`,
+    jwk: {
+      ...publicKey.export({ format: "jwk" }),
+      alg: "ES256",
+      kid: keyId,
+      use: "sig"
+    }
+  };
+}
 
 describe("contracts", () => {
   test("dashboard fixture exposes the core integration surfaces", () => {
@@ -62,9 +139,88 @@ describe("contracts", () => {
     const ids = integrationCatalog().map((integration) => integration.id);
 
     expect(ids).toContain("hotel_rate_finder");
-    expect(ids).toContain("flights_extension");
+    expect(ids).toContain("flight_searcher");
     expect(ids).toContain("asia_travel_deals");
     expect(ids).toContain("gmail_intake");
+  });
+
+  test("plugin registry loads enabled manifests and panel positions from config", async () => {
+    const registry = await loadPluginRegistry(new URL("..", import.meta.url).pathname);
+
+    expect(registry.apps.map((app) => app.id)).toEqual(
+      expect.arrayContaining(["asia-travel-deals", "hotel-rate-finder", "plaid"])
+    );
+    expect(registry.panels).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "hotel-watches",
+          appId: "hotel-rate-finder",
+          type: "watch-table",
+          defaultPosition: "travel",
+          order: 20
+        })
+      ])
+    );
+    expect(registry.capabilities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "hotel_rate_search",
+          kind: "deterministic",
+          endpoint: "/api/integrations/hotel-rate-finder/sync"
+        }),
+        expect.objectContaining({
+          id: "reservation_parse",
+          kind: "agentic",
+          target: "gmail-intake"
+        })
+      ])
+    );
+  });
+
+  test("web server returns relative config and proxies API requests", async () => {
+    const apiRequests = [];
+    const apiServer = http.createServer((request, response) => {
+      apiRequests.push({
+        method: request.method,
+        url: request.url,
+        authorization: request.headers.authorization
+      });
+      response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ ok: true, path: request.url }));
+    });
+    const apiPort = await listen(apiServer);
+    const rootDir = await mkdtemp(join(tmpdir(), "personal-dashboard-web-"));
+    await writeFile(join(rootDir, "index.html"), "<!doctype html><html></html>");
+    const webServer = createWebServer({
+      rootDir,
+      proxyBaseUrl: `http://127.0.0.1:${apiPort}`
+    });
+    const webPort = await listen(webServer);
+
+    try {
+      const config = await fetch(`http://127.0.0.1:${webPort}/config.json`);
+      expect(config.ok).toBe(true);
+      expect(await config.json()).toEqual({ apiBaseUrl: "" });
+
+      const proxied = await fetch(`http://127.0.0.1:${webPort}/api/dashboard?source=test`, {
+        headers: {
+          Authorization: "Bearer dashboard-token"
+        }
+      });
+      expect(proxied.ok).toBe(true);
+      expect(await proxied.json()).toEqual({ ok: true, path: "/api/dashboard?source=test" });
+      expect(apiRequests).toEqual([
+        {
+          method: "GET",
+          url: "/api/dashboard?source=test",
+          authorization: "Bearer dashboard-token"
+        }
+      ]);
+    } finally {
+      await closeServer(webServer);
+      await closeServer(apiServer);
+      await rm(rootDir, { recursive: true, force: true });
+    }
   });
 
   test("Hermes can pull compact dashboard context and create action envelopes", () => {
@@ -86,7 +242,7 @@ describe("contracts", () => {
     expect(action).toMatchObject({
       version: "hermes-action.v1",
       capabilityId: "flight_search",
-      target: "flights-extension",
+      target: "flight-searcher",
       status: "queued",
       origin: "hermes",
       idempotencyKey: action.id
@@ -99,7 +255,17 @@ describe("contracts", () => {
       })
     ).toMatchObject({
       capabilityId: "flight_search",
-      target: "flights-extension"
+      target: "flight-searcher"
+    });
+
+    expect(
+      createHermesAction({
+        capabilityId: "flight_search",
+        idempotencyKey: "flight-search-2026-09"
+      })
+    ).toMatchObject({
+      id: hermesActionIdFromIdempotencyKey("flight-search-2026-09"),
+      idempotencyKey: "flight-search-2026-09"
     });
   });
 
@@ -178,6 +344,713 @@ describe("contracts", () => {
     });
   });
 
+  test("Plaid Link and token exchange call the documented REST endpoints", async () => {
+    const calls = [];
+    const client = {
+      async linkTokenCreate(body) {
+        calls.push({ method: "linkTokenCreate", body });
+        return {
+          data: {
+            link_token: "link-sandbox-123",
+            expiration: "2026-07-03T00:00:00Z",
+            request_id: "req_link"
+          }
+        };
+      },
+      async itemPublicTokenExchange(body) {
+        calls.push({ method: "itemPublicTokenExchange", body });
+        return {
+          data: {
+            access_token: "access-sandbox-123",
+            item_id: "item_123",
+            request_id: "req_exchange"
+          }
+        };
+      }
+    };
+    const config = {
+      baseUrl: "https://sandbox.plaid.com",
+      clientId: "client-id",
+      secret: "secret",
+      clientName: "Personal Dashboard",
+      products: ["transactions"],
+      countryCodes: ["US"],
+      language: "en",
+      webhook: "https://dashboard.example.test/api/integrations/plaid/webhook"
+    };
+
+    const linkToken = await createPlaidLinkToken({ userId: "michael" }, { client, config });
+    const exchange = await exchangePlaidPublicToken("public-sandbox-123", { client, config });
+
+    expect(linkToken).toMatchObject({
+      created: true,
+      linkToken: "link-sandbox-123"
+    });
+    expect(exchange).toMatchObject({
+      exchanged: true,
+      accessToken: "access-sandbox-123",
+      itemId: "item_123"
+    });
+    expect(calls.map((call) => call.method)).toEqual([
+      "linkTokenCreate",
+      "itemPublicTokenExchange"
+    ]);
+    expect(calls[0].body).toMatchObject({
+      products: ["transactions"],
+      transactions: {
+        days_requested: 730
+      },
+      user: {
+        client_user_id: "michael"
+      }
+    });
+    expect(calls[1].body).toEqual({
+      public_token: "public-sandbox-123"
+    });
+  });
+
+  test("Plaid config treats blank base URL as unset and supports development", () => {
+    expect(
+      plaidConfig({
+        PLAID_CLIENT_ID: "client",
+        PLAID_SECRET: "secret",
+        PLAID_ENV: "sandbox",
+        PLAID_BASE_URL: ""
+      }).baseUrl
+    ).toBe("https://sandbox.plaid.com");
+
+    expect(
+      plaidConfig({
+        PLAID_CLIENT_ID: "client",
+        PLAID_SECRET: "secret",
+        PLAID_ENV: "development"
+      }).baseUrl
+    ).toBe("https://development.plaid.com");
+  });
+
+  test("Plaid webhook verification validates JWT signature and raw body hash", async () => {
+    const body = Buffer.from(
+      JSON.stringify({
+        webhook_type: "TRANSACTIONS",
+        webhook_code: "SYNC_UPDATES_AVAILABLE",
+        item_id: "item_123"
+      })
+    );
+    const now = Date.UTC(2026, 6, 4, 12, 0, 0);
+    const { jwt, jwk } = signedPlaidWebhookJwt({ body, now });
+    const client = {
+      async webhookVerificationKeyGet(request) {
+        expect(request).toEqual({ key_id: "plaid-key-001" });
+        return { data: { key: jwk } };
+      }
+    };
+    const config = {
+      clientId: "client",
+      secret: "secret",
+      baseUrl: "https://sandbox.plaid.com"
+    };
+
+    await expect(verifyPlaidWebhook(body, jwt, { client, config, now })).resolves.toMatchObject({
+      ok: true,
+      keyId: "plaid-key-001"
+    });
+    await expect(
+      verifyPlaidWebhook(Buffer.from("{}"), jwt, { client, config, now })
+    ).resolves.toMatchObject({
+      ok: false,
+      reason: "plaid_body_hash_mismatch"
+    });
+  });
+
+  test("Plaid transaction sync paginates with cursor and normalizes account data", async () => {
+    const cursors = [];
+    const client = {
+      async transactionsSync(body) {
+        cursors.push(body.cursor);
+        if (!body.cursor) {
+          return {
+            data: {
+              added: [
+                {
+                  transaction_id: "plaid_txn_001",
+                  account_id: "plaid_account_001",
+                  merchant_name: "Hyatt",
+                  amount: 455.12,
+                  pending: true,
+                  date: "2026-07-01",
+                  personal_finance_category: {
+                    primary: "TRAVEL"
+                  }
+                }
+              ],
+              modified: [],
+              removed: [],
+              accounts: [
+                {
+                  account_id: "plaid_account_001",
+                  name: "Amex Platinum",
+                  subtype: "credit card",
+                  mask: "1001",
+                  balances: {
+                    current: 455.12
+                  }
+                }
+              ],
+              next_cursor: "cursor_1",
+              has_more: true,
+              request_id: "req_sync_1"
+            }
+          };
+        }
+        return {
+          data: {
+            added: [],
+            modified: [
+              {
+                transaction_id: "plaid_txn_001",
+                account_id: "plaid_account_001",
+                merchant_name: "Hyatt Regency",
+                amount: 455.12,
+                pending: false,
+                pending_transaction_id: "pending_001",
+                date: "2026-07-02"
+              }
+            ],
+            removed: [{ transaction_id: "pending_001", account_id: "plaid_account_001" }],
+            accounts: [],
+            next_cursor: "cursor_2",
+            has_more: false,
+            request_id: "req_sync_2"
+          }
+        };
+      }
+    };
+
+    const sync = await syncPlaidTransactions(
+      { accessToken: "access-sandbox-123" },
+      {
+        client,
+        config: {
+          baseUrl: "https://sandbox.plaid.com",
+          clientId: "client-id",
+          secret: "secret",
+          daysRequested: 730
+        }
+      }
+    );
+
+    expect(sync).toMatchObject({
+      synced: true,
+      cursor: "cursor_2"
+    });
+    expect(cursors).toEqual([undefined, "cursor_1"]);
+    expect(normalizePlaidTransaction(sync.added[0])).toMatchObject({
+      id: "plaid_txn_001",
+      merchant: "Hyatt",
+      category: "TRAVEL",
+      status: "pending",
+      source: "plaid"
+    });
+    expect(normalizePlaidAccount(sync.accounts[0])).toMatchObject({
+      id: "plaid_account_001",
+      name: "Amex Platinum",
+      kind: "credit card",
+      last4: "1001",
+      balance: 455.12
+    });
+  });
+
+  test("Plaid transaction sync drops partial pages after a failed pagination response", async () => {
+    const client = {
+      async transactionsSync(body) {
+        if (body.cursor === "cursor_1") {
+          return {
+            data: {
+              added: [
+                {
+                  transaction_id: "plaid_partial_txn_001",
+                  account_id: "plaid_account_001",
+                  amount: 10,
+                  date: "2026-07-01"
+                }
+              ],
+              modified: [],
+              removed: [],
+              accounts: [],
+              next_cursor: "cursor_2",
+              has_more: true,
+              request_id: "request_page_1"
+            }
+          };
+        }
+        throw {
+          response: {
+            status: 400,
+            data: {
+              error_code: "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION"
+            }
+          }
+        };
+      }
+    };
+
+    const sync = await syncPlaidTransactions(
+      {
+        accessToken: "access_123",
+        cursor: "cursor_1"
+      },
+      {
+        client,
+        config: {
+          clientId: "client",
+          secret: "secret",
+          baseUrl: "https://sandbox.plaid.com",
+          daysRequested: 730
+        }
+      }
+    );
+
+    expect(sync).toMatchObject({
+      synced: false,
+      statusCode: 400,
+      cursor: "cursor_1",
+      added: [],
+      modified: [],
+      removed: [],
+      accounts: [],
+      response: {
+        error_code: "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION"
+      }
+    });
+    expect(sync.requestIds).toEqual(["request_page_1"]);
+  });
+
+  test("Hotel Rate Finder client creates saved searches, runs jobs, and polls status", async () => {
+    const calls = [];
+    const fetch = async (url, options) => {
+      calls.push({ url, options });
+      if (url.endsWith("/api/saved-searches")) {
+        return Response.json(
+          {
+            id: "saved_hotel_001",
+            name: "Park Hyatt Tokyo",
+            request: JSON.parse(options.body).request
+          },
+          { status: 200 }
+        );
+      }
+      if (url.endsWith("/api/saved-searches/saved_hotel_001/run")) {
+        return Response.json({ job_id: "job_hotel_001", status: "queued" }, { status: 200 });
+      }
+      return Response.json(
+        {
+          id: "job_hotel_001",
+          status: "completed",
+          report: {
+            hotels: []
+          }
+        },
+        { status: 200 }
+      );
+    };
+    const config = {
+      baseUrl: "http://127.0.0.1:8720",
+      pollAttempts: 1,
+      pollIntervalMs: 0
+    };
+
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_hotel_001",
+      property: "Park Hyatt Tokyo",
+      chain: "hyatt",
+      propertyId: "tyoph",
+      checkIn: "2026-09-12",
+      checkOut: "2026-09-15",
+      paidRate: 455,
+      paidCurrency: "USD"
+    });
+    const request = hotelSearchRequestFromReservation(reservation);
+    const saved = await createHotelSavedSearch(
+      {
+        name: "Park Hyatt Tokyo",
+        request
+      },
+      { fetch, config }
+    );
+    const run = await runHotelSavedSearch(
+      "saved_hotel_001",
+      { forceRefresh: true },
+      { fetch, config }
+    );
+    const job = await waitForHotelJob("job_hotel_001", { fetch, config, sleep: async () => {} });
+
+    expect(saved).toMatchObject({
+      ok: true,
+      body: {
+        id: "saved_hotel_001"
+      }
+    });
+    expect(request).toMatchObject({
+      providers: ["hyatt"],
+      mode: "hotel",
+      hotel_id: "tyoph",
+      checkin: "2026-09-12",
+      checkout: "2026-09-15",
+      display_currency: "USD"
+    });
+    expect(run.body).toMatchObject({ job_id: "job_hotel_001" });
+    expect(job.body).toMatchObject({ status: "completed" });
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://127.0.0.1:8720/api/saved-searches",
+      "http://127.0.0.1:8720/api/saved-searches/saved_hotel_001/run",
+      "http://127.0.0.1:8720/api/jobs/job_hotel_001"
+    ]);
+  });
+
+  test("Hotel rate jobs normalize cheapest cancellable drops with cancellation deadline", () => {
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_hotel_002",
+      property: "InterContinental Osaka",
+      chain: "ihg",
+      propertyId: "OSAHA",
+      checkIn: "2026-10-01",
+      checkOut: "2026-10-04",
+      paidRate: 520,
+      paidCurrency: "USD",
+      roomClass: "classic",
+      cancellationDeadline: "2026-09-25T18:00:00+09:00"
+    });
+    const watch = normalizeHotelRateWatchFromJob(
+      {
+        ...reservation,
+        hotelRateFinder: {
+          savedSearchId: "saved_hotel_002"
+        }
+      },
+      {
+        id: "job_hotel_002",
+        status: "completed",
+        report: {
+          hotels: [
+            {
+              hotel_id: "OSAHA",
+              hotel_name: "InterContinental Osaka",
+              rates: [
+                {
+                  comparison: "cheapest_non_corp",
+                  candidate: {
+                    amount: 430,
+                    currency: "USD",
+                    room_name: "Classic room",
+                    cancellation_policy: "Non-refundable. Full prepayment required."
+                  }
+                },
+                {
+                  comparison: "cheapest_flexible",
+                  candidate: {
+                    amount: 455,
+                    currency: "USD",
+                    room_name: "Classic room",
+                    cancellation_policy: "Fully refundable before Sep 25, 2026",
+                    points_rate: {
+                      points: 35000
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      { priceDropThreshold: 25 }
+    );
+    const alert = hotelRateDropAlert(reservation, watch);
+
+    expect(watch).toMatchObject({
+      id: "hotel_reservation_hotel_002",
+      status: "price-drop",
+      bestRate: 455,
+      targetRate: 520,
+      cancellationDeadline: "2026-09-25T18:00:00+09:00",
+      savedSearchId: "saved_hotel_002"
+    });
+    expect(watch.cancellationPolicy).toBe("Fully refundable before Sep 25, 2026");
+    expect(alert).toMatchObject({
+      severity: "medium",
+      source: "hotel-rate-finder"
+    });
+    expect(alert.detail).toContain("Cancellation deadline: 2026-09-25T18:00:00+09:00");
+  });
+
+  test("Hotel rate comparison skips candidates without the paid currency", () => {
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_hotel_currency_001",
+      property: "Park Hyatt Kyoto",
+      chain: "hyatt",
+      propertyId: "kyoto",
+      checkIn: "2026-10-01",
+      checkOut: "2026-10-04",
+      paidRate: 520,
+      paidCurrency: "USD"
+    });
+    const watch = normalizeHotelRateWatchFromJob(reservation, {
+      id: "job_hotel_currency_001",
+      status: "completed",
+      report: {
+        hotels: [
+          {
+            hotel_id: "kyoto",
+            hotel_name: "Park Hyatt Kyoto",
+            rates: [
+              {
+                comparison: "cheapest_flexible",
+                candidate: {
+                  amount: 455,
+                  currency: "JPY",
+                  cancellation_policy: "Fully refundable before Sep 25, 2026"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(watch).toMatchObject({
+      status: "completed",
+      bestRate: undefined,
+      currency: "USD"
+    });
+    expect(hotelRateDropAlert(reservation, watch)).toBeUndefined();
+  });
+
+  test("Hotel rate comparison uses paid-currency FX values when present", () => {
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_hotel_fx_001",
+      property: "Park Hyatt Kyoto",
+      chain: "hyatt",
+      propertyId: "kyoto",
+      checkIn: "2026-10-01",
+      checkOut: "2026-10-04",
+      paidRate: 520,
+      paidCurrency: "USD"
+    });
+    const watch = normalizeHotelRateWatchFromJob(reservation, {
+      id: "job_hotel_fx_001",
+      status: "completed",
+      report: {
+        hotels: [
+          {
+            hotel_id: "kyoto",
+            hotel_name: "Park Hyatt Kyoto",
+            rates: [
+              {
+                comparison: "cheapest_flexible",
+                candidate: {
+                  amount: 70000,
+                  currency: "JPY",
+                  cancellation_policy: "Fully refundable before Sep 25, 2026",
+                  fx: {
+                    USD: {
+                      total_after_tax: 455
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(watch).toMatchObject({
+      status: "price-drop",
+      bestRate: 455,
+      currency: "USD"
+    });
+  });
+
+  test("Hotel rate scoring accepts snake_case reservation money fields", () => {
+    const reservation = {
+      id: "reservation_hotel_snake_001",
+      type: "hotel",
+      property: "Park Hyatt Kyoto",
+      chain: "hyatt",
+      property_id: "kyoto",
+      check_in: "2026-10-01",
+      check_out: "2026-10-04",
+      paid_total: 520,
+      paid_currency: "USD"
+    };
+    const watch = normalizeHotelRateWatchFromJob(reservation, {
+      id: "job_hotel_snake_001",
+      status: "completed",
+      report: {
+        hotels: [
+          {
+            hotel_id: "kyoto",
+            hotel_name: "Park Hyatt Kyoto",
+            rates: [
+              {
+                comparison: "cheapest_flexible",
+                candidate: {
+                  amount: 70000,
+                  currency: "JPY",
+                  cancellation_policy: "Fully refundable before Sep 25, 2026",
+                  fx: {
+                    USD: {
+                      total_after_tax: 455
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(watch).toMatchObject({
+      status: "price-drop",
+      bestRate: 455,
+      targetRate: 520,
+      currency: "USD"
+    });
+  });
+
+  test("Hotel matching accepts snake_case property identifiers", () => {
+    const reservation = {
+      id: "reservation_hotel_snake_property_001",
+      type: "hotel",
+      property: "Park Hyatt Kyoto",
+      chain: "hyatt",
+      property_id: "kyoto",
+      check_in: "2026-10-01",
+      check_out: "2026-10-04",
+      paid_total: 520,
+      paid_currency: "USD"
+    };
+    const watch = normalizeHotelRateWatchFromJob(reservation, {
+      id: "job_hotel_snake_property_001",
+      status: "completed",
+      report: {
+        hotels: [
+          {
+            hotel_id: "wrong",
+            hotel_name: "Wrong Hotel",
+            rates: [
+              {
+                comparison: "cheapest_flexible",
+                candidate: {
+                  amount: 100,
+                  currency: "USD",
+                  cancellation_policy: "Fully refundable before Sep 25, 2026"
+                }
+              }
+            ]
+          },
+          {
+            hotel_id: "kyoto",
+            hotel_name: "Park Hyatt Kyoto",
+            rates: [
+              {
+                comparison: "cheapest_flexible",
+                candidate: {
+                  amount: 455,
+                  currency: "USD",
+                  cancellation_policy: "Fully refundable before Sep 25, 2026"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(watch).toMatchObject({
+      property: "Park Hyatt Kyoto",
+      status: "price-drop",
+      bestRate: 455
+    });
+  });
+
+  test("Hotel reservation normalization preserves provider-only chain values", () => {
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_provider_001",
+      provider: "hyatt",
+      property: "Park Hyatt Tokyo",
+      propertyId: "tyoph",
+      checkIn: "2026-10-01",
+      checkOut: "2026-10-04",
+      paidRate: 520,
+      paidCurrency: "USD"
+    });
+
+    expect(reservation).toMatchObject({
+      chain: "hyatt",
+      provider: "hyatt"
+    });
+    expect(hotelSearchRequestFromReservation(reservation)).toMatchObject({
+      providers: ["hyatt"]
+    });
+  });
+
+  test("Canceled hotel jobs normalize as failed watches", () => {
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_hotel_canceled_001",
+      property: "Park Hyatt Tokyo",
+      chain: "hyatt",
+      propertyId: "tyoph",
+      checkIn: "2026-10-01",
+      checkOut: "2026-10-04",
+      paidRate: 520,
+      paidCurrency: "USD"
+    });
+    const watch = normalizeHotelRateWatchFromJob(reservation, {
+      id: "job_hotel_canceled_001",
+      status: "canceled",
+      error: "job canceled",
+      report: {
+        hotels: []
+      }
+    });
+
+    expect(watch).toMatchObject({
+      status: "failed",
+      error: "job canceled"
+    });
+  });
+
+  test("Failed hotel job polls normalize as failed watches", () => {
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_hotel_poll_failed_001",
+      property: "Park Hyatt Tokyo",
+      chain: "hyatt",
+      propertyId: "tyoph",
+      checkIn: "2026-10-01",
+      checkOut: "2026-10-04",
+      paidRate: 520,
+      paidCurrency: "USD"
+    });
+    const { watch } = hotelRateWatchFromJobResponse(reservation, "job_hotel_poll_failed_001", {
+      ok: false,
+      status: 500,
+      timedOut: false,
+      body: {
+        status: "running",
+        report: {
+          hotels: []
+        }
+      }
+    });
+
+    expect(watch).toMatchObject({
+      id: "hotel_reservation_hotel_poll_failed_001",
+      status: "failed",
+      error: "Hotel Rate Finder job poll failed with status 500."
+    });
+  });
+
   test("source events normalize into domain-specific placeholders", () => {
     expect(
       normalizeSourceEvent("hotel-rate-finder", {
@@ -190,6 +1063,28 @@ describe("contracts", () => {
         property: "Park Hyatt Tokyo",
         bestRate: 455,
         source: "hotel-rate-finder"
+      }
+    });
+
+    expect(
+      normalizeSourceEvent("hotel-rate-finder", {
+        id: "reservation_hotel_003",
+        type: "hotel",
+        property: "Andaz Tokyo",
+        chain: "hyatt",
+        propertyId: "tyoaz",
+        checkIn: "2026-09-12",
+        checkOut: "2026-09-15",
+        paidRate: "488",
+        cancellationDeadline: "2026-09-10T18:00:00+09:00"
+      })
+    ).toMatchObject({
+      kind: "reservation",
+      value: {
+        id: "reservation_hotel_003",
+        property: "Andaz Tokyo",
+        paidRate: 488,
+        status: "watching"
       }
     });
 
@@ -221,7 +1116,7 @@ describe("contracts", () => {
     });
 
     expect(
-      normalizeSourceEvent("flights-extension", {
+      normalizeSourceEvent("flight-searcher", {
         origin: "TYO",
         destination: "SIN",
         providers: "google-flights"
@@ -338,5 +1233,213 @@ describe("contracts", () => {
         })
       ])
     );
+  });
+
+  test("dashboard store persists Plaid item cursors and synced transactions", async () => {
+    const filePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-plaid-store-${Date.now()}.json`;
+
+    await upsertPlaidItem(filePath, {
+      id: "item_123",
+      accessToken: "access-sandbox-123",
+      cursor: "cursor_0"
+    });
+    await applyPlaidSync(filePath, "item_123", {
+      synced: true,
+      cursor: "cursor_1",
+      accounts: [
+        {
+          id: "plaid_account_001",
+          name: "Amex Platinum",
+          kind: "credit card",
+          last4: "1001",
+          syncStatus: "synced",
+          source: "plaid"
+        }
+      ],
+      added: [
+        {
+          id: "plaid_txn_001",
+          accountId: "plaid_account_001",
+          merchant: "Hyatt",
+          amount: 455.12,
+          category: "TRAVEL",
+          card: "Amex Platinum",
+          status: "posted",
+          source: "plaid"
+        }
+      ],
+      modified: [],
+      removed: []
+    });
+    await applyPlaidSync(filePath, "item_123", {
+      synced: true,
+      cursor: "cursor_2",
+      accounts: [],
+      added: [],
+      modified: [],
+      removed: [{ id: "plaid_txn_001" }]
+    });
+
+    const dashboard = await loadDashboard(dashboardFixture(), filePath);
+    const items = await listPlaidItems(filePath);
+    expect(items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "item_123",
+          cursor: "cursor_2",
+          syncStatus: "synced"
+        })
+      ])
+    );
+    const publicPlaidItem = dashboard.finance.plaidItems.find((item) => item.id === "item_123");
+    expect(publicPlaidItem).toMatchObject({
+      id: "item_123",
+      syncStatus: "synced"
+    });
+    expect(publicPlaidItem.accessToken).toBeUndefined();
+    expect(publicPlaidItem.cursor).toBeUndefined();
+    expect(dashboard.finance.sync).toMatchObject({
+      state: "synced",
+      provider: "plaid",
+      plaid: {
+        status: "synced",
+        itemId: "item_123"
+      }
+    });
+    expect(dashboard.finance.accounts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "plaid_account_001",
+          source: "plaid"
+        })
+      ])
+    );
+    expect(dashboard.transactions).toEqual(
+      expect.not.arrayContaining([
+        expect.objectContaining({
+          id: "plaid_txn_001"
+        })
+      ])
+    );
+  });
+
+  test("dashboard store persists hotel reservations, watches, and rate alerts", async () => {
+    const filePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-hotel-store-${Date.now()}.json`;
+    const reservation = normalizeHotelReservationPayload({
+      id: "reservation_hotel_store_001",
+      property: "Park Hyatt Kyoto",
+      chain: "hyatt",
+      propertyId: "kyoto",
+      checkIn: "2026-08-20",
+      checkOut: "2026-08-23",
+      paidRate: 700,
+      paidCurrency: "USD"
+    });
+    const watch = {
+      id: "hotel_reservation_hotel_store_001",
+      reservationId: reservation.id,
+      property: "Park Hyatt Kyoto",
+      location: "Kyoto",
+      checkIn: "2026-08-20",
+      checkOut: "2026-08-23",
+      targetRate: 700,
+      bestRate: 640,
+      currency: "USD",
+      source: "hotel-rate-finder",
+      status: "price-drop",
+      jobId: "job_hotel_store_001",
+      savedSearchId: "saved_hotel_store_001"
+    };
+
+    await upsertHotelReservation(filePath, reservation);
+    await applyHotelRateWatch(filePath, reservation, watch, [
+      {
+        id: "alert_hotel_store_001",
+        title: "Park Hyatt Kyoto cancellable rate dropped",
+        detail: "Current cancellable rate is USD 640.",
+        severity: "medium",
+        source: "hotel-rate-finder"
+      }
+    ]);
+
+    const dashboard = await loadDashboard(dashboardFixture(), filePath);
+    expect(dashboard.travel.reservations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "reservation_hotel_store_001",
+          hotelRateFinder: expect.objectContaining({
+            savedSearchId: "saved_hotel_store_001",
+            lastJobId: "job_hotel_store_001"
+          })
+        })
+      ])
+    );
+    expect(dashboard.travel.hotelWatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "hotel_reservation_hotel_store_001",
+          status: "price-drop",
+          bestRate: 640
+        })
+      ])
+    );
+    expect(dashboard.alerts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "alert_hotel_store_001",
+          source: "hotel-rate-finder"
+        })
+      ])
+    );
+  });
+
+  test("generic app items persist opaque plugin payloads alongside core projections", async () => {
+    const filePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-app-items-${Date.now()}.json`;
+
+    await upsertAppItem(filePath, {
+      app: "hotel-rate-finder",
+      type: "status",
+      externalId: "job-health",
+      status: "warning",
+      title: "Hotel Rate Finder stale",
+      detail: "Last scrape failed.",
+      payload: {
+        failedJobs: 1
+      }
+    });
+
+    const stored = await listAppItems(filePath, { app: "hotel-rate-finder", type: "status" });
+    const projected = genericAppItemsFromDashboard(dashboardFixture(), "asia-travel-deals");
+
+    expect(stored).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          app: "hotel-rate-finder",
+          type: "status",
+          status: "warning"
+        })
+      ])
+    );
+    expect(projected).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          app: "asia-travel-deals",
+          type: "deal",
+          title: "Taipei to Bangkok business class fare window"
+        })
+      ])
+    );
+  });
+
+  test("integration worker records per-source errors without throwing", async () => {
+    const result = await runIngestion("asia-travel-deals", async () => {
+      throw new Error("upstream 500");
+    });
+
+    expect(result).toEqual({
+      source: "asia-travel-deals",
+      error: true,
+      message: "upstream 500"
+    });
   });
 });

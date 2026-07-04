@@ -16,6 +16,7 @@ The first version is runnable with local fixtures. It models the dashboard you d
 - `packages/integrations`: Hermes, OpenClaw, travel, finance, and intake adapter boundaries.
 - `packages/fixtures`: realistic development data.
 - `scripts/`: Conductor-aware worktree ports, dev launch, archive, stop, and smoke-test scripts.
+- `dashboard.config.yaml`: enabled app registry and panel ordering.
 
 ## Quick Start
 
@@ -48,14 +49,29 @@ bun run check
 The dashboard now has placeholder contracts for the next personal surfaces:
 
 - Hotel rate watches from `~/dev/hotel_rate_finder`.
-- Flight searches from `~/dev/flights-extension` for Google Flights and Skyscanner.
+- Flight watches from a future `~/dev/flight-searcher` service that owns
+  Playwright/cloakbrowser search execution.
 - Asia deal candidates from `~/dev/asiatraveldeals`.
-- Plaid account/transaction sync.
+- Plaid account/transaction sync through the official Plaid Node SDK.
 - Gmail intake for reservations, statements, and important email.
 
 These are fixture-backed today. Real provider code should land in
 `packages/integrations/` first, then flow through `/api/dashboard` without
 provider-specific parsing in the web app.
+
+Plugin-facing endpoints:
+
+- `GET /api/apps`: enabled app manifests and configured panels from
+  `dashboard.config.yaml`.
+- `GET /api/apps/:appId/items?type=...`: generic app-specific items projected
+  from core dashboard state plus opaque app events.
+- `POST /api/apps/:appId/events`: generic event envelope for app-specific
+  payloads that do not need a blessed core dashboard type.
+
+Apps should declare `dashboard-manifest.json` files with panels, event types,
+and Hermes capabilities. The dashboard keeps a small blessed set of core types
+for cross-app joins, while app-specific details ride as opaque item payloads and
+can deep-link back to the owning app.
 
 Hermes-facing endpoints:
 
@@ -69,3 +85,34 @@ Hermes-facing endpoints:
 Set `PERSONAL_DASHBOARD_API_TOKEN` to require `Authorization: Bearer ...` on
 the Hermes endpoints. The Bridge password stays server-side in the API process;
 it must never be sent to the web client.
+
+Plaid-facing endpoints:
+
+- `POST /api/integrations/plaid/link-token`: create a Plaid Link token for the
+  browser Link flow.
+- `POST /api/integrations/plaid/exchange-public-token`: exchange Link's
+  `public_token` for an access token and store it in the ignored local
+  dashboard store.
+- `POST /api/integrations/plaid/sync`: run deterministic `/transactions/sync`
+  for linked Items and upsert accounts/transactions into the dashboard.
+- `POST /api/integrations/plaid/webhook`: accept Plaid transaction webhooks and
+  trigger sync on `SYNC_UPDATES_AVAILABLE`.
+
+Set `PLAID_CLIENT_ID`, `PLAID_SECRET`, and `PLAID_ENV`. The access token store
+is local ignored data for now; move it behind encrypted storage before using
+this outside a personal trusted host.
+
+Hotel Rate Finder endpoints:
+
+- `POST /api/travel/reservations`: upsert a manual hotel reservation with
+  confirmation number, paid rate/currency, room class, cancellation policy, and
+  Hyatt/IHG property metadata.
+- `POST /api/integrations/hotel-rate-finder/sync`: ensure each active
+  refundable Hyatt/IHG hotel reservation has a saved search in
+  `hotel_rate_finder`, run it through the service's agent API, poll the job,
+  and snapshot the cheapest cancellable comparable rate into travel watches.
+
+Set `HOTEL_RATE_FINDER_API_BASE_URL` to the local or tailnet FastAPI service.
+The dashboard never imports provider internals or runs browser scrapes; failed
+or stale hotel jobs become dashboard alerts so a broken scraper does not look
+like "no price drop."

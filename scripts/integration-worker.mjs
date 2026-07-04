@@ -53,6 +53,22 @@ async function postDashboardEvent(source, payload) {
   return response.json();
 }
 
+async function postDashboardAction(path, payload = {}) {
+  const baseUrl = process.env.PERSONAL_DASHBOARD_API_BASE_URL ?? "http://127.0.0.1:8810";
+  const response = await fetch(`${baseUrl.replace(/\/$/, "")}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(process.env.PERSONAL_DASHBOARD_API_TOKEN)
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    throw new Error(`Dashboard POST ${path} failed with HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
 async function readJsonFeed(filePath) {
   const payload = JSON.parse(await readFile(filePath, "utf8"));
   return Array.isArray(payload) ? payload : [payload];
@@ -71,6 +87,18 @@ async function ingestJsonFeed({ source, envName }) {
     upserts += 1;
   }
   return { source, fetched: items.length, upserts };
+}
+
+export async function runIngestion(source, task) {
+  try {
+    return { source, ...(await task()) };
+  } catch (error) {
+    return {
+      source,
+      error: true,
+      message: error instanceof Error ? error.message : String(error)
+    };
+  }
 }
 
 export async function pollAsiaTravelDeals() {
@@ -93,15 +121,27 @@ export async function pollAsiaTravelDeals() {
 export async function runConfiguredIngestions() {
   const results = [];
   if (process.env.ASIA_TRAVEL_DEALS_API_BASE_URL) {
-    results.push({ source: "asia-travel-deals", ...(await pollAsiaTravelDeals()) });
+    results.push(await runIngestion("asia-travel-deals", pollAsiaTravelDeals));
   }
   for (const feed of [
     { source: "hotel-rate-finder", envName: "HOTEL_RATE_FINDER_EVENTS_FILE" },
-    { source: "flights-extension", envName: "FLIGHTS_EXTENSION_EVENTS_FILE" },
+    { source: "flight-searcher", envName: "FLIGHT_SEARCHER_EVENTS_FILE" },
     { source: "plaid", envName: "PLAID_EVENTS_FILE" },
     { source: "gmail-intake", envName: "GMAIL_INTAKE_EVENTS_FILE" }
   ]) {
-    results.push(await ingestJsonFeed(feed));
+    results.push(await runIngestion(feed.source, () => ingestJsonFeed(feed)));
+  }
+  if (process.env.PLAID_SYNC_ENABLED === "true") {
+    results.push(
+      await runIngestion("plaid", () => postDashboardAction("/api/integrations/plaid/sync"))
+    );
+  }
+  if (process.env.HOTEL_RATE_SYNC_ENABLED === "true") {
+    results.push(
+      await runIngestion("hotel-rate-finder", () =>
+        postDashboardAction("/api/integrations/hotel-rate-finder/sync")
+      )
+    );
   }
   return results;
 }

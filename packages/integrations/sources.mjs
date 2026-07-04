@@ -8,6 +8,11 @@ import {
   transaction,
   travelDeal
 } from "../contracts/index.mjs";
+import {
+  normalizeHotelRateWatchFromJob,
+  normalizeHotelReservationPayload
+} from "./hotel-rates.mjs";
+import { normalizePlaidAccount, normalizePlaidTransaction } from "./plaid.mjs";
 
 export function integrationCatalog() {
   return [
@@ -16,16 +21,16 @@ export function integrationCatalog() {
       name: "Hotel rate finder",
       sourceRepo: "~/dev/hotel_rate_finder",
       adapter: "hotel-rate-finder",
-      stage: "adapter-contract",
-      nextStep: "Emit property/date/rate observations into dashboard watches."
+      stage: "saved-search-sync",
+      nextStep: "Run active Hyatt/IHG reservation watches against saved searches."
     }),
     integrationStatus({
-      id: "flights_extension",
-      name: "Flight finder",
-      sourceRepo: "~/dev/flights-extension",
-      adapter: "flights-extension",
+      id: "flight_searcher",
+      name: "Flight Searcher",
+      sourceRepo: "future:~/dev/flight-searcher",
+      adapter: "flight-searcher",
       stage: "adapter-contract",
-      nextStep: "Port Google Flights and Skyscanner search payloads behind one route watch."
+      nextStep: "Run Playwright/cloakbrowser flight searches behind a saved route-watch API."
     }),
     integrationStatus({
       id: "asia_travel_deals",
@@ -40,8 +45,8 @@ export function integrationCatalog() {
       name: "Plaid transactions",
       sourceRepo: "external:plaid",
       adapter: "plaid",
-      stage: "placeholder",
-      nextStep: "Sync account and card transactions into reconciliation surfaces."
+      stage: "link-and-sync",
+      nextStep: "Connect a personal Plaid account and run deterministic /transactions/sync."
     }),
     integrationStatus({
       id: "gmail_intake",
@@ -63,6 +68,14 @@ export function isSupportedSourceAdapter(source) {
 }
 
 export function normalizeHotelRatePayload(payload) {
+  if (payload.reservation && payload.job) {
+    return normalizeHotelRateWatchFromJob(payload.reservation, payload.job);
+  }
+
+  if (payload.type === "hotel" || payload.confirmationNumber || payload.confirmation_number) {
+    return normalizeHotelReservationPayload(payload);
+  }
+
   return hotelRateWatch({
     id: payload.id ?? `hotel_${Date.now()}`,
     property: payload.property ?? payload.hotelName ?? "Unknown hotel",
@@ -121,6 +134,14 @@ export function normalizeAsiaDealPayload(payload) {
 }
 
 export function normalizePlaidPayload(payload) {
+  if (payload.account_id && (payload.balances || payload.mask || payload.official_name)) {
+    return normalizePlaidAccount(payload);
+  }
+
+  if (payload.transaction_id || payload.personal_finance_category) {
+    return normalizePlaidTransaction(payload);
+  }
+
   if (payload.merchant || payload.amount || payload.transactionId || payload.transaction_id) {
     return transaction({
       id: payload.id ?? payload.transactionId ?? payload.transaction_id ?? `txn_${Date.now()}`,
@@ -167,8 +188,14 @@ export function normalizeGmailPayload(payload) {
 export function normalizeSourceEvent(source, payload) {
   switch (source) {
     case "hotel-rate-finder":
-      return { kind: "hotelRateWatch", value: normalizeHotelRatePayload(payload) };
-    case "flights-extension":
+      return {
+        kind:
+          payload.type === "hotel" || payload.confirmationNumber || payload.confirmation_number
+            ? "reservation"
+            : "hotelRateWatch",
+        value: normalizeHotelRatePayload(payload)
+      };
+    case "flight-searcher":
       return { kind: "flightSearchWatch", value: normalizeFlightSearchPayload(payload) };
     case "asia-travel-deals":
       return { kind: "travelDeal", value: normalizeAsiaDealPayload(payload) };

@@ -1,0 +1,32 @@
+{
+  "id": "flight-searcher",
+  "name": "Flight Searcher",
+  "version": "dashboard-app.v1",
+  "baseUrlEnv": "FLIGHT_SEARCHER_API_BASE_URL",
+  "healthUrl": "/api/health",
+  "panels": [
+    {
+      "id": "flight-watches",
+      "type": "watch-table",
+      "title": "Flight Watches",
+      "dataSource": "/api/apps/flight-searcher/items?type=flight-watch",
+      "defaultPosition": "travel"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "flight_search",
+      "title": "Search flights",
+      "kind": "agentic",
+      "target": "flight-searcher",
+      "description": "Trigger browser-driven Flight Searcher route watches.",
+      "inputSchema": {
+        "origin": "IATA",
+        "destination": "IATA",
+        "dates": "string",
+        "targetPrice": "number"
+      }
+    }
+  ],
+  "eventTypes": ["flight-watch"]
+}

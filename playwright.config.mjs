@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "tests/e2e",
+  testMatch: "**/*.playwright.mjs",
   timeout: 10_000,
   webServer: {
     command:
