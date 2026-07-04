@@ -679,9 +679,10 @@ const server = http.createServer(async (request, response) => {
       if (!payload.idempotencyKey && request.headers["idempotency-key"]) {
         payload.idempotencyKey = request.headers["idempotency-key"];
       }
+      const idempotencyLookupKey = payload.idempotencyKey ?? payload.id;
       const existingAction = await findHermesActionByIdempotencyKey(
         storePath,
-        payload.idempotencyKey
+        idempotencyLookupKey
       );
       if (existingAction) {
         json(response, 202, {

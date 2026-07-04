@@ -143,3 +143,38 @@ test("Hermes actions dedupe by Idempotency-Key before dispatch", async ({ reques
     }
   });
 });
+
+test("Hermes actions dedupe by stable payload id", async ({ request }) => {
+  const actionId = "stable-action-e2e-001";
+  const first = await request.post("/api/hermes/actions", {
+    data: {
+      id: actionId,
+      capabilityId: "asia_deal_verify",
+      origin: "dashboard",
+      payload: {
+        dealId: "deal_e2e_001"
+      }
+    }
+  });
+  expect(first.status()).toBe(202);
+
+  const second = await request.post("/api/hermes/actions", {
+    data: {
+      id: actionId,
+      capabilityId: "asia_deal_verify",
+      origin: "dashboard",
+      payload: {
+        dealId: "deal_e2e_001"
+      }
+    }
+  });
+  expect(second.status()).toBe(202);
+  await expect(second.json()).resolves.toMatchObject({
+    accepted: true,
+    deduped: true,
+    action: {
+      id: actionId,
+      idempotencyKey: actionId
+    }
+  });
+});

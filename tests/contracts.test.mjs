@@ -397,6 +397,9 @@ describe("contracts", () => {
     ]);
     expect(calls[0].body).toMatchObject({
       products: ["transactions"],
+      transactions: {
+        days_requested: 730
+      },
       user: {
         client_user_id: "michael"
       }
@@ -912,6 +915,62 @@ describe("contracts", () => {
       bestRate: 455,
       targetRate: 520,
       currency: "USD"
+    });
+  });
+
+  test("Hotel matching accepts snake_case property identifiers", () => {
+    const reservation = {
+      id: "reservation_hotel_snake_property_001",
+      type: "hotel",
+      property: "Park Hyatt Kyoto",
+      chain: "hyatt",
+      property_id: "kyoto",
+      check_in: "2026-10-01",
+      check_out: "2026-10-04",
+      paid_total: 520,
+      paid_currency: "USD"
+    };
+    const watch = normalizeHotelRateWatchFromJob(reservation, {
+      id: "job_hotel_snake_property_001",
+      status: "completed",
+      report: {
+        hotels: [
+          {
+            hotel_id: "wrong",
+            hotel_name: "Wrong Hotel",
+            rates: [
+              {
+                comparison: "cheapest_flexible",
+                candidate: {
+                  amount: 100,
+                  currency: "USD",
+                  cancellation_policy: "Fully refundable before Sep 25, 2026"
+                }
+              }
+            ]
+          },
+          {
+            hotel_id: "kyoto",
+            hotel_name: "Park Hyatt Kyoto",
+            rates: [
+              {
+                comparison: "cheapest_flexible",
+                candidate: {
+                  amount: 455,
+                  currency: "USD",
+                  cancellation_policy: "Fully refundable before Sep 25, 2026"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(watch).toMatchObject({
+      property: "Park Hyatt Kyoto",
+      status: "price-drop",
+      bestRate: 455
     });
   });
 

@@ -372,7 +372,15 @@ function matchingHotel(report, reservation) {
   if (hotels.length === 0) {
     return undefined;
   }
-  const propertyId = String(reservation.propertyId ?? reservation.hotelId ?? "").toLowerCase();
+  const propertyId = String(
+    reservation.propertyId ??
+      reservation.property_id ??
+      reservation.hotelId ??
+      reservation.hotel_id ??
+      reservation.chainPropertyId ??
+      reservation.chain_property_id ??
+      ""
+  ).toLowerCase();
   const propertyName = String(reservation.property ?? reservation.title ?? "").toLowerCase();
   return (
     hotels.find(

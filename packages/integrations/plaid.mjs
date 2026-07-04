@@ -75,6 +75,10 @@ function sdkCountryCodes(countryCodes) {
   return countryCodes.map((countryCode) => COUNTRY_CODE_MAP[countryCode] ?? countryCode);
 }
 
+function includesTransactionsProduct(products) {
+  return products.some((product) => String(product).toLowerCase() === "transactions");
+}
+
 function responseData(response) {
   return response?.data ?? response ?? {};
 }
@@ -216,6 +220,9 @@ export async function createPlaidLinkToken({ userId = "personal-dashboard" } = {
       user: {
         client_user_id: userId
       },
+      ...(includesTransactionsProduct(config.products)
+        ? { transactions: { days_requested: config.daysRequested ?? 730 } }
+        : {}),
       ...(config.webhook ? { webhook: config.webhook } : {})
     },
     { ...options, config }
