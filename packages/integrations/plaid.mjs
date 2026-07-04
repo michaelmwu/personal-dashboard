@@ -250,6 +250,7 @@ export async function syncPlaidTransactions({ accessToken, cursor } = {}, option
   const config = options.config ?? plaidConfig();
   const client = options.client ?? createPlaidClient(config);
   const count = options.count ?? 500;
+  const initialCursor = cursor;
   let nextCursor = cursor;
   let hasMore = true;
   const added = [];
@@ -277,11 +278,12 @@ export async function syncPlaidTransactions({ accessToken, cursor } = {}, option
       return {
         synced: false,
         statusCode: response.status,
-        cursor: nextCursor,
-        added,
-        modified,
-        removed,
-        accounts,
+        cursor: initialCursor,
+        added: [],
+        modified: [],
+        removed: [],
+        accounts: [],
+        requestIds,
         response: response.body
       };
     }

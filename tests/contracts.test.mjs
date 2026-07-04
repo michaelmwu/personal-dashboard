@@ -557,6 +557,71 @@ describe("contracts", () => {
     });
   });
 
+  test("Plaid transaction sync drops partial pages after a failed pagination response", async () => {
+    const client = {
+      async transactionsSync(body) {
+        if (body.cursor === "cursor_1") {
+          return {
+            data: {
+              added: [
+                {
+                  transaction_id: "plaid_partial_txn_001",
+                  account_id: "plaid_account_001",
+                  amount: 10,
+                  date: "2026-07-01"
+                }
+              ],
+              modified: [],
+              removed: [],
+              accounts: [],
+              next_cursor: "cursor_2",
+              has_more: true,
+              request_id: "request_page_1"
+            }
+          };
+        }
+        throw {
+          response: {
+            status: 400,
+            data: {
+              error_code: "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION"
+            }
+          }
+        };
+      }
+    };
+
+    const sync = await syncPlaidTransactions(
+      {
+        accessToken: "access_123",
+        cursor: "cursor_1"
+      },
+      {
+        client,
+        config: {
+          clientId: "client",
+          secret: "secret",
+          baseUrl: "https://sandbox.plaid.com",
+          daysRequested: 730
+        }
+      }
+    );
+
+    expect(sync).toMatchObject({
+      synced: false,
+      statusCode: 400,
+      cursor: "cursor_1",
+      added: [],
+      modified: [],
+      removed: [],
+      accounts: [],
+      response: {
+        error_code: "TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION"
+      }
+    });
+    expect(sync.requestIds).toEqual(["request_page_1"]);
+  });
+
   test("Hotel Rate Finder client creates saved searches, runs jobs, and polls status", async () => {
     const calls = [];
     const fetch = async (url, options) => {
