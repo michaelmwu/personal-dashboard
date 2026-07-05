@@ -1,7 +1,7 @@
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { dashboardFixture } from "../../packages/fixtures/dashboard.mjs";
 import {
@@ -11,8 +11,15 @@ import {
   normalizeHermesEvent
 } from "../../packages/integrations/hermes.mjs";
 import {
+  approveHermesBridgeRun,
   createHermesBridgeRun,
+  getHermesBridgeCapabilities,
+  getHermesBridgeRun,
+  getHermesBridgeRunEvents,
+  hermesBridgeStatus,
   HermesBridgeLoopError,
+  startHermesBridgeRun,
+  stopHermesBridgeRun,
   streamHermesBridgeRunEvents
 } from "../../packages/integrations/hermes-bridge.mjs";
 import {
@@ -400,12 +407,24 @@ function error(response, statusCode, code, message) {
   json(response, statusCode, { error: code, message });
 }
 
-function requireHermesAuth(request, response) {
-  if (!hermesApiToken) {
+function jsonFromBridge(response, result) {
+  json(response, result.status, {
+    ok: result.ok,
+    status: result.status,
+    bridge: result.body
+  });
+}
+
+function firstHeaderValue(value) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function requireHermesAuth(request, response, { apiToken = hermesApiToken } = {}) {
+  if (!apiToken) {
     return true;
   }
 
-  if (request.headers.authorization === `Bearer ${hermesApiToken}`) {
+  if (request.headers.authorization === `Bearer ${apiToken}`) {
     return true;
   }
 
@@ -453,351 +472,435 @@ async function packageInfo() {
   return JSON.parse(raw);
 }
 
-const server = http.createServer(async (request, response) => {
-  try {
-    const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
+export function createApiServer({ apiToken = hermesApiToken } = {}) {
+  const requireAuth = (request, response) => requireHermesAuth(request, response, { apiToken });
 
-    if (request.method === "OPTIONS") {
-      json(response, 204, {});
-      return;
-    }
+  return http.createServer(async (request, response) => {
+    try {
+      const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
 
-    if (request.method === "GET" && url.pathname === "/api/health") {
-      const pkg = await packageInfo();
-      json(response, 200, {
-        status: "ok",
-        service: "@personal-dashboard/api",
-        version: pkg.version,
-        integrations: {
-          hermes: "fixture-adapter-ready",
-          openclaw: "fixture-adapter-ready"
-        }
-      });
-      return;
-    }
-
-    if (request.method === "GET" && url.pathname === "/api/dashboard") {
-      json(response, 200, await dashboardSnapshot());
-      return;
-    }
-
-    if (request.method === "GET" && url.pathname === "/api/integrations/catalog") {
-      const registry = await pluginRegistry();
-      json(response, 200, { integrations: integrationCatalog(), apps: registry.apps });
-      return;
-    }
-
-    if (request.method === "GET" && url.pathname === "/api/apps") {
-      const registry = await pluginRegistry();
-      json(response, 200, {
-        apps: registry.apps,
-        panels: registry.panels
-      });
-      return;
-    }
-
-    const appItemsMatch = url.pathname.match(/^\/api\/apps\/([^/]+)\/items$/);
-    if (request.method === "GET" && appItemsMatch) {
-      json(response, 200, {
-        app: appItemsMatch[1],
-        items: await appItems(appItemsMatch[1], { type: url.searchParams.get("type") })
-      });
-      return;
-    }
-
-    const appEventsMatch = url.pathname.match(/^\/api\/apps\/([^/]+)\/events$/);
-    if (request.method === "POST" && appEventsMatch) {
-      if (!requireHermesAuth(request, response)) {
+      if (request.method === "OPTIONS") {
+        json(response, 204, {});
         return;
       }
-      const payload = await readJson(request);
-      const item = {
-        app: appEventsMatch[1],
-        type: payload.type ?? "event",
-        externalId: payload.externalId ?? payload.external_id ?? payload.id,
-        status: payload.status ?? "active",
-        title: payload.title,
-        detail: payload.detail,
-        payload: payload.payload ?? payload
-      };
-      await upsertAppItem(storePath, item);
-      json(response, 202, {
-        accepted: true,
-        item
-      });
-      return;
-    }
 
-    if (request.method === "GET" && url.pathname === "/api/travel") {
-      json(response, 200, (await dashboardSnapshot()).travel);
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/travel/reservations") {
-      if (!requireHermesAuth(request, response)) {
-        return;
-      }
-      const payload = await readJson(request);
-      const reservation = normalizeHotelReservationPayload(payload);
-      await upsertHotelReservation(storePath, reservation);
-      json(response, 202, {
-        accepted: true,
-        reservation
-      });
-      return;
-    }
-
-    if (request.method === "GET" && url.pathname === "/api/finance") {
-      json(response, 200, (await dashboardSnapshot()).finance);
-      return;
-    }
-
-    if (request.method === "GET" && url.pathname === "/api/intake") {
-      json(response, 200, (await dashboardSnapshot()).intake);
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/integrations/plaid/link-token") {
-      if (!requireHermesAuth(request, response)) {
-        return;
-      }
-      const payload = await readJson(request);
-      const linkToken = await createPlaidLinkToken({
-        userId: payload.userId ?? "personal-dashboard"
-      });
-      json(response, linkToken.created ? 200 : 503, linkToken);
-      return;
-    }
-
-    if (
-      request.method === "POST" &&
-      url.pathname === "/api/integrations/plaid/exchange-public-token"
-    ) {
-      if (!requireHermesAuth(request, response)) {
-        return;
-      }
-      const payload = await readJson(request);
-      if (!payload.publicToken && !payload.public_token) {
-        error(response, 400, "missing_public_token", "Plaid public token is required.");
-        return;
-      }
-      const exchange = await exchangePlaidPublicToken(payload.publicToken ?? payload.public_token);
-      if (!exchange.exchanged) {
-        json(response, 502, exchange);
-        return;
-      }
-      await upsertPlaidItem(storePath, {
-        id: exchange.itemId,
-        accessToken: exchange.accessToken,
-        cursor: undefined,
-        institutionName: payload.institutionName ?? payload.institution_name,
-        syncStatus: "linked",
-        linkedAt: new Date().toISOString()
-      });
-      json(response, 202, {
-        accepted: true,
-        itemId: exchange.itemId,
-        requestId: exchange.requestId
-      });
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/integrations/plaid/sync") {
-      if (!requireHermesAuth(request, response)) {
-        return;
-      }
-      const payload = await readJson(request);
-      const result = await syncPlaidItems({ itemId: payload.itemId ?? payload.item_id });
-      json(response, result.synced ? 202 : 207, result);
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/integrations/plaid/webhook") {
-      const rawBody = await readRawBody(request);
-      if (!(await requirePlaidWebhookAuth(request, response, rawBody))) {
-        return;
-      }
-      const payload = parseJson(rawBody);
-      if (
-        payload.webhook_type === "TRANSACTIONS" &&
-        payload.webhook_code === "SYNC_UPDATES_AVAILABLE"
-      ) {
-        const result = await syncPlaidItems({ itemId: payload.item_id });
-        json(response, result.synced ? 202 : 207, {
-          accepted: true,
-          webhook: payload,
-          result
+      if (request.method === "GET" && url.pathname === "/api/health") {
+        const pkg = await packageInfo();
+        json(response, 200, {
+          status: "ok",
+          service: "@personal-dashboard/api",
+          version: pkg.version,
+          integrations: {
+            hermes: "fixture-adapter-ready",
+            openclaw: "fixture-adapter-ready"
+          }
         });
         return;
       }
-      json(response, 202, {
-        accepted: true,
-        ignored: true,
-        webhook: payload
-      });
-      return;
-    }
 
-    if (request.method === "POST" && url.pathname === "/api/integrations/hotel-rate-finder/sync") {
-      if (!requireHermesAuth(request, response)) {
+      if (request.method === "GET" && url.pathname === "/api/dashboard") {
+        json(response, 200, await dashboardSnapshot());
         return;
       }
-      const payload = await readJson(request);
-      const result = await syncHotelRateReservations({
-        reservationId: payload.reservationId ?? payload.reservation_id,
-        forceRefresh: payload.forceRefresh ?? payload.force_refresh
-      });
-      json(response, result.synced ? 202 : 503, result);
-      return;
-    }
 
-    if (request.method === "GET" && url.pathname === "/api/hermes/context") {
-      if (!requireHermesAuth(request, response)) {
+      if (request.method === "GET" && url.pathname === "/api/integrations/catalog") {
+        const registry = await pluginRegistry();
+        json(response, 200, { integrations: integrationCatalog(), apps: registry.apps });
         return;
       }
-      json(response, 200, hermesContextFromDashboard(await dashboardSnapshot()));
-      return;
-    }
 
-    if (request.method === "GET" && url.pathname === "/api/hermes/capabilities") {
-      if (!requireHermesAuth(request, response)) {
+      if (request.method === "GET" && url.pathname === "/api/apps") {
+        const registry = await pluginRegistry();
+        json(response, 200, {
+          apps: registry.apps,
+          panels: registry.panels
+        });
         return;
       }
-      json(response, 200, { capabilities: await enabledHermesCapabilities() });
-      return;
-    }
 
-    if (
-      request.method === "POST" &&
-      (url.pathname === "/api/hermes/actions" ||
-        url.pathname === "/api/integrations/hermes/actions")
-    ) {
-      if (!requireHermesAuth(request, response)) {
+      const appItemsMatch = url.pathname.match(/^\/api\/apps\/([^/]+)\/items$/);
+      if (request.method === "GET" && appItemsMatch) {
+        json(response, 200, {
+          app: appItemsMatch[1],
+          items: await appItems(appItemsMatch[1], { type: url.searchParams.get("type") })
+        });
         return;
       }
-      const payload = await readJson(request);
-      if (!payload.idempotencyKey && request.headers["idempotency-key"]) {
-        payload.idempotencyKey = request.headers["idempotency-key"];
-      }
-      const idempotencyLookupKey = payload.idempotencyKey ?? payload.id;
-      const existingAction = await findHermesActionByIdempotencyKey(
-        storePath,
-        idempotencyLookupKey
-      );
-      if (existingAction) {
+
+      const appEventsMatch = url.pathname.match(/^\/api\/apps\/([^/]+)\/events$/);
+      if (request.method === "POST" && appEventsMatch) {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const payload = await readJson(request);
+        const item = {
+          app: appEventsMatch[1],
+          type: payload.type ?? "event",
+          externalId: payload.externalId ?? payload.external_id ?? payload.id,
+          status: payload.status ?? "active",
+          title: payload.title,
+          detail: payload.detail,
+          payload: payload.payload ?? payload
+        };
+        await upsertAppItem(storePath, item);
         json(response, 202, {
           accepted: true,
-          deduped: true,
-          action: existingAction,
-          dispatch: existingAction.dispatch ?? { dispatched: false, reason: "already_dispatched" }
+          item
         });
         return;
       }
-      const capabilityId = payload.capabilityId ?? payload.action;
-      const capability = (await enabledHermesCapabilities()).find(
-        (item) => item.id === capabilityId
-      );
-      if (!capability) {
-        error(
-          response,
-          400,
-          "unsupported_capability",
-          `Unsupported Hermes capability: ${capabilityId ?? "missing"}`
-        );
+
+      if (request.method === "GET" && url.pathname === "/api/travel") {
+        json(response, 200, (await dashboardSnapshot()).travel);
         return;
       }
-      if (payload.target && payload.target !== capability.target) {
-        error(
-          response,
-          400,
-          "target_mismatch",
-          `Hermes capability ${capabilityId} must target ${capability.target}, not ${payload.target}.`
-        );
-        return;
-      }
-      let action = createHermesAction({
-        ...payload,
-        origin: payload.origin ?? "hermes"
-      });
-      action = {
-        ...action,
-        target: capability.target,
-        title:
-          payload.title ??
-          capability.title ??
-          (action.title === "Unknown Hermes action" ? capability.id : action.title)
-      };
-      let dispatch;
-      try {
-        dispatch = await dispatchHermesAction(action, capability);
-      } catch (dispatchError) {
-        if (dispatchError instanceof HermesBridgeLoopError) {
-          dispatch = { dispatched: false, reason: "hermes_origin_loop_guard" };
-        } else {
-          throw dispatchError;
+
+      if (request.method === "POST" && url.pathname === "/api/travel/reservations") {
+        if (!requireAuth(request, response)) {
+          return;
         }
+        const payload = await readJson(request);
+        const reservation = normalizeHotelReservationPayload(payload);
+        await upsertHotelReservation(storePath, reservation);
+        json(response, 202, {
+          accepted: true,
+          reservation
+        });
+        return;
       }
-      if (dispatch.dispatched) {
+
+      if (request.method === "GET" && url.pathname === "/api/finance") {
+        json(response, 200, (await dashboardSnapshot()).finance);
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/intake") {
+        json(response, 200, (await dashboardSnapshot()).intake);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/integrations/plaid/link-token") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const payload = await readJson(request);
+        const linkToken = await createPlaidLinkToken({
+          userId: payload.userId ?? "personal-dashboard"
+        });
+        json(response, linkToken.created ? 200 : 503, linkToken);
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/integrations/plaid/exchange-public-token"
+      ) {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const payload = await readJson(request);
+        if (!payload.publicToken && !payload.public_token) {
+          error(response, 400, "missing_public_token", "Plaid public token is required.");
+          return;
+        }
+        const exchange = await exchangePlaidPublicToken(
+          payload.publicToken ?? payload.public_token
+        );
+        if (!exchange.exchanged) {
+          json(response, 502, exchange);
+          return;
+        }
+        await upsertPlaidItem(storePath, {
+          id: exchange.itemId,
+          accessToken: exchange.accessToken,
+          cursor: undefined,
+          institutionName: payload.institutionName ?? payload.institution_name,
+          syncStatus: "linked",
+          linkedAt: new Date().toISOString()
+        });
+        json(response, 202, {
+          accepted: true,
+          itemId: exchange.itemId,
+          requestId: exchange.requestId
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/integrations/plaid/sync") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const payload = await readJson(request);
+        const result = await syncPlaidItems({ itemId: payload.itemId ?? payload.item_id });
+        json(response, result.synced ? 202 : 207, result);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/integrations/plaid/webhook") {
+        const rawBody = await readRawBody(request);
+        if (!(await requirePlaidWebhookAuth(request, response, rawBody))) {
+          return;
+        }
+        const payload = parseJson(rawBody);
+        if (
+          payload.webhook_type === "TRANSACTIONS" &&
+          payload.webhook_code === "SYNC_UPDATES_AVAILABLE"
+        ) {
+          const result = await syncPlaidItems({ itemId: payload.item_id });
+          json(response, result.synced ? 202 : 207, {
+            accepted: true,
+            webhook: payload,
+            result
+          });
+          return;
+        }
+        json(response, 202, {
+          accepted: true,
+          ignored: true,
+          webhook: payload
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/integrations/hotel-rate-finder/sync"
+      ) {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const payload = await readJson(request);
+        const result = await syncHotelRateReservations({
+          reservationId: payload.reservationId ?? payload.reservation_id,
+          forceRefresh: payload.forceRefresh ?? payload.force_refresh
+        });
+        json(response, result.synced ? 202 : 503, result);
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/hermes/context") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        json(response, 200, hermesContextFromDashboard(await dashboardSnapshot()));
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/hermes/capabilities") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        json(response, 200, { capabilities: await enabledHermesCapabilities() });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/hermes/bridge/capabilities") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await getHermesBridgeCapabilities();
+        json(response, result.status, {
+          ok: result.ok,
+          status: result.status,
+          configured: hermesBridgeStatus().configured,
+          bridge: result.body
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/hermes/bridge/runs") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await startHermesBridgeRun(await readJson(request), {
+          idempotencyKey: firstHeaderValue(request.headers["idempotency-key"])
+        });
+        jsonFromBridge(response, result);
+        return;
+      }
+
+      const bridgeRunMatch = url.pathname.match(/^\/api\/hermes\/bridge\/runs\/([^/]+)$/);
+      if (request.method === "GET" && bridgeRunMatch) {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        jsonFromBridge(response, await getHermesBridgeRun(bridgeRunMatch[1]));
+        return;
+      }
+
+      const bridgeRunEventsMatch = url.pathname.match(
+        /^\/api\/hermes\/bridge\/runs\/([^/]+)\/events$/
+      );
+      if (request.method === "GET" && bridgeRunEventsMatch) {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        jsonFromBridge(response, await getHermesBridgeRunEvents(bridgeRunEventsMatch[1]));
+        return;
+      }
+
+      const bridgeRunApprovalMatch = url.pathname.match(
+        /^\/api\/hermes\/bridge\/runs\/([^/]+)\/approval$/
+      );
+      if (request.method === "POST" && bridgeRunApprovalMatch) {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        jsonFromBridge(
+          response,
+          await approveHermesBridgeRun(bridgeRunApprovalMatch[1], await readJson(request))
+        );
+        return;
+      }
+
+      const bridgeRunStopMatch = url.pathname.match(/^\/api\/hermes\/bridge\/runs\/([^/]+)\/stop$/);
+      if (request.method === "POST" && bridgeRunStopMatch) {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        jsonFromBridge(
+          response,
+          await stopHermesBridgeRun(bridgeRunStopMatch[1], await readJson(request))
+        );
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        (url.pathname === "/api/hermes/actions" ||
+          url.pathname === "/api/integrations/hermes/actions")
+      ) {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const payload = await readJson(request);
+        if (!payload.idempotencyKey && request.headers["idempotency-key"]) {
+          payload.idempotencyKey = request.headers["idempotency-key"];
+        }
+        const idempotencyLookupKey = payload.idempotencyKey ?? payload.id;
+        const existingAction = await findHermesActionByIdempotencyKey(
+          storePath,
+          idempotencyLookupKey
+        );
+        if (existingAction) {
+          json(response, 202, {
+            accepted: true,
+            deduped: true,
+            action: existingAction,
+            dispatch: existingAction.dispatch ?? { dispatched: false, reason: "already_dispatched" }
+          });
+          return;
+        }
+        const capabilityId = payload.capabilityId ?? payload.action;
+        const capability = (await enabledHermesCapabilities()).find(
+          (item) => item.id === capabilityId
+        );
+        if (!capability) {
+          error(
+            response,
+            400,
+            "unsupported_capability",
+            `Unsupported Hermes capability: ${capabilityId ?? "missing"}`
+          );
+          return;
+        }
+        if (payload.target && payload.target !== capability.target) {
+          error(
+            response,
+            400,
+            "target_mismatch",
+            `Hermes capability ${capabilityId} must target ${capability.target}, not ${payload.target}.`
+          );
+          return;
+        }
+        let action = createHermesAction({
+          ...payload,
+          origin: payload.origin ?? "hermes"
+        });
         action = {
           ...action,
-          status: dispatch.runId ? "running" : "dispatched",
-          bridgeRunId: dispatch.runId,
-          payload: { ...action.payload, dispatch },
-          dispatch
+          target: capability.target,
+          title:
+            payload.title ??
+            capability.title ??
+            (action.title === "Unknown Hermes action" ? capability.id : action.title)
         };
-      }
-      await upsertHermesAction(storePath, action);
-      json(response, 202, {
-        accepted: true,
-        action,
-        dispatch
-      });
-      return;
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/integrations/hermes/events") {
-      if (!requireHermesAuth(request, response)) {
+        let dispatch;
+        try {
+          dispatch = await dispatchHermesAction(action, capability);
+        } catch (dispatchError) {
+          if (dispatchError instanceof HermesBridgeLoopError) {
+            dispatch = { dispatched: false, reason: "hermes_origin_loop_guard" };
+          } else {
+            throw dispatchError;
+          }
+        }
+        if (dispatch.dispatched) {
+          action = {
+            ...action,
+            status: dispatch.runId ? "running" : "dispatched",
+            bridgeRunId: dispatch.runId,
+            payload: { ...action.payload, dispatch },
+            dispatch
+          };
+        }
+        await upsertHermesAction(storePath, action);
+        json(response, 202, {
+          accepted: true,
+          action,
+          dispatch
+        });
         return;
       }
-      const payload = await readJson(request);
-      const normalized = normalizeHermesEvent(payload);
-      await upsertHermesEvent(storePath, normalized);
-      json(response, 202, {
-        accepted: true,
-        normalized
-      });
-      return;
-    }
 
-    const sourceEventMatch = url.pathname.match(/^\/api\/integrations\/([^/]+)\/events$/);
-    if (request.method === "POST" && sourceEventMatch) {
-      if (!requireHermesAuth(request, response)) {
+      if (request.method === "POST" && url.pathname === "/api/integrations/hermes/events") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const payload = await readJson(request);
+        const normalized = normalizeHermesEvent(payload);
+        await upsertHermesEvent(storePath, normalized);
+        json(response, 202, {
+          accepted: true,
+          normalized
+        });
         return;
       }
-      const source = sourceEventMatch[1];
-      if (!isSupportedSourceAdapter(source)) {
-        error(response, 404, "unsupported_source", `Unsupported integration source: ${source}`);
+
+      const sourceEventMatch = url.pathname.match(/^\/api\/integrations\/([^/]+)\/events$/);
+      if (request.method === "POST" && sourceEventMatch) {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const source = sourceEventMatch[1];
+        if (!isSupportedSourceAdapter(source)) {
+          error(response, 404, "unsupported_source", `Unsupported integration source: ${source}`);
+          return;
+        }
+        const payload = await readJson(request);
+        const normalized = normalizeSourceEvent(source, payload);
+        await upsertNormalizedEvent(storePath, normalized);
+        json(response, 202, {
+          accepted: true,
+          normalized
+        });
         return;
       }
-      const payload = await readJson(request);
-      const normalized = normalizeSourceEvent(source, payload);
-      await upsertNormalizedEvent(storePath, normalized);
-      json(response, 202, {
-        accepted: true,
-        normalized
+
+      json(response, 404, { error: "not_found", path: url.pathname });
+    } catch (error) {
+      json(response, 500, {
+        error: "internal_error",
+        message: error instanceof Error ? error.message : String(error)
       });
-      return;
     }
+  });
+}
 
-    json(response, 404, { error: "not_found", path: url.pathname });
-  } catch (error) {
-    json(response, 500, {
-      error: "internal_error",
-      message: error instanceof Error ? error.message : String(error)
-    });
-  }
-});
+const server = createApiServer();
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`Personal Dashboard API listening on http://127.0.0.1:${port}`);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  server.listen(port, "127.0.0.1", () => {
+    console.log(`Personal Dashboard API listening on http://127.0.0.1:${port}`);
+  });
+}

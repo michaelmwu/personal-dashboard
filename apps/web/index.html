@@ -106,6 +106,31 @@
             <span id="hermes-status"></span>
           </div>
           <div class="compact-list" id="hermes"></div>
+          <div class="bridge-console" id="bridge-console">
+            <div class="bridge-status-row">
+              <span class="pill" id="bridge-status">Bridge</span>
+              <button type="button" id="bridge-refresh">Refresh</button>
+            </div>
+            <label>
+              <span>Token</span>
+              <input id="bridge-token" type="password" autocomplete="off">
+            </label>
+            <label>
+              <span>Prompt</span>
+              <textarea id="bridge-prompt" rows="4">Summarize current dashboard risks and ask for approval before making changes.</textarea>
+            </label>
+            <label>
+              <span>Run ID</span>
+              <input id="bridge-run-id" type="text" autocomplete="off">
+            </label>
+            <div class="bridge-actions">
+              <button type="button" id="bridge-start">Start</button>
+              <button type="button" id="bridge-stop">Stop</button>
+              <button type="button" id="bridge-approve">Approve</button>
+              <button type="button" id="bridge-reject">Reject</button>
+            </div>
+            <pre id="bridge-events" aria-live="polite"></pre>
+          </div>
         </section>
 
         <section class="panel">

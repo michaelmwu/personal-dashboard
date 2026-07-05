@@ -4,6 +4,9 @@ const money = new Intl.NumberFormat("en-US", {
 });
 
 const number = new Intl.NumberFormat("en-US");
+const bridgeTokenStorageKey = "personal-dashboard:bridge-token";
+const bridgeRunStorageKey = "personal-dashboard:bridge-run-id";
+let appConfig = { apiBaseUrl: "" };
 
 async function loadConfig() {
   const response = await fetch("/config.json");
@@ -19,6 +22,25 @@ async function loadDashboard(apiBaseUrl) {
     throw new Error(`Dashboard API returned ${response.status}`);
   }
   return response.json();
+}
+
+function bridgeToken() {
+  return byId("bridge-token")?.value.trim() || "";
+}
+
+async function apiFetch(path, options = {}) {
+  const headers = new Headers(options.headers);
+  const token = bridgeToken();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  if (options.body !== undefined && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  return fetch(`${appConfig.apiBaseUrl}${path}`, {
+    ...options,
+    headers
+  });
 }
 
 function byId(id) {
@@ -313,9 +335,139 @@ function renderHermes(hermes) {
   byId("hermes").innerHTML = [...actionRows, ...capabilityRows].join("");
 }
 
+function bridgeRunId() {
+  return byId("bridge-run-id").value.trim();
+}
+
+function setBridgeRunId(runId) {
+  byId("bridge-run-id").value = runId;
+  if (runId) {
+    sessionStorage.setItem(bridgeRunStorageKey, runId);
+  }
+}
+
+function renderBridgeEvent(payload) {
+  byId("bridge-events").textContent =
+    typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
+}
+
+function parseBridgeRunId(payload) {
+  const bridge = payload?.bridge ?? payload;
+  return bridge?.run_id ?? bridge?.runId ?? bridge?.id ?? bridge?.run?.id;
+}
+
+function updateBridgeStatus(label, level = "") {
+  const status = byId("bridge-status");
+  status.textContent = label;
+  status.className = `pill ${level}`.trim();
+}
+
+async function refreshBridge() {
+  const response = await apiFetch("/api/hermes/bridge/capabilities");
+  const payload = await response.json().catch(() => ({}));
+  if (response.ok) {
+    const capabilities = payload.bridge?.capabilities ?? payload.bridge ?? [];
+    const count = Array.isArray(capabilities) ? capabilities.length : "ready";
+    updateBridgeStatus(`Bridge ${count}`);
+  } else {
+    updateBridgeStatus(response.status === 401 ? "Token" : "Offline", "warning");
+  }
+  renderBridgeEvent(payload);
+}
+
+async function pollBridgeEvents() {
+  const runId = bridgeRunId();
+  if (!runId) {
+    return;
+  }
+  const response = await apiFetch(`/api/hermes/bridge/runs/${encodeURIComponent(runId)}/events`);
+  const payload = await response.json().catch(() => ({}));
+  renderBridgeEvent(payload);
+}
+
+async function startBridgeRun() {
+  const prompt = byId("bridge-prompt").value.trim();
+  const response = await apiFetch("/api/hermes/bridge/runs", {
+    method: "POST",
+    body: JSON.stringify({
+      input: prompt,
+      instructions:
+        "You are Hermes running from Personal Dashboard. Return concise status and request approval for side effects.",
+      sessionId: "personal-dashboard"
+    })
+  });
+  const payload = await response.json().catch(() => ({}));
+  const runId = parseBridgeRunId(payload);
+  if (runId) {
+    setBridgeRunId(runId);
+  }
+  updateBridgeStatus(response.ok ? "Running" : response.status === 401 ? "Token" : "Error");
+  renderBridgeEvent(payload);
+}
+
+async function stopBridgeRun() {
+  const runId = bridgeRunId();
+  if (!runId) {
+    return;
+  }
+  const response = await apiFetch(`/api/hermes/bridge/runs/${encodeURIComponent(runId)}/stop`, {
+    method: "POST",
+    body: JSON.stringify({ reason: "dashboard_user" })
+  });
+  renderBridgeEvent(await response.json().catch(() => ({})));
+  updateBridgeStatus(response.ok ? "Stopped" : "Error");
+}
+
+async function submitBridgeApproval(approved) {
+  const runId = bridgeRunId();
+  if (!runId) {
+    return;
+  }
+  const response = await apiFetch(`/api/hermes/bridge/runs/${encodeURIComponent(runId)}/approval`, {
+    method: "POST",
+    body: JSON.stringify({
+      approved,
+      decision: approved ? "approved" : "rejected"
+    })
+  });
+  renderBridgeEvent(await response.json().catch(() => ({})));
+  updateBridgeStatus(response.ok ? (approved ? "Approved" : "Rejected") : "Error");
+}
+
+function setupHermesBridgeControls() {
+  byId("bridge-token").value = sessionStorage.getItem(bridgeTokenStorageKey) ?? "";
+  byId("bridge-run-id").value = sessionStorage.getItem(bridgeRunStorageKey) ?? "";
+  byId("bridge-token").addEventListener("input", () => {
+    sessionStorage.setItem(bridgeTokenStorageKey, bridgeToken());
+  });
+  byId("bridge-run-id").addEventListener("input", () => {
+    sessionStorage.setItem(bridgeRunStorageKey, bridgeRunId());
+  });
+  byId("bridge-refresh").addEventListener("click", () => {
+    refreshBridge().catch((error) => renderBridgeEvent(String(error)));
+  });
+  byId("bridge-start").addEventListener("click", () => {
+    startBridgeRun().catch((error) => renderBridgeEvent(String(error)));
+  });
+  byId("bridge-stop").addEventListener("click", () => {
+    stopBridgeRun().catch((error) => renderBridgeEvent(String(error)));
+  });
+  byId("bridge-approve").addEventListener("click", () => {
+    submitBridgeApproval(true).catch((error) => renderBridgeEvent(String(error)));
+  });
+  byId("bridge-reject").addEventListener("click", () => {
+    submitBridgeApproval(false).catch((error) => renderBridgeEvent(String(error)));
+  });
+  setInterval(() => {
+    pollBridgeEvents().catch(() => {});
+  }, 5000);
+  refreshBridge().catch((error) => renderBridgeEvent(String(error)));
+}
+
 async function main() {
   try {
     const config = await loadConfig();
+    appConfig = config;
     const dashboard = await loadDashboard(config.apiBaseUrl);
     renderStatus(dashboard);
     renderMetrics(dashboard.metrics);
@@ -329,6 +481,7 @@ async function main() {
     renderHermes(dashboard.hermes);
     renderIntegrations(dashboard.integrations);
     renderPluginPanels(dashboard.apps);
+    setupHermesBridgeControls();
   } catch (error) {
     byId("status-strip").textContent = error instanceof Error ? error.message : String(error);
     byId("status-strip").className = "status-strip critical";
