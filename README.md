@@ -92,6 +92,9 @@ Coding Agent endpoints:
   `includeArchived=true` to include archived records.
 - `POST /api/apps/coding-agent/tasks`: register the durable task anchor
   `{id, repo, branch, worktreeDir, hermesSessionKey, prNumber, previewUrl}`.
+- `POST /api/apps/coding-agent/intake-plan`: turn a request into a durable
+  intake plan with clarification questions, proposed surfaces, and risk
+  classification before execution.
 - `POST /api/apps/coding-agent/pr-pickup`: register an existing PR as a
   managed coding task from the dashboard or an explicit pickup comment.
 - `POST /api/apps/coding-agent/queue`: append typed work items to a task queue.
@@ -100,13 +103,19 @@ Coding Agent endpoints:
 - `POST /api/apps/coding-agent/pr-maintenance`: deterministically plan PR
   maintenance after enforcing repo allowlists, branch policy, PR-only rules, and
   side-effect approval requirements.
+- `POST /api/apps/coding-agent/risk-review`: classify blast radius for a
+  coding-agent action and require approval for high-risk surfaces such as
+  schema, infra, auth, money, privacy, or destructive changes.
+- `POST /api/apps/coding-agent/signals`: persist typed improvement signals from
+  CI, PR reviews, Telegram corrections, guardrails, or Hermes runs.
 - `POST /api/apps/coding-agent/archive`: archive a completed or abandoned task
   and its remaining queue items.
 
 Set `CODING_AGENT_ALLOWED_REPOS` to a comma-separated repo allowlist when
 enforcing PR-maintenance repo policy. `CODING_AGENT_BRANCH_PREFIX` defaults to
 `hermes`, and side-effecting maintenance actions such as push, PR creation,
-merge, cleanup, and PR replies require `approvedBy` plus `approvalId`.
+merge, cleanup, and PR replies require `approvedBy` plus `approvalId`. High-risk
+side effects additionally require `riskAcceptedBy` plus `riskApprovalId`.
 
 Set `CODING_AGENT_PR_POLL_ENABLED=true` on the integration worker to poll active
 coding-task PRs with `gh api`. The poller reads `pr-open`,

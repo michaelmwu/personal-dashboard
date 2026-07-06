@@ -28,8 +28,11 @@ import {
   codingAgentPolicyFromEnv,
   codingTaskItem,
   enqueueCodingTaskItems,
+  normalizeCodingAgentSignal,
   pickupExistingPrTask,
+  planCodingTaskIntake,
   planPrMaintenance,
+  reviewCodingAgentRisk,
   shortRepoName,
   visibleCodingTasks
 } from "../../packages/integrations/coding-agent.mjs";
@@ -169,6 +172,12 @@ async function registerCodingTask(payload) {
   return { ok: true, statusCode: 202, task: item.payload, item };
 }
 
+async function planCodingTask(payload) {
+  const result = planCodingTaskIntake(payload);
+  await persistCodingTaskItem(result.taskItem);
+  return result;
+}
+
 async function pickupCodingPr(payload) {
   const existing = await findCodingTask(payload);
   const result = pickupExistingPrTask(existing, payload, codingAgentPolicy);
@@ -177,6 +186,23 @@ async function pickupCodingPr(payload) {
   }
   await persistCodingTaskItem(result.taskItem);
   return result;
+}
+
+async function reviewCodingRisk(payload) {
+  const item = reviewCodingAgentRisk(payload);
+  await upsertAppItem(storePath, item);
+  return {
+    ok: item.status === "approved",
+    statusCode: item.status === "approved" ? 202 : 409,
+    riskReview: item.payload,
+    item
+  };
+}
+
+async function recordCodingSignal(payload) {
+  const item = normalizeCodingAgentSignal(payload);
+  await upsertAppItem(storePath, item);
+  return { ok: true, statusCode: 202, signal: item.payload, item };
 }
 
 async function syncCodingPrStatus(payload) {
@@ -492,6 +518,14 @@ async function dispatchDeterministicCapability(action, capability) {
     const response = await registerCodingTask(action.payload);
     return { dispatched: response.ok, target: capability.target, response };
   }
+  if (capability.endpoint === "/api/apps/coding-agent/intake-plan") {
+    const response = await planCodingTask(action.payload);
+    return {
+      dispatched: response.ok && !response.blocked,
+      target: capability.target,
+      response
+    };
+  }
   if (capability.endpoint === "/api/apps/coding-agent/pr-pickup") {
     const response = await pickupCodingPr(action.payload);
     return { dispatched: response.ok, target: capability.target, response };
@@ -511,6 +545,18 @@ async function dispatchDeterministicCapability(action, capability) {
       target: capability.target,
       response
     };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/risk-review") {
+    const response = await reviewCodingRisk(action.payload);
+    return {
+      dispatched: response.ok,
+      target: capability.target,
+      response
+    };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/signals") {
+    const response = await recordCodingSignal(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
   }
   if (capability.endpoint === "/api/apps/coding-agent/archive") {
     const response = await archiveCodingTaskByPayload(action.payload);
@@ -797,6 +843,20 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/intake-plan") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await planCodingTask(await readJson(request));
+        json(response, result.statusCode, {
+          accepted: true,
+          blocked: result.blocked,
+          plan: result.plan,
+          task: result.task
+        });
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/pr-pickup") {
         if (!requireAuth(request, response)) {
           return;
@@ -809,6 +869,30 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         json(response, result.statusCode, {
           accepted: true,
           task: result.task
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/risk-review") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await reviewCodingRisk(await readJson(request));
+        json(response, result.statusCode, {
+          accepted: result.ok,
+          riskReview: result.riskReview
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/signals") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await recordCodingSignal(await readJson(request));
+        json(response, result.statusCode, {
+          accepted: true,
+          signal: result.signal
         });
         return;
       }

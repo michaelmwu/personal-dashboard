@@ -16,10 +16,13 @@ import {
 } from "../packages/integrations/hermes-bridge.mjs";
 import {
   archiveCodingTask,
+  classifyCodingAgentRisk,
   codingAgentExecutorPayload,
   codingTaskItem,
   commentRequestsCodingAgentPickup,
+  normalizeCodingAgentSignal,
   pickupExistingPrTask,
+  planCodingTaskIntake,
   planPrMaintenance
 } from "../packages/integrations/coding-agent.mjs";
 import {
@@ -225,6 +228,11 @@ describe("contracts", () => {
           endpoint: "/api/apps/coding-agent/tasks"
         }),
         expect.objectContaining({
+          id: "plan-coding-task",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/intake-plan"
+        }),
+        expect.objectContaining({
           id: "pickup-existing-pr",
           kind: "deterministic",
           endpoint: "/api/apps/coding-agent/pr-pickup"
@@ -243,6 +251,16 @@ describe("contracts", () => {
           id: "run-pr-maintenance",
           kind: "deterministic",
           endpoint: "/api/apps/coding-agent/pr-maintenance"
+        }),
+        expect.objectContaining({
+          id: "review-coding-risk",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/risk-review"
+        }),
+        expect.objectContaining({
+          id: "record-improvement-signal",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/signals"
         }),
         expect.objectContaining({
           id: "archive-coding-task",
@@ -950,6 +968,220 @@ describe("contracts", () => {
     }
   });
 
+  test("coding agent intake planning persists clarification and risk state", async () => {
+    expect(classifyCodingAgentRisk({ request: "Update auth token handling" })).toMatchObject({
+      highRisk: true,
+      level: "high",
+      categories: expect.arrayContaining(["auth"])
+    });
+
+    const planned = planCodingTaskIntake(
+      {
+        id: "coding_intake_contract",
+        request: "Fix",
+        files: ["apps/api/auth.mjs"]
+      },
+      { now: "2026-07-06T12:00:00.000Z" }
+    );
+    expect(planned).toMatchObject({
+      blocked: true,
+      statusCode: 409,
+      task: {
+        id: "coding_intake_contract",
+        status: "waiting-for-approval",
+        intakePlan: {
+          status: "waiting-for-approval",
+          risk: {
+            highRisk: true,
+            categories: expect.arrayContaining(["auth"])
+          },
+          clarifyingQuestions: expect.arrayContaining(["Which repository should this task run in?"])
+        }
+      }
+    });
+
+    const taskId = `coding_intake_${Date.now()}`;
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json",
+          "Idempotency-Key": `${taskId}_plan`
+        },
+        body: JSON.stringify({
+          capabilityId: "plan-coding-task",
+          origin: "dashboard",
+          payload: {
+            id: taskId,
+            repo: "personal-dashboard",
+            title: "Add dashboard copy",
+            request: "Add clearer dashboard copy for the coding-agent task queue",
+            files: ["README.md"]
+          }
+        })
+      });
+      expect(response.status).toBe(202);
+      expect(await response.json()).toMatchObject({
+        accepted: true,
+        dispatch: {
+          dispatched: true,
+          response: {
+            blocked: false,
+            plan: {
+              status: "queued",
+              risk: {
+                level: "low",
+                categories: ["docs"]
+              }
+            },
+            task: {
+              id: taskId,
+              status: "queued",
+              intakePlan: {
+                title: "Add dashboard copy"
+              },
+              queue: [
+                expect.objectContaining({
+                  kind: "intake-plan",
+                  status: "approved"
+                })
+              ]
+            }
+          }
+        }
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("coding agent risk reviews and improvement signals persist typed evidence", async () => {
+    const taskId = `coding_signal_${Date.now()}`;
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      const blockedRisk = await fetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json",
+          "Idempotency-Key": `${taskId}_risk`
+        },
+        body: JSON.stringify({
+          capabilityId: "review-coding-risk",
+          origin: "dashboard",
+          payload: {
+            taskId,
+            repo: "personal-dashboard",
+            action: "push-update",
+            files: ["migrations/001_drop_old_tokens.sql"]
+          }
+        })
+      });
+      expect(blockedRisk.status).toBe(202);
+      expect(await blockedRisk.json()).toMatchObject({
+        accepted: true,
+        dispatch: {
+          dispatched: false,
+          response: {
+            riskReview: {
+              approved: false,
+              risk: {
+                highRisk: true,
+                categories: expect.arrayContaining(["schema"])
+              }
+            }
+          }
+        }
+      });
+
+      const directRisk = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/risk-review`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            taskId,
+            repo: "personal-dashboard",
+            action: "push-update",
+            files: ["migrations/001_drop_old_tokens.sql"],
+            riskAcceptedBy: "michaelmwu",
+            riskApprovalId: "risk-approval-1"
+          })
+        }
+      );
+      expect(directRisk.status).toBe(202);
+      expect(await directRisk.json()).toMatchObject({
+        accepted: true,
+        riskReview: {
+          approved: true,
+          riskAcceptedBy: "michaelmwu"
+        }
+      });
+
+      const signalPayload = normalizeCodingAgentSignal({
+        id: `${taskId}_ci_failure`,
+        source: "github-check",
+        kind: "test-failure",
+        severity: "high",
+        taskId,
+        repo: "personal-dashboard",
+        prNumber: 123,
+        summary: "unit-contract-tests failed after a schema change",
+        evidence: [{ url: "https://github.com/check/123" }]
+      });
+      expect(signalPayload).toMatchObject({
+        type: "coding-improvement-signal",
+        payload: {
+          severity: "high",
+          source: "github-check",
+          kind: "test-failure"
+        }
+      });
+
+      const signal = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/signals`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(signalPayload.payload)
+      });
+      expect(signal.status).toBe(202);
+      expect(await signal.json()).toMatchObject({
+        accepted: true,
+        signal: {
+          id: `${taskId}_ci_failure`,
+          severity: "high",
+          evidence: [{ url: "https://github.com/check/123" }]
+        }
+      });
+
+      const items = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/items?type=coding-improvement-signal`
+      );
+      expect(await items.json()).toEqual({
+        app: "coding-agent",
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            id: `${taskId}_ci_failure`,
+            type: "coding-improvement-signal"
+          })
+        ])
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
   test("coding agent can pick up an existing PR from dashboard state", async () => {
     const taskId = `coding_personal-dashboard_pr_91`;
     const apiServer = createApiServer({ apiToken: "dashboard-token" });
@@ -1247,6 +1479,37 @@ describe("contracts", () => {
           ])
         }
       });
+
+      const highRisk = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/pr-maintenance`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            taskId,
+            actions: ["push-update"],
+            approvedBy: "michaelmwu",
+            approvalId: "approval-456",
+            files: ["migrations/002_drop_legacy_sessions.sql"]
+          })
+        }
+      );
+      expect(highRisk.status).toBe(409);
+      const highRiskPayload = await highRisk.json();
+      expect(highRiskPayload.accepted).toBe(true);
+      expect(highRiskPayload.blocked).toBe(true);
+      expect(highRiskPayload.maintenance[0]).toMatchObject({
+        kind: "push-update",
+        status: "blocked",
+        rejectionReason: "high_risk_approval_required",
+        riskReview: {
+          highRisk: true
+        }
+      });
+      expect(highRiskPayload.maintenance[0].riskReview.categories).toContain("schema");
 
       const archive = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/archive`, {
         method: "POST",
