@@ -43,6 +43,14 @@ export const CODING_AGENT_CONTROL_ACTIONS = [
   "handoff"
 ];
 
+export const CODING_AGENT_GOAL_MUTATION_ACTIONS = [
+  "create-github-issue",
+  "update-github-issue",
+  "write-hermes-memory",
+  "start-coding-task",
+  "post-telegram-message"
+];
+
 export const CODING_AGENT_RISK_CATEGORIES = [
   "docs",
   "tests",
@@ -211,6 +219,10 @@ function queueItem(payload, now = new Date().toISOString()) {
 
 function existingPayload(existing) {
   return existing?.payload ?? existing ?? {};
+}
+
+function compactList(values = []) {
+  return values.filter((value) => value !== undefined && value !== null && value !== "");
 }
 
 export function normalizeCodingAgentPriority(priority = "normal") {
@@ -428,11 +440,90 @@ export function codingAgentFixMode(events = []) {
   return "update";
 }
 
+export function normalizeCodingAgentRegressionMemory(payload = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const repo = payload.repo ?? payload.githubRepo ?? payload.github_repo;
+  const checkName = payload.checkName ?? payload.check_name;
+  const failureSignature =
+    payload.failureSignature ?? payload.failure_signature ?? payload.signature ?? checkName;
+  const rootCause = payload.rootCause ?? payload.root_cause ?? payload.summary;
+  const title =
+    payload.title ??
+    compactList(["Regression memory", repo, checkName ?? failureSignature]).join(": ");
+  const externalId =
+    payload.id ??
+    payload.externalId ??
+    payload.external_id ??
+    `regression_${slug(repo ?? "global")}_${slug(checkName ?? failureSignature ?? title)}_${Date.parse(now) || Date.now()}`;
+  return {
+    id: externalId,
+    app: CODING_AGENT_APP_ID,
+    type: "coding-regression-memory",
+    externalId,
+    status: payload.status ?? "active",
+    title,
+    detail: rootCause,
+    payload: {
+      id: externalId,
+      status: payload.status ?? "active",
+      repo,
+      checkName,
+      failureSignature,
+      rootCause,
+      avoid: payload.avoid ?? payload.avoidance ?? [],
+      recommendedFix: payload.recommendedFix ?? payload.recommended_fix,
+      evidence: payload.evidence ?? [],
+      taskId: payload.taskId ?? payload.task_id,
+      prNumber: payload.prNumber ?? payload.pr_number,
+      tags: payload.tags ?? [],
+      createdAt: payload.createdAt ?? payload.created_at ?? now,
+      updatedAt: now
+    }
+  };
+}
+
+function failedCheckNames(context = {}) {
+  const events = context.events ?? context.actionable ?? [];
+  const checks = context.checks?.failed ?? [];
+  return [
+    ...events
+      .filter((event) => event.kind === "check")
+      .map((event) => event.name)
+      .filter(Boolean),
+    ...checks.map((check) => check.name).filter(Boolean)
+  ];
+}
+
+export function relevantCodingAgentRegressionMemory(task, memories = [], context = {}) {
+  const repo = shortRepoName(context.githubRepo ?? context.repo ?? task.githubRepo ?? task.repo);
+  const checkNames = failedCheckNames(context).map((name) => String(name).toLowerCase());
+  const eventText = JSON.stringify(context.events ?? context.actionable ?? []).toLowerCase();
+  return memories
+    .map(existingPayload)
+    .filter((memory) => memory.status !== "archived")
+    .filter((memory) => {
+      const memoryRepo = shortRepoName(memory.repo ?? memory.githubRepo);
+      if (repo && memoryRepo && repo !== memoryRepo) {
+        return false;
+      }
+      const checkName = String(memory.checkName ?? "").toLowerCase();
+      const signature = String(memory.failureSignature ?? "").toLowerCase();
+      return (
+        (checkName && checkNames.includes(checkName)) ||
+        (signature && eventText.includes(signature)) ||
+        (!checkNames.length && !signature)
+      );
+    })
+    .slice(0, 5);
+}
+
 export function codingAgentExecutorPayload(task, context = {}) {
   const events = context.events ?? context.actionable ?? [];
   const mode = context.mode ?? codingAgentFixMode(events);
   const githubRepo = context.githubRepo ?? context.repo ?? task.githubRepo ?? task.repo;
   const prNumber = context.prNumber ?? task.prNumber;
+  const regressionMemory =
+    context.regressionMemory ?? context.regression_memory ?? task.regressionMemory ?? [];
   const sessionId = task.hermesSessionKey ?? `coding-agent:${task.id}`;
   const worktreeInstruction = task.worktreeDir
     ? `Before inspecting or editing files, change into this task worktree: ${task.worktreeDir}`
@@ -452,6 +543,7 @@ export function codingAgentExecutorPayload(task, context = {}) {
       "Use structured task fields as the source of truth; do not infer state from transcript prose.",
       worktreeInstruction,
       "Address only the supplied PR feedback, failed checks, or update request.",
+      "Use regression memory as evidence about prior failed fixes; do not blindly retry known-bad approaches.",
       "Run the narrowest relevant tests or checks you can identify from the repository.",
       "Commit changes only on the registered task branch. Do not push, create PRs, merge, or clean up worktrees unless a deterministic approved maintenance item explicitly asks for that side effect.",
       "Report concise status with changed files, commands run, and any remaining blockers."
@@ -470,6 +562,8 @@ export function codingAgentExecutorPayload(task, context = {}) {
       "",
       "Actionable events:",
       JSON.stringify(events, null, 2),
+      regressionMemory.length ? "\nRegression memory:" : undefined,
+      regressionMemory.length ? JSON.stringify(regressionMemory, null, 2) : undefined,
       context.checks ? "\nCheck summary:" : undefined,
       context.checks ? JSON.stringify(context.checks, null, 2) : undefined
     ]
@@ -485,7 +579,8 @@ export function codingAgentExecutorPayload(task, context = {}) {
       prNumber,
       worktreeDir: task.worktreeDir,
       branch: task.branch,
-      cursor: context.cursor
+      cursor: context.cursor,
+      regressionMemoryCount: regressionMemory.length
     }
   };
 }
@@ -1025,6 +1120,204 @@ export function synthesizeCodingAgentFindings(signals = [], options = {}) {
         { now }
       )
     );
+}
+
+function normalizeGoalMutationAction(action = "create-github-issue") {
+  const normalized = String(action ?? "create-github-issue").toLowerCase();
+  return CODING_AGENT_GOAL_MUTATION_ACTIONS.includes(normalized) ? normalized : undefined;
+}
+
+function goalMutationTarget(action) {
+  return (
+    {
+      "create-github-issue": "github-issue",
+      "update-github-issue": "github-issue",
+      "write-hermes-memory": "hermes-memory",
+      "start-coding-task": "coding-task",
+      "post-telegram-message": "telegram-message"
+    }[action] ?? "coding-agent"
+  );
+}
+
+function findingFromMutationPayload(payload = {}) {
+  return existingPayload(
+    payload.finding ?? payload.sourceFinding ?? payload.source_finding ?? payload
+  );
+}
+
+function findingEvidenceLines(finding = {}) {
+  return (finding.evidence ?? [])
+    .slice(0, 5)
+    .map((item) =>
+      compactList([
+        item.signalId ? `signal:${item.signalId}` : undefined,
+        item.source,
+        item.url,
+        item.summary
+      ]).join(" - ")
+    );
+}
+
+function githubIssuePreview(payload, finding, { update = false } = {}) {
+  const title = payload.title ?? finding.title ?? "Coding-agent improvement";
+  const evidenceLines = findingEvidenceLines(finding);
+  const proposedActions =
+    payload.proposedActions ?? payload.proposed_actions ?? finding.proposedActions ?? [];
+  const body = compactList([
+    `Source finding: ${finding.id ?? payload.sourceFindingId ?? payload.source_finding_id ?? "manual"}`,
+    "",
+    "## Summary",
+    payload.summary ?? finding.summary ?? title,
+    evidenceLines.length ? "\n## Evidence" : undefined,
+    evidenceLines.map((line) => `- ${line}`).join("\n"),
+    proposedActions.length ? "\n## Proposed Actions" : undefined,
+    proposedActions.map((action) => `- ${action}`).join("\n")
+  ]).join("\n");
+  return {
+    provider: "github",
+    operation: update ? "update_issue" : "create_issue",
+    repo: payload.repo ?? finding.repo ?? "personal-dashboard",
+    issueNumber: update ? (payload.issueNumber ?? payload.issue_number) : undefined,
+    title,
+    body: update ? undefined : body,
+    bodyAppend: update ? body : undefined,
+    labels: payload.labels ?? ["coding-agent", "agent-improvement"]
+  };
+}
+
+function hermesMemoryPreview(payload, finding) {
+  const title = payload.title ?? finding.title ?? "Coding-agent improvement";
+  const evidenceLines = findingEvidenceLines(finding);
+  return {
+    provider: "hermes-memory",
+    operation: "write_memory",
+    namespace: payload.namespace ?? "coding-agent",
+    key: payload.key ?? slug(title),
+    title,
+    summary: payload.summary ?? finding.summary ?? title,
+    body: compactList([
+      payload.summary ?? finding.summary ?? title,
+      evidenceLines.length ? `Evidence: ${evidenceLines.join("; ")}` : undefined
+    ]).join("\n")
+  };
+}
+
+function codingTaskPreview(payload, finding) {
+  return {
+    provider: "dashboard",
+    operation: "start_coding_task",
+    repo: payload.repo ?? finding.repo ?? "personal-dashboard",
+    title: payload.title ?? finding.title ?? "Coding-agent follow-up",
+    request: payload.request ?? payload.summary ?? finding.summary,
+    sourceFindingId: finding.id ?? payload.sourceFindingId ?? payload.source_finding_id
+  };
+}
+
+function telegramMessagePreview(payload, finding) {
+  return {
+    provider: "telegram",
+    operation: "post_message",
+    chatId: payload.chatId ?? payload.chat_id,
+    threadId: payload.threadId ?? payload.thread_id,
+    message:
+      payload.message ??
+      `${finding.title ?? "Coding-agent finding"}: ${finding.summary ?? ""}`.trim()
+  };
+}
+
+function goalMutationPreview(action, payload, finding) {
+  if (action === "create-github-issue") {
+    return githubIssuePreview(payload, finding);
+  }
+  if (action === "update-github-issue") {
+    return githubIssuePreview(payload, finding, { update: true });
+  }
+  if (action === "write-hermes-memory") {
+    return hermesMemoryPreview(payload, finding);
+  }
+  if (action === "start-coding-task") {
+    return codingTaskPreview(payload, finding);
+  }
+  return telegramMessagePreview(payload, finding);
+}
+
+export function planCodingAgentGoalMutation(payload = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const action = normalizeGoalMutationAction(
+    payload.action ?? payload.kind ?? payload.mutationType
+  );
+  if (!action) {
+    return { ok: false, statusCode: 400, reason: "unsupported_goal_mutation_action" };
+  }
+  const finding = findingFromMutationPayload(payload);
+  const dryRun = payload.dryRun ?? payload.dry_run ?? true;
+  const approved = approvalPresent(payload);
+  const blocked = !dryRun && !approved;
+  const sourceFindingId = payload.sourceFindingId ?? payload.source_finding_id ?? finding.id;
+  const id =
+    payload.id ??
+    `goal_mutation_${slug(action)}_${slug(sourceFindingId ?? payload.goalId ?? payload.title ?? "manual")}_${Date.parse(now) || Date.now()}`;
+  const preview = goalMutationPreview(action, payload, finding);
+  const decision = dryRun ? "dry_run" : approved ? "approved" : "approval_required";
+  const status = dryRun ? "preview" : approved ? "approved" : "blocked";
+  const item = {
+    id,
+    app: CODING_AGENT_APP_ID,
+    type: "coding-goal-mutation",
+    externalId: id,
+    status,
+    title: payload.title ?? `Goal mutation: ${action}`,
+    detail: `${preview.provider}:${preview.operation}`,
+    payload: {
+      id,
+      goalId: payload.goalId ?? payload.goal_id,
+      sourceFindingId,
+      action,
+      target: goalMutationTarget(action),
+      status,
+      dryRun,
+      approved,
+      approvedBy: payload.approvedBy ?? payload.approved_by,
+      approvalId: payload.approvalId ?? payload.approval_id,
+      requestedBy: payload.requestedBy ?? payload.requested_by,
+      preview,
+      audit: {
+        decision,
+        reason: blocked ? "approval_required" : undefined,
+        providerCalled: false,
+        createdAt: now
+      },
+      createdAt: payload.createdAt ?? payload.created_at ?? now,
+      updatedAt: now
+    }
+  };
+  return {
+    ok: !blocked,
+    statusCode: blocked ? 409 : 202,
+    blocked,
+    reason: blocked ? "approval_required" : undefined,
+    mutationItem: item,
+    mutation: item.payload
+  };
+}
+
+export function proposeCodingAgentGoalMutations(payload = {}, options = {}) {
+  const finding = findingFromMutationPayload(payload);
+  const requestedActions = payload.actions ??
+    payload.proposedMutations ?? ["create-github-issue", "write-hermes-memory"];
+  const actions = Array.isArray(requestedActions) ? requestedActions : [requestedActions];
+  return actions.map((action) =>
+    planCodingAgentGoalMutation(
+      {
+        ...payload,
+        finding,
+        action,
+        dryRun: true,
+        sourceFindingId: payload.sourceFindingId ?? payload.source_finding_id ?? finding.id
+      },
+      options
+    )
+  );
 }
 
 export function planPrMaintenance(

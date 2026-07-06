@@ -23,10 +23,14 @@ import {
   commentRequestsCodingAgentPickup,
   duplicateCodingTaskCandidates,
   normalizeCodingAgentSignal,
+  normalizeCodingAgentRegressionMemory,
+  planCodingAgentGoalMutation,
   planCodingTaskQueue,
   pickupExistingPrTask,
   planCodingTaskIntake,
   planPrMaintenance,
+  proposeCodingAgentGoalMutations,
+  relevantCodingAgentRegressionMemory,
   synthesizeCodingAgentFindings
 } from "../packages/integrations/coding-agent.mjs";
 import {
@@ -275,6 +279,16 @@ describe("contracts", () => {
           id: "record-improvement-finding",
           kind: "deterministic",
           endpoint: "/api/apps/coding-agent/findings"
+        }),
+        expect.objectContaining({
+          id: "record-regression-memory",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/regression-memory"
+        }),
+        expect.objectContaining({
+          id: "plan-goal-mutation",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/goal-mutations"
         }),
         expect.objectContaining({
           id: "sync-coding-coordination",
@@ -1317,6 +1331,108 @@ describe("contracts", () => {
     }
   });
 
+  test("coding agent regression memory is selected for repeated failed checks", async () => {
+    const memoryItem = normalizeCodingAgentRegressionMemory({
+      id: "regression_contract_failure",
+      repo: "personal-dashboard",
+      checkName: "unit-contract-tests",
+      failureSignature: "Invalid coding task transition",
+      rootCause: "Pause controls from running tasks need an explicit lifecycle transition.",
+      avoid: ["Do not retry by catching and ignoring transition errors."],
+      recommendedFix: "Update the transition table and add a contract test.",
+      evidence: [{ url: "https://github.com/michaelmwu/personal-dashboard/pull/28" }]
+    });
+    expect(memoryItem).toMatchObject({
+      type: "coding-regression-memory",
+      payload: {
+        repo: "personal-dashboard",
+        checkName: "unit-contract-tests",
+        rootCause: "Pause controls from running tasks need an explicit lifecycle transition."
+      }
+    });
+
+    const task = {
+      id: "coding_regression_task",
+      repo: "personal-dashboard",
+      title: "Fix failing controls",
+      prompt: "Address failing contract tests",
+      branch: "hermes/regression"
+    };
+    const context = {
+      repo: "michaelmwu/personal-dashboard",
+      events: [
+        {
+          kind: "check",
+          name: "unit-contract-tests",
+          conclusion: "failure",
+          summary: "Invalid coding task transition"
+        }
+      ],
+      checks: {
+        failed: [{ name: "unit-contract-tests", conclusion: "failure" }]
+      }
+    };
+    const relevant = relevantCodingAgentRegressionMemory(task, [memoryItem], context);
+    expect(relevant).toEqual([
+      expect.objectContaining({
+        id: "regression_contract_failure",
+        recommendedFix: "Update the transition table and add a contract test."
+      })
+    ]);
+
+    const executorPayload = codingAgentExecutorPayload(task, {
+      ...context,
+      regressionMemory: relevant
+    });
+    expect(executorPayload.prompt).toContain("Regression memory:");
+    expect(executorPayload.prompt).toContain(
+      "Do not retry by catching and ignoring transition errors."
+    );
+    expect(executorPayload.metadata).toMatchObject({
+      regressionMemoryCount: 1,
+      mode: "test-fix"
+    });
+
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/regression-memory`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(memoryItem.payload)
+        }
+      );
+      expect(response.status).toBe(202);
+      expect(await response.json()).toMatchObject({
+        accepted: true,
+        memory: {
+          id: "regression_contract_failure",
+          checkName: "unit-contract-tests"
+        }
+      });
+
+      const items = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/items?type=coding-regression-memory`
+      );
+      expect(await items.json()).toEqual({
+        app: "coding-agent",
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            id: "regression_contract_failure",
+            type: "coding-regression-memory"
+          })
+        ])
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
   test("coding agent coordination anchors and controls update task state", async () => {
     expect(assertTaskTransition("running", "paused")).toBe(true);
     const taskId = `coding_control_${Date.now()}`;
@@ -1504,6 +1620,208 @@ describe("contracts", () => {
             title: "Recurring test-failure in personal-dashboard"
           })
         ]
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("coding agent goal mutations draft provider changes behind approval gates", async () => {
+    const finding = {
+      id: `finding_goal_mutations_${Date.now()}`,
+      title: "Recurring PR feedback loops",
+      summary: "Three managed PRs needed the same pause-control fix.",
+      confidence: "high",
+      evidence: [
+        {
+          signalId: "signal_pause_loop",
+          source: "github-review",
+          summary: "Pause control failed for running tasks"
+        }
+      ],
+      proposedActions: ["create follow-up issue", "save regression memory"]
+    };
+    const proposals = proposeCodingAgentGoalMutations(
+      {
+        finding,
+        repo: "personal-dashboard"
+      },
+      { now: "2026-07-06T15:00:00.000Z" }
+    );
+    expect(proposals).toEqual([
+      expect.objectContaining({
+        ok: true,
+        mutation: expect.objectContaining({
+          action: "create-github-issue",
+          dryRun: true,
+          audit: expect.objectContaining({
+            decision: "dry_run",
+            providerCalled: false
+          }),
+          preview: expect.objectContaining({
+            provider: "github",
+            operation: "create_issue",
+            repo: "personal-dashboard",
+            title: "Recurring PR feedback loops"
+          })
+        })
+      }),
+      expect.objectContaining({
+        mutation: expect.objectContaining({
+          action: "write-hermes-memory",
+          target: "hermes-memory",
+          preview: expect.objectContaining({
+            provider: "hermes-memory",
+            operation: "write_memory"
+          })
+        })
+      })
+    ]);
+
+    const blocked = planCodingAgentGoalMutation(
+      {
+        id: "goal_mutation_blocked_issue",
+        finding,
+        action: "create-github-issue",
+        repo: "personal-dashboard",
+        dryRun: false
+      },
+      { now: "2026-07-06T15:01:00.000Z" }
+    );
+    expect(blocked).toMatchObject({
+      ok: false,
+      statusCode: 409,
+      reason: "approval_required",
+      mutation: {
+        id: "goal_mutation_blocked_issue",
+        status: "blocked",
+        approved: false,
+        audit: {
+          decision: "approval_required",
+          reason: "approval_required",
+          providerCalled: false
+        }
+      }
+    });
+
+    const approved = planCodingAgentGoalMutation(
+      {
+        id: "goal_mutation_approved_memory",
+        finding,
+        action: "write-hermes-memory",
+        dryRun: false,
+        approvedBy: "michaelmwu",
+        approvalId: "approval-goal-mutation-1"
+      },
+      { now: "2026-07-06T15:02:00.000Z" }
+    );
+    expect(approved).toMatchObject({
+      ok: true,
+      mutation: {
+        id: "goal_mutation_approved_memory",
+        status: "approved",
+        approvedBy: "michaelmwu",
+        approvalId: "approval-goal-mutation-1",
+        audit: {
+          decision: "approved",
+          providerCalled: false
+        }
+      }
+    });
+
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+    try {
+      const findingResponse = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/findings`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(finding)
+        }
+      );
+      expect(findingResponse.status).toBe(202);
+
+      const proposedResponse = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/goal-mutations`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            findingId: finding.id,
+            propose: true,
+            repo: "personal-dashboard"
+          })
+        }
+      );
+      expect(proposedResponse.status).toBe(202);
+      expect(await proposedResponse.json()).toMatchObject({
+        accepted: true,
+        blocked: false,
+        mutations: [
+          expect.objectContaining({
+            sourceFindingId: finding.id,
+            action: "create-github-issue",
+            dryRun: true
+          }),
+          expect.objectContaining({
+            sourceFindingId: finding.id,
+            action: "write-hermes-memory",
+            dryRun: true
+          })
+        ]
+      });
+
+      const blockedResponse = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/goal-mutations`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            id: "goal_mutation_api_blocked",
+            findingId: finding.id,
+            action: "create-github-issue",
+            repo: "personal-dashboard",
+            dryRun: false
+          })
+        }
+      );
+      expect(blockedResponse.status).toBe(409);
+      expect(await blockedResponse.json()).toMatchObject({
+        accepted: false,
+        blocked: true,
+        mutation: {
+          id: "goal_mutation_api_blocked",
+          audit: {
+            providerCalled: false,
+            reason: "approval_required"
+          }
+        }
+      });
+
+      const mutationItems = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/items?type=coding-goal-mutation`
+      );
+      expect(await mutationItems.json()).toEqual({
+        app: "coding-agent",
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            type: "coding-goal-mutation",
+            payload: expect.objectContaining({
+              sourceFindingId: finding.id,
+              action: "create-github-issue"
+            })
+          })
+        ])
       });
     } finally {
       await closeServer(apiServer);

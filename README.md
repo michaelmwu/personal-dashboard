@@ -116,6 +116,13 @@ Coding Agent endpoints:
   CI, PR reviews, Telegram corrections, guardrails, or Hermes runs.
 - `POST /api/apps/coding-agent/findings`: persist or synthesize recurring
   improvement findings from typed signals.
+- `POST /api/apps/coding-agent/regression-memory`: persist concise prior
+  failure/root-cause memory that PR polling can inject into future executor
+  payloads for matching repos and failed checks.
+- `POST /api/apps/coding-agent/goal-mutations`: draft and audit dry-run GitHub
+  issue, Hermes memory, Telegram, or coding-task mutations from validated
+  findings. Non-dry-run requests require `{approvedBy, approvalId}` and still
+  persist a preview instead of calling providers directly.
 - `POST /api/apps/coding-agent/archive`: archive a completed or abandoned task
   and its remaining queue items.
 
