@@ -95,8 +95,14 @@ Coding Agent endpoints:
 - `POST /api/apps/coding-agent/intake-plan`: turn a request into a durable
   intake plan with clarification questions, proposed surfaces, and risk
   classification before execution.
+- `POST /api/apps/coding-agent/queue-plan`: plan priority, duplicate
+  candidates, and one-task-one-worktree allocation before execution.
 - `POST /api/apps/coding-agent/pr-pickup`: register an existing PR as a
   managed coding task from the dashboard or an explicit pickup comment.
+- `POST /api/apps/coding-agent/coordination`: attach Telegram, dashboard, or
+  GitHub coordination anchors to a managed task.
+- `POST /api/apps/coding-agent/control`: apply typed operator controls such as
+  pause, continue, tests, preview, open-pr, archive, or handoff.
 - `POST /api/apps/coding-agent/queue`: append typed work items to a task queue.
 - `POST /api/apps/coding-agent/pr-status`: sync PR review/check/preview status
   onto a registered task.
@@ -108,6 +114,8 @@ Coding Agent endpoints:
   schema, infra, auth, money, privacy, or destructive changes.
 - `POST /api/apps/coding-agent/signals`: persist typed improvement signals from
   CI, PR reviews, Telegram corrections, guardrails, or Hermes runs.
+- `POST /api/apps/coding-agent/findings`: persist or synthesize recurring
+  improvement findings from typed signals.
 - `POST /api/apps/coding-agent/archive`: archive a completed or abandoned task
   and its remaining queue items.
 
