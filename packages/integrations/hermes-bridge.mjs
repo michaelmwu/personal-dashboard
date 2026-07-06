@@ -31,10 +31,15 @@ function bridgeHeaders(config, headers = {}) {
 
 async function bridgeResponseBody(response) {
   const contentType = response.headers.get("content-type") ?? "";
+  const raw = await response.text();
   if (contentType.includes("application/json")) {
-    return response.json();
+    try {
+      return raw ? JSON.parse(raw) : undefined;
+    } catch {
+      return raw;
+    }
   }
-  return response.text();
+  return raw;
 }
 
 export async function hermesBridgeRequest(path, options = {}) {
