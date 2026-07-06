@@ -161,6 +161,17 @@
       }
     },
     {
+      "id": "reconcile-coding-tasks",
+      "title": "Reconcile coding tasks",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/reconcile",
+      "description": "Mark orphaned or stale running coding tasks as requiring operator attention during startup reconciliation.",
+      "inputSchema": {
+        "staleRunningMinutes": "number?"
+      }
+    },
+    {
       "id": "run-pr-maintenance",
       "title": "Run PR maintenance",
       "kind": "deterministic",
@@ -312,6 +323,7 @@
     "pr-status",
     "coding-pr-pickup-attempt",
     "coding-issue-triage",
+    "coding-reconciliation",
     "coding-risk-review",
     "coding-improvement-signal",
     "coding-improvement-finding",

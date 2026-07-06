@@ -31,6 +31,7 @@ import {
   planCodingTaskIntake,
   planPrMaintenance,
   proposeCodingAgentGoalMutations,
+  reconcileCodingAgentTasks,
   relevantCodingAgentRegressionMemory,
   synthesizeCodingAgentFindings,
   triageCodingAgentIssue
@@ -83,6 +84,7 @@ import {
   discoverCodingAgentPrPickups,
   fetchCodingTaskPrSnapshot,
   pollCodingAgentPrs,
+  runConfiguredIngestions,
   runIngestion
 } from "../scripts/integration-worker.mjs";
 
@@ -272,6 +274,11 @@ describe("contracts", () => {
           id: "run-pr-maintenance",
           kind: "deterministic",
           endpoint: "/api/apps/coding-agent/pr-maintenance"
+        }),
+        expect.objectContaining({
+          id: "reconcile-coding-tasks",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/reconcile"
         }),
         expect.objectContaining({
           id: "review-coding-risk",
@@ -2224,6 +2231,250 @@ describe("contracts", () => {
     }
   });
 
+  test("coding agent reconciliation marks orphaned and stale running tasks", () => {
+    const orphan = codingTaskItem(
+      {
+        id: "coding_reconcile_orphan",
+        repo: "personal-dashboard",
+        title: "Orphaned task",
+        status: "running"
+      },
+      undefined,
+      { now: "2026-07-06T10:00:00.000Z" }
+    );
+    const stale = codingTaskItem(
+      {
+        id: "coding_reconcile_stale",
+        repo: "personal-dashboard",
+        title: "Stale task",
+        status: "running",
+        latestHermesRunId: "run_stale"
+      },
+      undefined,
+      { now: "2026-07-06T10:00:00.000Z" }
+    );
+    const healthy = codingTaskItem(
+      {
+        id: "coding_reconcile_healthy",
+        repo: "personal-dashboard",
+        title: "Healthy task",
+        status: "running",
+        latestHermesRunId: "run_recent"
+      },
+      undefined,
+      { now: "2026-07-06T11:50:00.000Z" }
+    );
+    const stalePrUpdate = codingTaskItem(
+      {
+        id: "coding_reconcile_pr_update",
+        repo: "personal-dashboard",
+        title: "Stale PR update task",
+        status: "pr-open",
+        prNumber: 45,
+        latestHermesRunId: "run_pr_update",
+        hermesRunStatus: "running"
+      },
+      undefined,
+      { now: "2026-07-06T10:00:00.000Z" }
+    );
+
+    const result = reconcileCodingAgentTasks(
+      [orphan, stale, healthy, stalePrUpdate],
+      {
+        staleRunningMinutes: 60,
+        id: "coding_reconciliation_request",
+        auditId: "coding_reconciliation_test"
+      },
+      {
+        now: "2026-07-06T12:00:00.000Z"
+      }
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      reconciled: 3,
+      results: [
+        {
+          taskId: "coding_reconcile_orphan",
+          previousStatus: "running",
+          nextStatus: "waiting-for-approval",
+          reason: "missing_hermes_run_anchor",
+          providerMutationAllowed: false
+        },
+        {
+          taskId: "coding_reconcile_stale",
+          previousStatus: "running",
+          nextStatus: "failed",
+          reason: "stale_running_task",
+          providerMutationAllowed: false
+        },
+        {
+          taskId: "coding_reconcile_pr_update",
+          previousStatus: "pr-open",
+          nextStatus: "waiting-for-approval",
+          reason: "stale_hermes_run",
+          providerMutationAllowed: false
+        }
+      ],
+      auditItem: {
+        id: "coding_reconciliation_test",
+        type: "coding-reconciliation",
+        status: "completed",
+        payload: {
+          requestId: "coding_reconciliation_request",
+          checked: 4,
+          reconciled: 3,
+          providerMutationAllowed: false
+        }
+      }
+    });
+    expect(result.taskItems).toEqual([
+      expect.objectContaining({
+        id: "coding_reconcile_orphan",
+        payload: expect.objectContaining({
+          status: "waiting-for-approval",
+          hermesRunStatus: "orphaned",
+          handoff: expect.objectContaining({
+            blocker: "missing_hermes_run_anchor"
+          }),
+          queue: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "reconcile-coding-task",
+              payload: expect.objectContaining({
+                providerMutationAllowed: false
+              })
+            })
+          ])
+        })
+      }),
+      expect.objectContaining({
+        id: "coding_reconcile_stale",
+        payload: expect.objectContaining({
+          status: "failed",
+          hermesRunStatus: "stale",
+          handoff: expect.objectContaining({
+            blocker: "stale_running_task"
+          })
+        })
+      }),
+      expect.objectContaining({
+        id: "coding_reconcile_pr_update",
+        payload: expect.objectContaining({
+          status: "waiting-for-approval",
+          hermesRunStatus: "stale",
+          handoff: expect.objectContaining({
+            blocker: "stale_hermes_run"
+          })
+        })
+      })
+    ]);
+  });
+
+  test("coding agent reconciliation API persists task transitions and audit records", async () => {
+    const orphanId = `coding_reconcile_orphan_${Date.now()}`;
+    const staleId = `coding_reconcile_stale_${Date.now()}`;
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      for (const payload of [
+        {
+          id: orphanId,
+          repo: "personal-dashboard",
+          title: "API orphan task",
+          status: "running"
+        },
+        {
+          id: staleId,
+          repo: "personal-dashboard",
+          title: "API stale task",
+          status: "running",
+          latestHermesRunId: "run_api_stale"
+        }
+      ]) {
+        const response = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(payload)
+        });
+        expect(response.status).toBe(202);
+      }
+
+      const reconcile = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/reconcile`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          id: orphanId,
+          staleRunningMinutes: 0
+        })
+      });
+      expect(reconcile.status).toBe(202);
+      expect(await reconcile.json()).toMatchObject({
+        accepted: true,
+        reconciled: expect.any(Number),
+        results: expect.arrayContaining([
+          expect.objectContaining({
+            taskId: orphanId,
+            reason: "missing_hermes_run_anchor",
+            nextStatus: "waiting-for-approval"
+          }),
+          expect.objectContaining({
+            taskId: staleId,
+            reason: "stale_running_task",
+            nextStatus: "failed"
+          })
+        ]),
+        audit: {
+          requestId: orphanId,
+          providerMutationAllowed: false
+        }
+      });
+
+      const tasks = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks?includeArchived=true`
+      );
+      expect(await tasks.json()).toEqual({
+        tasks: expect.arrayContaining([
+          expect.objectContaining({
+            id: orphanId,
+            status: "waiting-for-approval",
+            hermesRunStatus: "orphaned"
+          }),
+          expect.objectContaining({
+            id: staleId,
+            status: "failed",
+            hermesRunStatus: "stale"
+          })
+        ])
+      });
+
+      const auditItems = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/items?type=coding-reconciliation`
+      );
+      expect(await auditItems.json()).toEqual({
+        app: "coding-agent",
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            id: expect.not.stringMatching(`^${orphanId}$`),
+            type: "coding-reconciliation",
+            payload: expect.objectContaining({
+              requestId: orphanId,
+              providerMutationAllowed: false
+            })
+          })
+        ])
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
   test("coding agent PR maintenance blocks side effects until approved and archives queues", async () => {
     const taskId = `coding_lifecycle_${Date.now()}`;
     const apiServer = createApiServer({ apiToken: "dashboard-token" });
@@ -4050,5 +4301,95 @@ describe("contracts", () => {
       error: true,
       message: "upstream 500"
     });
+  });
+
+  test("integration worker can dispatch coding-agent reconciliation", async () => {
+    const previousFetch = globalThis.fetch;
+    const envKeys = [
+      "ASIA_TRAVEL_DEALS_API_BASE_URL",
+      "HOTEL_RATE_FINDER_EVENTS_FILE",
+      "FLIGHT_SEARCHER_EVENTS_FILE",
+      "PLAID_EVENTS_FILE",
+      "GMAIL_INTAKE_EVENTS_FILE",
+      "PLAID_SYNC_ENABLED",
+      "HOTEL_RATE_SYNC_ENABLED",
+      "CODING_AGENT_PR_POLL_ENABLED",
+      "CODING_AGENT_PR_PICKUP_ENABLED",
+      "CODING_AGENT_ISSUE_TRIAGE_ENABLED",
+      "CODING_AGENT_RECONCILE_ENABLED",
+      "CODING_AGENT_RECONCILE_WATCHDOG_ENABLED",
+      "CODING_AGENT_STALE_RUNNING_MINUTES"
+    ];
+    const previousEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+    const requests = [];
+
+    try {
+      for (const key of envKeys) {
+        delete process.env[key];
+      }
+      process.env.CODING_AGENT_RECONCILE_ENABLED = "true";
+      process.env.CODING_AGENT_STALE_RUNNING_MINUTES = "7";
+      globalThis.fetch = async (url, options = {}) => {
+        requests.push({
+          path: new URL(url).pathname,
+          body: options.body ? JSON.parse(options.body) : undefined
+        });
+        return Response.json({ accepted: true, reconciled: 2 }, { status: 202 });
+      };
+
+      const startupResults = await runConfiguredIngestions({ startup: true });
+
+      expect(requests).toEqual([
+        {
+          path: "/api/apps/coding-agent/reconcile",
+          body: {
+            staleRunningMinutes: 7
+          }
+        }
+      ]);
+      expect(startupResults).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: "coding-agent-reconcile",
+            accepted: true,
+            reconciled: 2
+          })
+        ])
+      );
+
+      requests.length = 0;
+      const loopResults = await runConfiguredIngestions({ startup: false });
+      expect(requests).toEqual([]);
+      expect(loopResults.some((result) => result.source === "coding-agent-reconcile")).toBe(false);
+
+      process.env.CODING_AGENT_RECONCILE_WATCHDOG_ENABLED = "true";
+      const watchdogResults = await runConfiguredIngestions({ startup: false });
+      expect(requests).toEqual([
+        {
+          path: "/api/apps/coding-agent/reconcile",
+          body: {
+            staleRunningMinutes: 7
+          }
+        }
+      ]);
+      expect(watchdogResults).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: "coding-agent-reconcile",
+            accepted: true,
+            reconciled: 2
+          })
+        ])
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
+      for (const key of envKeys) {
+        if (previousEnv[key] === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = previousEnv[key];
+        }
+      }
+    }
   });
 });

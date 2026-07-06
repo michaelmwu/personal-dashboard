@@ -1073,6 +1073,156 @@ export function applyCodingTaskControl(existing, payload = {}, options = {}) {
   return { ok: true, statusCode: 202, taskItem: item, task: item.payload, control };
 }
 
+function minutesBetween(leftIso, rightIso) {
+  const left = Date.parse(leftIso);
+  const right = Date.parse(rightIso);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor((right - left) / 60000));
+}
+
+export function reconcileCodingAgentTasks(items = [], payload = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const requestedStaleRunningMinutes = Number.parseInt(
+    payload.staleRunningMinutes ?? payload.stale_running_minutes ?? 90,
+    10
+  );
+  const staleRunningMinutes =
+    Number.isFinite(requestedStaleRunningMinutes) && requestedStaleRunningMinutes >= 0
+      ? requestedStaleRunningMinutes
+      : 90;
+  const results = [];
+  const taskItems = [];
+
+  for (const item of items) {
+    const task = existingPayload(item);
+    if (task.status === "archived") {
+      continue;
+    }
+    const ageMinutes = minutesBetween(task.updatedAt ?? task.createdAt ?? item.ts, now);
+    const hasRunAnchor = Boolean(task.latestHermesRunId ?? task.hermesRunId);
+    let reason;
+    let status;
+    let hermesRunStatus = task.hermesRunStatus;
+    let handoff = task.handoff;
+
+    const staleActiveRun =
+      task.hermesRunStatus === "running" &&
+      hasRunAnchor &&
+      ageMinutes >= staleRunningMinutes &&
+      task.status !== "running";
+
+    if (task.status === "running" && !hasRunAnchor) {
+      reason = "missing_hermes_run_anchor";
+      status = "waiting-for-approval";
+      hermesRunStatus = "orphaned";
+      handoff = {
+        blocker: "missing_hermes_run_anchor",
+        attempted: ["startup-reconciliation"],
+        artifacts: [],
+        nextAction: "inspect runner state before continuing",
+        createdAt: now
+      };
+    } else if (task.status === "running" && ageMinutes >= staleRunningMinutes) {
+      reason = "stale_running_task";
+      status = "failed";
+      hermesRunStatus = "stale";
+      handoff = {
+        blocker: "stale_running_task",
+        attempted: ["startup-reconciliation"],
+        artifacts: task.latestHermesRunId ? [`hermes:${task.latestHermesRunId}`] : [],
+        nextAction: "inspect logs and resume explicitly",
+        createdAt: now
+      };
+    } else if (staleActiveRun) {
+      reason = "stale_hermes_run";
+      status = "waiting-for-approval";
+      hermesRunStatus = "stale";
+      handoff = {
+        blocker: "stale_hermes_run",
+        attempted: ["startup-reconciliation"],
+        artifacts: task.latestHermesRunId ? [`hermes:${task.latestHermesRunId}`] : [],
+        nextAction: "inspect PR update run before continuing",
+        createdAt: now
+      };
+    }
+
+    if (!reason) {
+      continue;
+    }
+
+    const next = enqueueCodingTaskItems(
+      item,
+      {
+        status,
+        hermesRunStatus,
+        handoff,
+        items: [
+          {
+            kind: "reconcile-coding-task",
+            status: "approved",
+            title: `Reconcile coding task: ${reason}`,
+            approvalRequired: false,
+            payload: {
+              reason,
+              previousStatus: task.status,
+              nextStatus: status,
+              ageMinutes,
+              providerMutationAllowed: false
+            }
+          }
+        ]
+      },
+      { now }
+    );
+    taskItems.push(next);
+    results.push({
+      taskId: task.id,
+      repo: task.repo,
+      previousStatus: task.status,
+      nextStatus: status,
+      reason,
+      ageMinutes,
+      providerMutationAllowed: false
+    });
+  }
+
+  const requestId = payload.id ?? payload.requestId ?? payload.request_id;
+  const id =
+    payload.auditId ??
+    payload.audit_id ??
+    (requestId
+      ? `coding_reconciliation_${slug(requestId)}`
+      : `coding_reconciliation_${Date.parse(now) || Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+  const auditItem = {
+    id,
+    app: CODING_AGENT_APP_ID,
+    type: "coding-reconciliation",
+    status: results.length ? "completed" : "noop",
+    title: "Coding task reconciliation",
+    payload: {
+      id,
+      requestId,
+      checked: items.length,
+      reconciled: results.length,
+      staleRunningMinutes,
+      results,
+      providerMutationAllowed: false,
+      reconciledAt: now
+    }
+  };
+
+  return {
+    ok: true,
+    statusCode: 202,
+    reconciled: results.length,
+    results,
+    taskItems,
+    auditItem
+  };
+}
+
 export function normalizeCodingAgentFinding(payload = {}, options = {}) {
   const now = options.now ?? new Date().toISOString();
   const title = payload.title ?? "Coding-agent improvement finding";

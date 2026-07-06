@@ -38,6 +38,7 @@ import {
   planCodingTaskQueue,
   planPrMaintenance,
   proposeCodingAgentGoalMutations,
+  reconcileCodingAgentTasks,
   reviewCodingAgentRisk,
   shortRepoName,
   synthesizeCodingAgentFindings,
@@ -333,6 +334,15 @@ async function enqueueCodingTask(payload) {
   const item = enqueueCodingTaskItems(existing, payload);
   await persistCodingTaskItem(item);
   return { ok: true, statusCode: 202, task: item.payload, item };
+}
+
+async function reconcileCodingTasks(payload = {}) {
+  const result = reconcileCodingAgentTasks(await codingTaskItems(), payload);
+  for (const item of result.taskItems) {
+    await persistCodingTaskItem(item);
+  }
+  await upsertAppItem(storePath, result.auditItem);
+  return result;
 }
 
 async function runCodingPrMaintenance(payload) {
@@ -658,6 +668,10 @@ async function dispatchDeterministicCapability(action, capability) {
   }
   if (capability.endpoint === "/api/apps/coding-agent/queue") {
     const response = await enqueueCodingTask(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/reconcile") {
+    const response = await reconcileCodingTasks(action.payload);
     return { dispatched: response.ok, target: capability.target, response };
   }
   if (capability.endpoint === "/api/apps/coding-agent/pr-maintenance") {
@@ -1182,6 +1196,20 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         json(response, result.statusCode, {
           accepted: true,
           task: result.task
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/reconcile") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await reconcileCodingTasks(await readJson(request));
+        json(response, result.statusCode, {
+          accepted: true,
+          reconciled: result.reconciled,
+          results: result.results,
+          audit: result.auditItem.payload
         });
         return;
       }
