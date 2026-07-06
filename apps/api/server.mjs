@@ -15,9 +15,9 @@ import {
   createHermesBridgeRun,
   getHermesBridgeCapabilities,
   getHermesBridgeRun,
-  getHermesBridgeRunEvents,
   hermesBridgeStatus,
   HermesBridgeLoopError,
+  openHermesBridgeRunEvents,
   startHermesBridgeRun,
   stopHermesBridgeRun,
   streamHermesBridgeRunEvents
@@ -419,6 +419,63 @@ function firstHeaderValue(value) {
   return Array.isArray(value) ? value[0] : value;
 }
 
+async function bridgeProxyBody(upstreamResponse, contentType) {
+  if (contentType.includes("application/json")) {
+    return upstreamResponse.json().catch(async () => ({ raw: await upstreamResponse.text() }));
+  }
+  return upstreamResponse.text();
+}
+
+async function pipeBridgeEventStream(response, runId) {
+  const abortController = new AbortController();
+  response.on("close", () => {
+    abortController.abort();
+  });
+
+  const result = await openHermesBridgeRunEvents(runId, { signal: abortController.signal });
+  if (!result.response) {
+    jsonFromBridge(response, result);
+    return;
+  }
+
+  if (!result.contentType.includes("text/event-stream") || !result.response.body) {
+    json(response, result.status, {
+      ok: result.ok,
+      status: result.status,
+      bridge: await bridgeProxyBody(result.response, result.contentType)
+    });
+    return;
+  }
+
+  response.writeHead(result.status, {
+    "Content-Type": result.contentType,
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+    "Access-Control-Allow-Origin": `http://127.0.0.1:${webPort}`,
+    "Access-Control-Allow-Headers":
+      "Authorization, Content-Type, Idempotency-Key, X-Hermes-Signature",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
+  });
+
+  try {
+    for await (const chunk of result.response.body) {
+      if (response.destroyed) {
+        break;
+      }
+      response.write(chunk);
+    }
+  } catch (error) {
+    if (!abortController.signal.aborted) {
+      throw error;
+    }
+  } finally {
+    if (!response.destroyed) {
+      response.end();
+    }
+  }
+}
+
 function requireHermesAuth(request, response, { apiToken = hermesApiToken } = {}) {
   if (!apiToken) {
     return true;
@@ -735,7 +792,7 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         if (!requireAuth(request, response)) {
           return;
         }
-        jsonFromBridge(response, await getHermesBridgeRunEvents(bridgeRunEventsMatch[1]));
+        await pipeBridgeEventStream(response, bridgeRunEventsMatch[1]);
         return;
       }
 

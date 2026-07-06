@@ -7,6 +7,7 @@ const number = new Intl.NumberFormat("en-US");
 const bridgeTokenStorageKey = "personal-dashboard:bridge-token";
 const bridgeRunStorageKey = "personal-dashboard:bridge-run-id";
 let appConfig = { apiBaseUrl: "" };
+let bridgeEventsActive = false;
 
 async function loadConfig() {
   const response = await fetch("/config.json");
@@ -351,6 +352,12 @@ function renderBridgeEvent(payload) {
     typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
 }
 
+function appendBridgeEventText(text) {
+  const events = byId("bridge-events");
+  events.textContent = `${events.textContent}${text}`.slice(-12000);
+  events.scrollTop = events.scrollHeight;
+}
+
 function parseBridgeRunId(payload) {
   const bridge = payload?.bridge ?? payload;
   return bridge?.run_id ?? bridge?.runId ?? bridge?.id ?? bridge?.run?.id;
@@ -377,12 +384,34 @@ async function refreshBridge() {
 
 async function pollBridgeEvents() {
   const runId = bridgeRunId();
-  if (!runId) {
+  if (!runId || bridgeEventsActive) {
     return;
   }
-  const response = await apiFetch(`/api/hermes/bridge/runs/${encodeURIComponent(runId)}/events`);
-  const payload = await response.json().catch(() => ({}));
-  renderBridgeEvent(payload);
+  bridgeEventsActive = true;
+  try {
+    const response = await apiFetch(`/api/hermes/bridge/runs/${encodeURIComponent(runId)}/events`);
+    const contentType = response.headers.get("content-type") ?? "";
+    if (contentType.includes("text/event-stream") && response.body) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          break;
+        }
+        appendBridgeEventText(decoder.decode(value, { stream: true }));
+      }
+      const tail = decoder.decode();
+      if (tail) {
+        appendBridgeEventText(tail);
+      }
+      return;
+    }
+    const payload = await response.json().catch(() => ({}));
+    renderBridgeEvent(payload);
+  } finally {
+    bridgeEventsActive = false;
+  }
 }
 
 async function startBridgeRun() {
@@ -400,6 +429,7 @@ async function startBridgeRun() {
   const runId = parseBridgeRunId(payload);
   if (runId) {
     setBridgeRunId(runId);
+    pollBridgeEvents().catch((error) => renderBridgeEvent(String(error)));
   }
   updateBridgeStatus(response.ok ? "Running" : response.status === 401 ? "Token" : "Error");
   renderBridgeEvent(payload);

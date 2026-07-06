@@ -121,6 +121,49 @@ export async function getHermesBridgeRunEvents(runId, options = {}) {
   });
 }
 
+export async function openHermesBridgeRunEvents(runId, options = {}) {
+  const config = options.config ?? hermesBridgeConfig();
+  if (!isHermesBridgeConfigured(config)) {
+    return {
+      ok: false,
+      status: 503,
+      body: {
+        error: "missing_hermes_bridge_config",
+        message: "Hermes Bridge URL and password are required."
+      }
+    };
+  }
+
+  const fetchImpl = options.fetch ?? fetch;
+  try {
+    const response = await fetchImpl(
+      `${bridgeBaseUrl(config)}/v1/runs/${encodeURIComponent(runId)}/events`,
+      {
+        headers: bridgeHeaders(config, {
+          Accept: options.accept ?? "text/event-stream, application/json",
+          ...(options.headers ?? {})
+        }),
+        signal: options.signal
+      }
+    );
+    return {
+      ok: response.ok,
+      status: response.status,
+      contentType: response.headers.get("content-type") ?? "application/octet-stream",
+      response
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 502,
+      body: {
+        error: "hermes_bridge_unavailable",
+        message: error instanceof Error ? error.message : String(error)
+      }
+    };
+  }
+}
+
 export async function approveHermesBridgeRun(runId, payload, options = {}) {
   return hermesBridgeRequest(`/v1/runs/${encodeURIComponent(runId)}/approval`, {
     ...options,

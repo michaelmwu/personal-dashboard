@@ -453,10 +453,8 @@ describe("contracts", () => {
           { headers: { Authorization: "Bearer dashboard-token" } }
         );
         expect(events.status).toBe(200);
-        expect(await events.json()).toMatchObject({
-          ok: true,
-          bridge: expect.stringContaining("waiting_for_approval")
-        });
+        expect(events.headers.get("content-type")).toContain("text/event-stream");
+        expect(await events.text()).toContain("waiting_for_approval");
 
         const approval = await clientFetch(
           `http://127.0.0.1:${apiPort}/api/hermes/bridge/runs/run_abc/approval`,
@@ -491,6 +489,48 @@ describe("contracts", () => {
           ok: true,
           bridge: { stopped: true }
         });
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("Hermes Bridge event proxy forwards live SSE chunks before the stream closes", async () => {
+    const bridgeFetch = async (url) => {
+      expect(new URL(url).pathname).toBe("/v1/runs/run_live/events");
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(
+                'event: run.status\ndata: {"status":"waiting_for_approval"}\n\n'
+              )
+            );
+          }
+        }),
+        { headers: { "Content-Type": "text/event-stream" } }
+      );
+    };
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      await withMockBridge(bridgeFetch, async (clientFetch) => {
+        const clientAbort = new AbortController();
+        const response = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/hermes/bridge/runs/run_live/events`,
+          {
+            headers: { Authorization: "Bearer dashboard-token" },
+            signal: clientAbort.signal
+          }
+        );
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toContain("text/event-stream");
+        const reader = response.body.getReader();
+        const { value, done } = await reader.read();
+        expect(done).toBe(false);
+        expect(new TextDecoder().decode(value)).toContain("waiting_for_approval");
+        clientAbort.abort();
       });
     } finally {
       await closeServer(apiServer);
