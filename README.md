@@ -92,6 +92,8 @@ Coding Agent endpoints:
   `includeArchived=true` to include archived records.
 - `POST /api/apps/coding-agent/tasks`: register the durable task anchor
   `{id, repo, branch, worktreeDir, hermesSessionKey, prNumber, previewUrl}`.
+- `POST /api/apps/coding-agent/pr-pickup`: register an existing PR as a
+  managed coding task from the dashboard or an explicit pickup comment.
 - `POST /api/apps/coding-agent/queue`: append typed work items to a task queue.
 - `POST /api/apps/coding-agent/pr-status`: sync PR review/check/preview status
   onto a registered task.
@@ -113,6 +115,14 @@ GitHub cursor through `/api/apps/coding-agent/pr-status`, and dispatches the
 agentic `update-coding-task` capability only when new actionable reviews,
 comments, or failed checks are found. Use `CODING_AGENT_GITHUB_OWNER` when task
 records store repo names without an owner.
+
+Set `CODING_AGENT_PR_PICKUP_ENABLED=true` on the integration worker to scan
+allowlisted repos for explicit pickup comments such as `@coding-agent pick up`
+or `/coding-agent pickup`. The pickup scanner reads recent issue comments and
+PR metadata with `gh api`, skips already-managed PRs, and persists the PR
+through `/api/apps/coding-agent/pr-pickup`; it does not write marker comments or
+mutate GitHub during discovery. Use `CODING_AGENT_PICKUP_REPOS` to narrow the
+scan list beyond `CODING_AGENT_ALLOWED_REPOS`.
 
 Plaid-facing endpoints:
 

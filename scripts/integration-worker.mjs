@@ -3,7 +3,11 @@ import { execFile } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 
-import { codingAgentExecutorPayload } from "../packages/integrations/coding-agent.mjs";
+import {
+  codingAgentExecutorPayload,
+  commentRequestsCodingAgentPickup,
+  shortRepoName
+} from "../packages/integrations/coding-agent.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -25,6 +29,13 @@ function dashboardBaseUrl() {
 
 function dashboardEventUrl(source) {
   return `${dashboardBaseUrl()}/api/integrations/${source}/events`;
+}
+
+function envList(name, env = process.env) {
+  return String(env[name] ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function asiaDealsUrl() {
@@ -243,6 +254,136 @@ export async function ghJson(path, { command = execFileAsync } = {}) {
   return JSON.parse(stdout);
 }
 
+function codingAgentPickupRepos(env = process.env) {
+  const owner = env.CODING_AGENT_GITHUB_OWNER;
+  return envList("CODING_AGENT_PICKUP_REPOS", env)
+    .concat(envList("CODING_AGENT_ALLOWED_REPOS", env))
+    .map((repo) => (repo.includes("/") || !owner ? repo : `${owner}/${repo}`))
+    .filter((repo) => repo.includes("/"))
+    .filter((repo, index, repos) => repos.indexOf(repo) === index);
+}
+
+function prNumberFromIssueComment(comment) {
+  const match = String(comment.issue_url ?? comment.html_url ?? "").match(
+    /\/issues\/(\d+)(?:$|[#?])/
+  );
+  return match ? Number.parseInt(match[1], 10) : undefined;
+}
+
+function codingTaskPrKeys(task, env = process.env) {
+  const repo = task.githubRepo ?? task.github_repo ?? githubRepoForTask(task, env);
+  const shortRepo = shortRepoName(task.repo ?? repo);
+  const prNumber = task.prNumber ?? task.pr_number;
+  return [`${repo}:${prNumber}`, `${shortRepo}:${prNumber}`].filter(
+    (key) => !key.includes("undefined")
+  );
+}
+
+function pickupPayloadFromPr({ repo, prNumber, pr, comment }) {
+  return {
+    repo: shortRepoName(repo),
+    githubRepo: repo,
+    prNumber,
+    title: pr.title ?? `Pick up PR #${prNumber}`,
+    branch: pr.head?.ref,
+    baseBranch: pr.base?.ref,
+    prUrl: pr.html_url,
+    headSha: pr.head?.sha,
+    status: "pr-open",
+    pickupSource: "github-comment",
+    pickupMarker: comment.body,
+    pickupCommentId: String(comment.id),
+    pickupCommentUrl: comment.html_url
+  };
+}
+
+export async function discoverCodingAgentPrPickups(options = {}) {
+  const env = options.env ?? process.env;
+  const repos = options.repos ?? codingAgentPickupRepos(env);
+  if (!repos.length) {
+    return { skipped: true, reason: "no_pickup_repos_configured", pickedUp: 0, results: [] };
+  }
+
+  const tasksResponse =
+    options.tasksResponse ??
+    (await getDashboardJson("/api/apps/coding-agent/tasks?includeArchived=true"));
+  const managedKeys = new Set(
+    (tasksResponse.tasks ?? []).flatMap((task) => codingTaskPrKeys(task, env))
+  );
+  const command = options.command ?? execFileAsync;
+  const postPickup =
+    options.postPickup ??
+    ((payload) => postDashboardAction("/api/apps/coding-agent/pr-pickup", payload));
+  const results = [];
+
+  for (const repo of repos) {
+    const comments = await ghJson(`repos/${repo}/issues/comments?per_page=100`, { command });
+    for (const comment of comments.filter((item) => commentRequestsCodingAgentPickup(item.body))) {
+      const prNumber = prNumberFromIssueComment(comment);
+      if (!prNumber) {
+        results.push({ repo, commentId: comment.id, skipped: true, reason: "missing_pr_number" });
+        continue;
+      }
+      if (
+        managedKeys.has(`${repo}:${prNumber}`) ||
+        managedKeys.has(`${shortRepoName(repo)}:${prNumber}`)
+      ) {
+        results.push({
+          repo,
+          prNumber,
+          commentId: comment.id,
+          skipped: true,
+          reason: "already_managed"
+        });
+        continue;
+      }
+
+      let pr;
+      try {
+        pr = await ghJson(`repos/${repo}/pulls/${prNumber}`, { command });
+      } catch (_error) {
+        results.push({
+          repo,
+          prNumber,
+          commentId: comment.id,
+          skipped: true,
+          reason: "not_pull_request"
+        });
+        continue;
+      }
+      if (String(pr.state ?? "").toLowerCase() !== "open") {
+        results.push({
+          repo,
+          prNumber,
+          commentId: comment.id,
+          skipped: true,
+          reason: "pr_not_open"
+        });
+        continue;
+      }
+
+      const payload = pickupPayloadFromPr({ repo, prNumber, pr, comment });
+      const pickup = await postPickup(payload);
+      managedKeys.add(`${repo}:${prNumber}`);
+      managedKeys.add(`${shortRepoName(repo)}:${prNumber}`);
+      results.push({
+        repo,
+        prNumber,
+        commentId: comment.id,
+        pickedUp: true,
+        pickup,
+        taskId: pickup.task?.id
+      });
+    }
+  }
+
+  return {
+    repoCount: repos.length,
+    pickedUp: results.filter((result) => result.pickedUp).length,
+    results
+  };
+}
+
 export async function fetchCodingTaskPrSnapshot(task, options = {}) {
   const repo = githubRepoForTask(task, options.env ?? process.env);
   const prNumber = task.prNumber ?? task.pr_number;
@@ -397,6 +538,9 @@ export async function runConfiguredIngestions() {
   }
   if (process.env.CODING_AGENT_PR_POLL_ENABLED === "true") {
     results.push(await runIngestion("coding-agent", pollCodingAgentPrs));
+  }
+  if (process.env.CODING_AGENT_PR_PICKUP_ENABLED === "true") {
+    results.push(await runIngestion("coding-agent-pr-pickup", discoverCodingAgentPrPickups));
   }
   return results;
 }

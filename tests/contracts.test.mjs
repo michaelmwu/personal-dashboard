@@ -18,6 +18,8 @@ import {
   archiveCodingTask,
   codingAgentExecutorPayload,
   codingTaskItem,
+  commentRequestsCodingAgentPickup,
+  pickupExistingPrTask,
   planPrMaintenance
 } from "../packages/integrations/coding-agent.mjs";
 import {
@@ -64,6 +66,7 @@ import {
   upsertNormalizedEvent
 } from "../packages/storage/dashboard-store.mjs";
 import {
+  discoverCodingAgentPrPickups,
   fetchCodingTaskPrSnapshot,
   pollCodingAgentPrs,
   runIngestion
@@ -220,6 +223,11 @@ describe("contracts", () => {
           id: "register-coding-task",
           kind: "deterministic",
           endpoint: "/api/apps/coding-agent/tasks"
+        }),
+        expect.objectContaining({
+          id: "pickup-existing-pr",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/pr-pickup"
         }),
         expect.objectContaining({
           id: "start-coding-task",
@@ -942,6 +950,90 @@ describe("contracts", () => {
     }
   });
 
+  test("coding agent can pick up an existing PR from dashboard state", async () => {
+    const taskId = `coding_personal-dashboard_pr_91`;
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      const pickup = await fetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json",
+          "Idempotency-Key": `${taskId}_pickup`
+        },
+        body: JSON.stringify({
+          capabilityId: "pickup-existing-pr",
+          origin: "dashboard",
+          payload: {
+            githubRepo: "michaelmwu/personal-dashboard",
+            prNumber: 91,
+            title: "Existing PR",
+            branch: "feature/existing-pr",
+            prUrl: "https://github.com/michaelmwu/personal-dashboard/pull/91",
+            pickupSource: "dashboard"
+          }
+        })
+      });
+      expect(pickup.status).toBe(202);
+      expect(await pickup.json()).toMatchObject({
+        accepted: true,
+        dispatch: {
+          dispatched: true,
+          target: "coding-agent",
+          response: {
+            task: {
+              id: taskId,
+              repo: "personal-dashboard",
+              githubRepo: "michaelmwu/personal-dashboard",
+              prNumber: 91,
+              status: "pr-open",
+              pickupSource: "dashboard",
+              queue: [
+                expect.objectContaining({
+                  kind: "pickup-existing-pr",
+                  status: "approved",
+                  approvalRequired: false
+                })
+              ]
+            }
+          }
+        }
+      });
+
+      const duplicate = pickupExistingPrTask(
+        codingTaskItem({
+          id: taskId,
+          repo: "personal-dashboard",
+          githubRepo: "michaelmwu/personal-dashboard",
+          prNumber: 91,
+          status: "pr-open"
+        }),
+        {
+          githubRepo: "michaelmwu/personal-dashboard",
+          prNumber: 91,
+          pickupSource: "dashboard"
+        },
+        {
+          allowedRepos: ["personal-dashboard"],
+          branchPrefix: "hermes",
+          defaultBaseBranch: "origin/main"
+        }
+      );
+      expect(duplicate).toMatchObject({
+        ok: true,
+        statusCode: 200,
+        task: {
+          id: taskId,
+          prNumber: 91
+        }
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
   test("coding agent executor dispatch stores Hermes run id on the task record", async () => {
     const taskId = `coding_run_${Date.now()}`;
     const bridgeRequests = [];
@@ -1496,6 +1588,89 @@ describe("contracts", () => {
     expect(dispatched[0].snapshot.actionable[0]).toMatchObject({
       kind: "review",
       state: "COMMENTED"
+    });
+  });
+
+  test("coding agent PR pickup discovers explicit comments without mutating GitHub", async () => {
+    expect(commentRequestsCodingAgentPickup("@coding-agent pick up this PR")).toBe(true);
+    expect(commentRequestsCodingAgentPickup("normal review comment")).toBe(false);
+
+    const calls = [];
+    const pickups = [];
+    const result = await discoverCodingAgentPrPickups({
+      repos: ["michaelmwu/personal-dashboard"],
+      tasksResponse: {
+        tasks: [
+          {
+            id: "coding_existing",
+            repo: "personal-dashboard",
+            githubRepo: "michaelmwu/personal-dashboard",
+            prNumber: 41,
+            status: "pr-open"
+          }
+        ]
+      },
+      async command(cmd, args) {
+        calls.push({ cmd, args });
+        const path = args[1];
+        const payloads = {
+          "repos/michaelmwu/personal-dashboard/issues/comments?per_page=100": [
+            {
+              id: 500,
+              body: "@coding-agent pick up this PR",
+              html_url: "https://github.com/michaelmwu/personal-dashboard/pull/42#issuecomment-500",
+              issue_url: "https://api.github.com/repos/michaelmwu/personal-dashboard/issues/42"
+            },
+            {
+              id: 501,
+              body: "@coding-agent pickup already managed",
+              html_url: "https://github.com/michaelmwu/personal-dashboard/pull/41#issuecomment-501",
+              issue_url: "https://api.github.com/repos/michaelmwu/personal-dashboard/issues/41"
+            },
+            {
+              id: 502,
+              body: "Looks fine.",
+              html_url: "https://github.com/michaelmwu/personal-dashboard/pull/43#issuecomment-502",
+              issue_url: "https://api.github.com/repos/michaelmwu/personal-dashboard/issues/43"
+            }
+          ],
+          "repos/michaelmwu/personal-dashboard/pulls/42": {
+            state: "open",
+            title: "Existing pickup PR",
+            html_url: "https://github.com/michaelmwu/personal-dashboard/pull/42",
+            head: { ref: "feature/existing-pickup", sha: "pickup-sha" },
+            base: { ref: "main" }
+          }
+        };
+        return { stdout: JSON.stringify(payloads[path]) };
+      },
+      async postPickup(payload) {
+        pickups.push(payload);
+        return { accepted: true, task: { id: "coding_personal-dashboard_pr_42" } };
+      }
+    });
+
+    expect(calls.map((call) => call.args)).toEqual([
+      ["api", "repos/michaelmwu/personal-dashboard/issues/comments?per_page=100"],
+      ["api", "repos/michaelmwu/personal-dashboard/pulls/42"]
+    ]);
+    expect(pickups).toEqual([
+      expect.objectContaining({
+        repo: "personal-dashboard",
+        githubRepo: "michaelmwu/personal-dashboard",
+        prNumber: 42,
+        branch: "feature/existing-pickup",
+        pickupSource: "github-comment",
+        pickupCommentId: "500"
+      })
+    ]);
+    expect(result).toMatchObject({
+      repoCount: 1,
+      pickedUp: 1,
+      results: expect.arrayContaining([
+        expect.objectContaining({ prNumber: 42, pickedUp: true }),
+        expect.objectContaining({ prNumber: 41, skipped: true, reason: "already_managed" })
+      ])
     });
   });
 

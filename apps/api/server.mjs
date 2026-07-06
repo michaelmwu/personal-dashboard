@@ -28,7 +28,9 @@ import {
   codingAgentPolicyFromEnv,
   codingTaskItem,
   enqueueCodingTaskItems,
+  pickupExistingPrTask,
   planPrMaintenance,
+  shortRepoName,
   visibleCodingTasks
 } from "../../packages/integrations/coding-agent.mjs";
 import {
@@ -138,10 +140,18 @@ async function findCodingTask(payload) {
   const taskId = payload.taskId ?? payload.task_id ?? payload.id;
   const prNumber = payload.prNumber ?? payload.pr_number;
   const repo = payload.repo;
+  const githubRepo = payload.githubRepo ?? payload.github_repo;
+  const shortRepo = shortRepoName(repo ?? githubRepo);
   return (await codingTaskItems()).find(
     (item) =>
       (taskId && item.id === taskId) ||
-      (repo && prNumber && item.payload?.repo === repo && item.payload?.prNumber === prNumber)
+      (prNumber &&
+        (repo || githubRepo) &&
+        (item.payload?.repo === repo ||
+          item.payload?.repo === shortRepo ||
+          item.payload?.githubRepo === githubRepo ||
+          item.payload?.githubRepo === repo) &&
+        item.payload?.prNumber === prNumber)
   );
 }
 
@@ -157,6 +167,16 @@ async function registerCodingTask(payload) {
   const item = codingTaskItem(payload);
   await upsertAppItem(storePath, item);
   return { ok: true, statusCode: 202, task: item.payload, item };
+}
+
+async function pickupCodingPr(payload) {
+  const existing = await findCodingTask(payload);
+  const result = pickupExistingPrTask(existing, payload, codingAgentPolicy);
+  if (!result.ok) {
+    return result;
+  }
+  await persistCodingTaskItem(result.taskItem);
+  return result;
 }
 
 async function syncCodingPrStatus(payload) {
@@ -472,6 +492,10 @@ async function dispatchDeterministicCapability(action, capability) {
     const response = await registerCodingTask(action.payload);
     return { dispatched: response.ok, target: capability.target, response };
   }
+  if (capability.endpoint === "/api/apps/coding-agent/pr-pickup") {
+    const response = await pickupCodingPr(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
   if (capability.endpoint === "/api/apps/coding-agent/pr-status") {
     const response = await syncCodingPrStatus(action.payload);
     return { dispatched: response.ok, target: capability.target, response };
@@ -764,6 +788,22 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         const result = await registerCodingTask(await readJson(request));
         if (!result.ok) {
           error(response, result.statusCode, result.reason, "Coding task repo is required.");
+          return;
+        }
+        json(response, result.statusCode, {
+          accepted: true,
+          task: result.task
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/pr-pickup") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await pickupCodingPr(await readJson(request));
+        if (!result.ok) {
+          error(response, result.statusCode, result.reason, "Existing PR pickup rejected.");
           return;
         }
         json(response, result.statusCode, {

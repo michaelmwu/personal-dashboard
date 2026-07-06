@@ -67,6 +67,23 @@
       }
     },
     {
+      "id": "pickup-existing-pr",
+      "title": "Pick up existing PR",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/pr-pickup",
+      "description": "Register an existing pull request as a managed coding-agent task from the dashboard or an explicit pickup comment.",
+      "inputSchema": {
+        "repo": "string?",
+        "githubRepo": "string?",
+        "prNumber": "number",
+        "title": "string?",
+        "branch": "string?",
+        "prUrl": "string?",
+        "pickupSource": "string?"
+      }
+    },
+    {
       "id": "sync-pr-status",
       "title": "Sync PR status",
       "kind": "deterministic",

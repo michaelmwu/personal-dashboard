@@ -1,4 +1,12 @@
 export const CODING_AGENT_APP_ID = "coding-agent";
+export const CODING_AGENT_PICKUP_MARKERS = [
+  "@coding-agent pickup",
+  "@coding-agent pick up",
+  "/coding-agent pickup",
+  "/coding-agent pick up",
+  "coding-agent: pickup",
+  "coding-agent pickup"
+];
 
 export const CODING_TASK_STATUSES = [
   "queued",
@@ -64,6 +72,11 @@ export function codingAgentPolicyFromEnv(env = process.env) {
   };
 }
 
+export function shortRepoName(repo) {
+  const value = String(repo ?? "").trim();
+  return value.includes("/") ? value.split("/").at(-1) : value;
+}
+
 export function slug(value) {
   return String(value ?? "")
     .toLowerCase()
@@ -75,6 +88,10 @@ export function slug(value) {
 export function codingTaskId(payload) {
   if (payload.id || payload.taskId || payload.task_id) {
     return String(payload.id ?? payload.taskId ?? payload.task_id);
+  }
+  const prNumber = payload.prNumber ?? payload.pr_number;
+  if (payload.pickupSource && payload.repo && prNumber) {
+    return `coding_${slug(shortRepoName(payload.repo))}_pr_${prNumber}`;
   }
   const repo = slug(payload.repo ?? "repo");
   const title = slug(payload.title ?? payload.branch ?? payload.prNumber ?? "task");
@@ -188,10 +205,18 @@ export function codingTaskItem(payload, existing, options = {}) {
         payload.hermesRunStatus ?? payload.hermes_run_status ?? previous.hermesRunStatus,
       prNumber,
       prUrl: payload.prUrl ?? payload.pr_url ?? previous.prUrl,
+      headSha: payload.headSha ?? payload.head_sha ?? previous.headSha,
       previewUrl,
       checks: payload.checks ?? previous.checks,
       reviewState: payload.reviewState ?? payload.review_state ?? previous.reviewState,
       prState: payload.prState ?? payload.pr_state ?? previous.prState,
+      pickupSource: payload.pickupSource ?? payload.pickup_source ?? previous.pickupSource,
+      pickupMarker: payload.pickupMarker ?? payload.pickup_marker ?? previous.pickupMarker,
+      pickupCommentId:
+        payload.pickupCommentId ?? payload.pickup_comment_id ?? previous.pickupCommentId,
+      pickupCommentUrl:
+        payload.pickupCommentUrl ?? payload.pickup_comment_url ?? previous.pickupCommentUrl,
+      pickedUpAt: payload.pickedUpAt ?? payload.picked_up_at ?? previous.pickedUpAt,
       lastCommentCursor:
         payload.lastCommentCursor ?? payload.last_comment_cursor ?? previous.lastCommentCursor,
       githubCursor: payload.githubCursor ?? payload.github_cursor ?? previous.githubCursor,
@@ -339,7 +364,11 @@ export function enqueueCodingTaskItems(existing, payload, options = {}) {
 }
 
 function repoAllowed(repo, policy) {
-  return !policy.allowedRepos.length || policy.allowedRepos.includes(repo);
+  return (
+    !policy.allowedRepos.length ||
+    policy.allowedRepos.includes(repo) ||
+    policy.allowedRepos.includes(shortRepoName(repo))
+  );
 }
 
 function branchAllowed(branch, policy) {
@@ -437,6 +466,83 @@ export function planPrMaintenance(
     taskItem: next,
     maintenance: results
   };
+}
+
+export function commentRequestsCodingAgentPickup(body, markers = CODING_AGENT_PICKUP_MARKERS) {
+  const normalizedBody = String(body ?? "").toLowerCase();
+  return markers.some((marker) => normalizedBody.includes(String(marker).toLowerCase()));
+}
+
+export function pickupExistingPrTask(
+  existing,
+  payload,
+  policy = codingAgentPolicyFromEnv(),
+  options = {}
+) {
+  const now = options.now ?? new Date().toISOString();
+  const githubRepo = payload.githubRepo ?? payload.github_repo;
+  const repo = shortRepoName(payload.repo ?? githubRepo);
+  const prNumber = payload.prNumber ?? payload.pr_number;
+  if (!repo) {
+    return { ok: false, statusCode: 400, reason: "missing_repo" };
+  }
+  if (!prNumber) {
+    return { ok: false, statusCode: 400, reason: "missing_pr_number" };
+  }
+  if (!repoAllowed(githubRepo ?? repo, policy)) {
+    return { ok: false, statusCode: 403, reason: "repo_not_allowed" };
+  }
+  if (existing?.payload?.status === "archived") {
+    return { ok: false, statusCode: 409, reason: "coding_task_archived" };
+  }
+
+  const item = codingTaskItem(
+    {
+      id: payload.id,
+      repo,
+      githubRepo,
+      title: payload.title ?? `Pick up PR #${prNumber}`,
+      prompt:
+        payload.prompt ??
+        `Pick up existing PR #${prNumber} in ${githubRepo ?? repo}. Continue from the registered PR state and wait for deterministic approval before GitHub side effects.`,
+      baseBranch: payload.baseBranch ?? payload.base_branch,
+      branch: payload.branch,
+      worktreeDir: payload.worktreeDir ?? payload.worktree_dir,
+      hermesSessionKey: payload.hermesSessionKey ?? payload.hermes_session_key,
+      prNumber,
+      prUrl: payload.prUrl ?? payload.pr_url,
+      headSha: payload.headSha ?? payload.head_sha,
+      status: payload.status ?? existing?.payload?.status ?? "pr-open",
+      pickupSource: payload.pickupSource ?? payload.pickup_source ?? "dashboard",
+      pickupMarker: payload.pickupMarker ?? payload.pickup_marker,
+      pickupCommentId: payload.pickupCommentId ?? payload.pickup_comment_id,
+      pickupCommentUrl: payload.pickupCommentUrl ?? payload.pickup_comment_url,
+      pickedUpAt: payload.pickedUpAt ?? payload.picked_up_at ?? now,
+      queue: payload.queue ??
+        existing?.payload?.queue ?? [
+          queueItem(
+            {
+              kind: "pickup-existing-pr",
+              status: "approved",
+              title: `Pick up PR #${prNumber}`,
+              approvalRequired: false,
+              payload: {
+                repo,
+                githubRepo,
+                prNumber,
+                pickupSource: payload.pickupSource ?? payload.pickup_source ?? "dashboard",
+                pickupCommentId: payload.pickupCommentId ?? payload.pickup_comment_id
+              }
+            },
+            now
+          )
+        ]
+    },
+    existing,
+    { now }
+  );
+
+  return { ok: true, statusCode: existing ? 200 : 202, taskItem: item, task: item.payload };
 }
 
 export function archiveCodingTask(existing, payload = {}, options = {}) {
