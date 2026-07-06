@@ -31,10 +31,13 @@ import {
   enqueueCodingTaskItems,
   normalizeCodingAgentSignal,
   normalizeCodingAgentFinding,
+  normalizeCodingAgentRegressionMemory,
   pickupExistingPrTask,
+  planCodingAgentGoalMutation,
   planCodingTaskIntake,
   planCodingTaskQueue,
   planPrMaintenance,
+  proposeCodingAgentGoalMutations,
   reviewCodingAgentRisk,
   shortRepoName,
   synthesizeCodingAgentFindings,
@@ -144,6 +147,10 @@ async function codingTaskItems() {
   return listAppItems(storePath, { app: "coding-agent", type: "coding-task" });
 }
 
+async function codingFindingItems() {
+  return listAppItems(storePath, { app: "coding-agent", type: "coding-improvement-finding" });
+}
+
 async function findCodingTask(payload) {
   const taskId = payload.taskId ?? payload.task_id ?? payload.id;
   const prNumber = payload.prNumber ?? payload.pr_number;
@@ -161,6 +168,15 @@ async function findCodingTask(payload) {
           item.payload?.githubRepo === repo) &&
         item.payload?.prNumber === prNumber)
   );
+}
+
+async function findCodingFinding(payload) {
+  const findingId =
+    payload.findingId ?? payload.finding_id ?? payload.sourceFindingId ?? payload.source_finding_id;
+  if (!findingId) {
+    return undefined;
+  }
+  return (await codingFindingItems()).find((item) => item.id === findingId);
 }
 
 async function persistCodingTaskItem(item) {
@@ -222,6 +238,12 @@ async function recordCodingFinding(payload) {
   return { ok: true, statusCode: 202, finding: item.payload, item };
 }
 
+async function recordCodingRegressionMemory(payload) {
+  const item = normalizeCodingAgentRegressionMemory(payload);
+  await upsertAppItem(storePath, item);
+  return { ok: true, statusCode: 202, memory: item.payload, item };
+}
+
 async function synthesizeCodingFindings(payload = {}) {
   const signals = await listAppItems(storePath, {
     app: "coding-agent",
@@ -234,6 +256,30 @@ async function synthesizeCodingFindings(payload = {}) {
     await upsertAppItem(storePath, finding);
   }
   return { ok: true, statusCode: 202, findings: findings.map((item) => item.payload) };
+}
+
+async function planCodingGoalMutation(payload = {}) {
+  const findingItem = await findCodingFinding(payload);
+  const input = findingItem ? { ...payload, finding: findingItem.payload } : payload;
+  const results =
+    input.propose || (!input.action && input.finding)
+      ? proposeCodingAgentGoalMutations(input)
+      : [planCodingAgentGoalMutation(input)];
+  for (const result of results) {
+    if (result.mutationItem) {
+      await upsertAppItem(storePath, result.mutationItem);
+    }
+  }
+  const blocked = results.some((result) => result.blocked);
+  const failed = results.find((result) => !result.mutationItem);
+  return {
+    ok: !failed && !blocked,
+    statusCode: failed?.statusCode ?? (blocked ? 409 : 202),
+    reason: failed?.reason ?? results.find((result) => result.reason)?.reason,
+    blocked,
+    mutations: results.filter((result) => result.mutation).map((result) => result.mutation),
+    mutation: results.find((result) => result.mutation)?.mutation
+  };
 }
 
 async function updateCodingCoordination(payload) {
@@ -624,6 +670,14 @@ async function dispatchDeterministicCapability(action, capability) {
     const response = action.payload?.synthesize
       ? await synthesizeCodingFindings(action.payload)
       : await recordCodingFinding(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/regression-memory") {
+    const response = await recordCodingRegressionMemory(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/goal-mutations") {
+    const response = await planCodingGoalMutation(action.payload);
     return { dispatched: response.ok, target: capability.target, response };
   }
   if (capability.endpoint === "/api/apps/coding-agent/coordination") {
@@ -1035,6 +1089,39 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
           accepted: true,
           finding: result.finding,
           findings: result.findings
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/apps/coding-agent/regression-memory"
+      ) {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await recordCodingRegressionMemory(await readJson(request));
+        json(response, result.statusCode, {
+          accepted: true,
+          memory: result.memory
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/goal-mutations") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await planCodingGoalMutation(await readJson(request));
+        if (result.reason && !result.mutations.length) {
+          error(response, result.statusCode, result.reason, "Goal mutation rejected.");
+          return;
+        }
+        json(response, result.statusCode, {
+          accepted: result.ok,
+          blocked: result.blocked,
+          mutation: result.mutation,
+          mutations: result.mutations
         });
         return;
       }

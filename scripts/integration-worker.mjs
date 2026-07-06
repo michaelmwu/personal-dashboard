@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import {
   codingAgentExecutorPayload,
   commentRequestsCodingAgentPickup,
+  relevantCodingAgentRegressionMemory,
   shortRepoName
 } from "../packages/integrations/coding-agent.mjs";
 
@@ -447,12 +448,22 @@ async function dispatchCodingTaskUpdate(task, snapshot) {
   if (!snapshot.actionable.length) {
     return { dispatched: false, reason: "no_actionable_pr_events" };
   }
+  const memoryResponse = await getDashboardJson(
+    "/api/apps/coding-agent/items?type=coding-regression-memory"
+  ).catch(() => ({ items: [] }));
+  const regressionMemory = relevantCodingAgentRegressionMemory(task, memoryResponse.items ?? [], {
+    repo: snapshot.repo,
+    prNumber: snapshot.prNumber,
+    events: snapshot.actionable,
+    checks: snapshot.checks
+  });
   const executorPayload = codingAgentExecutorPayload(task, {
     repo: snapshot.repo,
     prNumber: snapshot.prNumber,
     events: snapshot.actionable,
     checks: snapshot.checks,
-    cursor: snapshot.cursor
+    cursor: snapshot.cursor,
+    regressionMemory
   });
   return postDashboardAction("/api/hermes/actions", {
     capabilityId: "update-coding-task",

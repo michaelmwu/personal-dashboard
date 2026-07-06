@@ -211,6 +211,40 @@
       }
     },
     {
+      "id": "record-regression-memory",
+      "title": "Record regression memory",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/regression-memory",
+      "description": "Persist concise prior failure and root-cause memory so executor runs can avoid repeated bad fixes.",
+      "inputSchema": {
+        "repo": "string?",
+        "checkName": "string?",
+        "failureSignature": "string?",
+        "rootCause": "string",
+        "avoid": "array?",
+        "recommendedFix": "string?",
+        "evidence": "array?"
+      }
+    },
+    {
+      "id": "plan-goal-mutation",
+      "title": "Plan goal mutation",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/goal-mutations",
+      "description": "Draft GitHub issue, Hermes memory, Telegram, or coding-task mutations from validated findings without provider side effects.",
+      "inputSchema": {
+        "findingId": "string?",
+        "sourceFindingId": "string?",
+        "action": "string?",
+        "propose": "boolean?",
+        "dryRun": "boolean?",
+        "approvedBy": "string?",
+        "approvalId": "string?"
+      }
+    },
+    {
       "id": "sync-coding-coordination",
       "title": "Sync coding coordination",
       "kind": "deterministic",
@@ -261,6 +295,8 @@
     "pr-status",
     "coding-risk-review",
     "coding-improvement-signal",
-    "coding-improvement-finding"
+    "coding-improvement-finding",
+    "coding-regression-memory",
+    "coding-goal-mutation"
   ]
 }
