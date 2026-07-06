@@ -145,8 +145,23 @@ allowlisted repos for explicit pickup comments such as `@coding-agent pick up`
 or `/coding-agent pickup`. The pickup scanner reads recent issue comments and
 PR metadata with `gh api`, skips already-managed PRs, and persists the PR
 through `/api/apps/coding-agent/pr-pickup`; it does not write marker comments or
-mutate GitHub during discovery. Use `CODING_AGENT_PICKUP_REPOS` to narrow the
-scan list beyond `CODING_AGENT_ALLOWED_REPOS`.
+mutate GitHub during discovery. GitHub-comment pickup denies bot actors by
+default, accepts `OWNER`, `MEMBER`, and `COLLABORATOR` author associations, and
+can be narrowed with `CODING_AGENT_PICKUP_TRUSTED_ACTORS` or
+`CODING_AGENT_TRUSTED_ACTORS`. Accepted and rejected pickup decisions are stored
+as `coding-pr-pickup-attempt` audit items. Use `CODING_AGENT_PICKUP_REPOS` to
+narrow the scan list beyond `CODING_AGENT_ALLOWED_REPOS`.
+
+`POST /api/apps/coding-agent/issue-triage` records a deterministic
+`coding-issue-triage` item for GitHub issue intake. Issue prose is treated as
+untrusted: prompt-injection patterns, untrusted authors, repo policy failures,
+and high-risk scope produce an approval-required triage result instead of a
+task draft. The endpoint does not create GitHub issues, comments, or coding
+tasks. Set `CODING_AGENT_ISSUE_TRIAGE_ENABLED=true` on the integration worker
+to scan open GitHub issues with `gh api`; use `CODING_AGENT_ISSUE_TRIAGE_REPOS`
+to narrow the scan list, otherwise it reuses pickup/allowed repos. The scanner
+skips PRs and already-triaged issues before posting to the dashboard triage
+endpoint.
 
 Plaid-facing endpoints:
 

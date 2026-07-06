@@ -41,6 +41,7 @@ import {
   reviewCodingAgentRisk,
   shortRepoName,
   synthesizeCodingAgentFindings,
+  triageCodingAgentIssue,
   updateCodingTaskCoordination,
   visibleCodingTasks
 } from "../../packages/integrations/coding-agent.mjs";
@@ -208,10 +209,19 @@ async function planCodingQueue(payload) {
 async function pickupCodingPr(payload) {
   const existing = await findCodingTask(payload);
   const result = pickupExistingPrTask(existing, payload, codingAgentPolicy);
+  if (result.pickupAttemptItem) {
+    await upsertAppItem(storePath, result.pickupAttemptItem);
+  }
   if (!result.ok) {
     return result;
   }
   await persistCodingTaskItem(result.taskItem);
+  return result;
+}
+
+async function triageCodingIssue(payload) {
+  const result = triageCodingAgentIssue(payload, codingAgentPolicy);
+  await upsertAppItem(storePath, result.item);
   return result;
 }
 
@@ -638,6 +648,10 @@ async function dispatchDeterministicCapability(action, capability) {
     const response = await pickupCodingPr(action.payload);
     return { dispatched: response.ok, target: capability.target, response };
   }
+  if (capability.endpoint === "/api/apps/coding-agent/issue-triage") {
+    const response = await triageCodingIssue(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
   if (capability.endpoint === "/api/apps/coding-agent/pr-status") {
     const response = await syncCodingPrStatus(action.payload);
     return { dispatched: response.ok, target: capability.target, response };
@@ -1016,6 +1030,20 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         json(response, result.statusCode, {
           accepted: true,
           task: result.task
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/issue-triage") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await triageCodingIssue(await readJson(request));
+        json(response, result.statusCode, {
+          accepted: result.ok,
+          blocked: result.blocked,
+          reason: result.reason,
+          triage: result.triage
         });
         return;
       }
