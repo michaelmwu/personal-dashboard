@@ -466,7 +466,7 @@ async function pipeBridgeEventStream(response, runId) {
       response.write(chunk);
     }
   } catch (error) {
-    if (!abortController.signal.aborted) {
+    if (!abortController.signal.aborted && !response.headersSent) {
       throw error;
     }
   } finally {

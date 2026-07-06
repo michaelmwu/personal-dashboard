@@ -599,6 +599,43 @@ describe("contracts", () => {
     }
   });
 
+  test("Hermes Bridge event proxy closes cleanly on upstream errors after headers", async () => {
+    const bridgeFetch = async (url) => {
+      expect(new URL(url).pathname).toBe("/v1/runs/run_error/events");
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode('event: run.status\ndata: {"status":"running"}\n\n')
+            );
+            setTimeout(() => {
+              controller.error(new Error("bridge stream failed"));
+            }, 5);
+          }
+        }),
+        { headers: { "Content-Type": "text/event-stream" } }
+      );
+    };
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      await withMockBridge(bridgeFetch, async (clientFetch) => {
+        const response = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/hermes/bridge/runs/run_error/events`,
+          { headers: { Authorization: "Bearer dashboard-token" } }
+        );
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toContain("text/event-stream");
+        const text = await response.text();
+        expect(text).toContain('"status":"running"');
+        expect(text).not.toContain("internal_error");
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
   test("Hermes Bridge event proxy requires dashboard auth before contacting Bridge", async () => {
     const bridgeRequests = [];
     const bridgeFetch = async (url) => {
