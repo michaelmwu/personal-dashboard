@@ -7,7 +7,7 @@ const number = new Intl.NumberFormat("en-US");
 const bridgeTokenStorageKey = "personal-dashboard:bridge-token";
 const bridgeRunStorageKey = "personal-dashboard:bridge-run-id";
 let appConfig = { apiBaseUrl: "" };
-let bridgeEventsActive = false;
+let bridgeEventStream = null;
 
 async function loadConfig() {
   const response = await fetch("/config.json");
@@ -384,12 +384,23 @@ async function refreshBridge() {
 
 async function pollBridgeEvents() {
   const runId = bridgeRunId();
-  if (!runId || bridgeEventsActive) {
+  if (!runId) {
+    bridgeEventStream?.controller.abort();
     return;
   }
-  bridgeEventsActive = true;
+  if (bridgeEventStream?.runId === runId) {
+    return;
+  }
+  bridgeEventStream?.controller.abort();
+  const stream = {
+    runId,
+    controller: new AbortController()
+  };
+  bridgeEventStream = stream;
   try {
-    const response = await apiFetch(`/api/hermes/bridge/runs/${encodeURIComponent(runId)}/events`);
+    const response = await apiFetch(`/api/hermes/bridge/runs/${encodeURIComponent(runId)}/events`, {
+      signal: stream.controller.signal
+    });
     const contentType = response.headers.get("content-type") ?? "";
     if (contentType.includes("text/event-stream") && response.body) {
       const reader = response.body.getReader();
@@ -409,8 +420,14 @@ async function pollBridgeEvents() {
     }
     const payload = await response.json().catch(() => ({}));
     renderBridgeEvent(payload);
+  } catch (error) {
+    if (!stream.controller.signal.aborted) {
+      throw error;
+    }
   } finally {
-    bridgeEventsActive = false;
+    if (bridgeEventStream === stream) {
+      bridgeEventStream = null;
+    }
   }
 }
 
@@ -472,6 +489,7 @@ function setupHermesBridgeControls() {
   });
   byId("bridge-run-id").addEventListener("input", () => {
     sessionStorage.setItem(bridgeRunStorageKey, bridgeRunId());
+    pollBridgeEvents().catch((error) => renderBridgeEvent(String(error)));
   });
   byId("bridge-refresh").addEventListener("click", () => {
     refreshBridge().catch((error) => renderBridgeEvent(String(error)));

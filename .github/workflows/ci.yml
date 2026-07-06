@@ -100,5 +100,8 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile --ignore-scripts --minimum-release-age=604800
 
-      - name: Playwright API e2e tests
+      - name: Install Playwright Chromium
+        run: bunx playwright install --with-deps chromium
+
+      - name: Playwright e2e tests
         run: bun run test:e2e

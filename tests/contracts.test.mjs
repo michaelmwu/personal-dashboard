@@ -11,7 +11,8 @@ import { dashboardFixture } from "../packages/fixtures/dashboard.mjs";
 import {
   createHermesBridgeRun,
   HermesBridgeLoopError,
-  parseSseFrame
+  parseSseFrame,
+  startHermesBridgeRun
 } from "../packages/integrations/hermes-bridge.mjs";
 import {
   createHermesAction,
@@ -435,6 +436,31 @@ describe("contracts", () => {
     expect(parseSseFrame("event: token\ndata: hello")).toEqual({
       event: "token",
       data: "hello"
+    });
+  });
+
+  test("Hermes Bridge client preserves status when JSON bodies are malformed", async () => {
+    const dispatch = await startHermesBridgeRun(
+      { input: "Check malformed response handling" },
+      {
+        fetch: async () =>
+          new Response("{malformed", {
+            status: 409,
+            headers: { "Content-Type": "application/json; charset=utf-8" }
+          }),
+        config: {
+          baseUrl: "http://127.0.0.1:8642",
+          password: "bridge-secret",
+          sessionKey: "personal-dashboard-test"
+        }
+      }
+    );
+
+    expect(dispatch).toMatchObject({
+      ok: false,
+      status: 409,
+      contentType: "application/json; charset=utf-8",
+      body: "{malformed"
     });
   });
 
