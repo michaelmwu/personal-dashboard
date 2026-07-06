@@ -10,6 +10,7 @@ export const CODING_AGENT_PICKUP_MARKERS = [
 
 export const CODING_TASK_STATUSES = [
   "queued",
+  "needs-clarification",
   "running",
   "pr-open",
   "changes-requested",
@@ -28,8 +29,39 @@ const SIDE_EFFECT_ACTIONS = new Set([
   "reply-pr"
 ]);
 
+export const CODING_AGENT_RISK_CATEGORIES = [
+  "docs",
+  "tests",
+  "code",
+  "schema",
+  "infra",
+  "auth",
+  "money",
+  "privacy",
+  "destructive"
+];
+
+const HIGH_RISK_CATEGORIES = new Set([
+  "schema",
+  "infra",
+  "auth",
+  "money",
+  "privacy",
+  "destructive"
+]);
+
 const LIFECYCLE_TRANSITIONS = {
-  queued: ["running", "pr-open", "changes-requested", "merged", "abandoned", "archived"],
+  queued: [
+    "needs-clarification",
+    "running",
+    "pr-open",
+    "changes-requested",
+    "waiting-for-approval",
+    "merged",
+    "abandoned",
+    "archived"
+  ],
+  "needs-clarification": ["queued", "running", "waiting-for-approval", "abandoned", "archived"],
   running: [
     "pr-open",
     "changes-requested",
@@ -193,6 +225,8 @@ export function codingTaskItem(payload, existing, options = {}) {
       githubRepo: payload.githubRepo ?? payload.github_repo ?? previous.githubRepo,
       title,
       prompt: payload.prompt ?? previous.prompt,
+      intakePlan: payload.intakePlan ?? payload.intake_plan ?? previous.intakePlan,
+      riskReview: payload.riskReview ?? payload.risk_review ?? previous.riskReview,
       baseBranch: payload.baseBranch ?? payload.base_branch ?? previous.baseBranch,
       branch,
       worktreeDir: payload.worktreeDir ?? payload.worktree_dir ?? previous.worktreeDir,
@@ -389,6 +423,278 @@ function approvalPresent(payload) {
   return Boolean(payload.approvedBy && payload.approvalId);
 }
 
+function riskApprovalPresent(payload) {
+  return Boolean(
+    (payload.riskAcceptedBy && payload.riskApprovalId) ||
+      (payload.risk_accepted_by && payload.risk_approval_id)
+  );
+}
+
+function textFromPayload(payload) {
+  return [
+    payload.prompt,
+    payload.request,
+    payload.title,
+    payload.body,
+    payload.summary,
+    ...(Array.isArray(payload.actions) ? payload.actions : []),
+    ...(Array.isArray(payload.files) ? payload.files : [])
+  ]
+    .filter(Boolean)
+    .join("\n")
+    .toLowerCase();
+}
+
+function categoriesFromFiles(files = []) {
+  const normalized = files.map((file) => String(file).toLowerCase());
+  const categories = new Set();
+  if (
+    normalized.length &&
+    normalized.every((file) => file.endsWith(".md") || file.includes("docs/"))
+  ) {
+    categories.add("docs");
+  }
+  if (
+    normalized.some(
+      (file) =>
+        file.includes("test") ||
+        file.includes("spec") ||
+        file.includes("__tests__") ||
+        file.endsWith(".snap")
+    )
+  ) {
+    categories.add("tests");
+  }
+  if (
+    normalized.some(
+      (file) =>
+        file.includes("migration") ||
+        file.includes("schema") ||
+        file.endsWith(".sql") ||
+        file.includes("prisma")
+    )
+  ) {
+    categories.add("schema");
+  }
+  if (
+    normalized.some(
+      (file) =>
+        file.includes("ansible/") ||
+        file.includes(".github/workflows/") ||
+        file.includes("docker") ||
+        file.includes("terraform") ||
+        file.includes("systemd") ||
+        file.endsWith(".service")
+    )
+  ) {
+    categories.add("infra");
+  }
+  if (
+    normalized.some(
+      (file) =>
+        file.endsWith(".js") ||
+        file.endsWith(".mjs") ||
+        file.endsWith(".ts") ||
+        file.endsWith(".tsx")
+    )
+  ) {
+    categories.add("code");
+  }
+  return categories;
+}
+
+export function classifyCodingAgentRisk(payload = {}) {
+  const categories = new Set(payload.categories ?? payload.riskCategories ?? []);
+  for (const category of categoriesFromFiles(payload.files ?? payload.changedFiles ?? [])) {
+    categories.add(category);
+  }
+  const text = textFromPayload(payload);
+  if (/\b(auth|oauth|permission|role|session|login|token)\b/.test(text)) {
+    categories.add("auth");
+  }
+  if (/\b(payment|billing|invoice|stripe|card|money|price|refund)\b/.test(text)) {
+    categories.add("money");
+  }
+  if (/\b(privacy|pii|email|address|secret|credential|password|ssn)\b/.test(text)) {
+    categories.add("privacy");
+  }
+  if (/\b(delete|drop|truncate|destroy|wipe|reset --hard|force-push|rm -rf)\b/.test(text)) {
+    categories.add("destructive");
+  }
+  if (!categories.size) {
+    categories.add("code");
+  }
+  const riskCategories = [...categories].filter((category) =>
+    CODING_AGENT_RISK_CATEGORIES.includes(category)
+  );
+  const highRisk = riskCategories.some((category) => HIGH_RISK_CATEGORIES.has(category));
+  return {
+    categories: riskCategories,
+    highRisk,
+    level: highRisk ? "high" : riskCategories.includes("code") ? "medium" : "low",
+    reasons: riskCategories.map((category) => `risk:${category}`)
+  };
+}
+
+export function codingAgentIntakePlan(payload = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const request = payload.request ?? payload.prompt ?? "";
+  const repo = payload.repo;
+  const title = payload.title ?? (request ? request.split("\n")[0].slice(0, 80) : "Coding task");
+  const risk = classifyCodingAgentRisk(payload);
+  const clarifyingQuestions = [];
+  if (!repo) {
+    clarifyingQuestions.push("Which repository should this task run in?");
+  }
+  if (!request || request.trim().length < 12) {
+    clarifyingQuestions.push("What concrete behavior or outcome should change?");
+  }
+  if (risk.highRisk && !approvalPresent(payload) && !riskApprovalPresent(payload)) {
+    clarifyingQuestions.push(
+      "This touches a high-risk area. What explicit approval should gate execution?"
+    );
+  }
+  const status = clarifyingQuestions.length
+    ? risk.highRisk
+      ? "waiting-for-approval"
+      : "needs-clarification"
+    : "queued";
+
+  return {
+    id: payload.planId ?? payload.plan_id ?? `plan_${Date.parse(now) || Date.now()}_${slug(title)}`,
+    title,
+    request,
+    repo,
+    status,
+    risk,
+    clarifyingQuestions,
+    proposedTests: payload.proposedTests ?? payload.proposed_tests ?? [],
+    affectedSurfaces: payload.affectedSurfaces ?? payload.affected_surfaces ?? risk.categories,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+export function planCodingTaskIntake(payload = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const intakePlan = codingAgentIntakePlan(payload, { now });
+  const item = codingTaskItem(
+    {
+      id: payload.taskId ?? payload.task_id ?? payload.id,
+      repo: intakePlan.repo ?? payload.repo,
+      title: intakePlan.title,
+      prompt: intakePlan.request,
+      branch: payload.branch,
+      baseBranch: payload.baseBranch ?? payload.base_branch,
+      status: intakePlan.status,
+      intakePlan,
+      riskReview: intakePlan.risk,
+      queue: [
+        queueItem(
+          {
+            kind: "intake-plan",
+            status: intakePlan.clarifyingQuestions.length ? "blocked" : "approved",
+            title: "Coding task intake plan",
+            approvalRequired: intakePlan.risk.highRisk,
+            rejectionReason: intakePlan.clarifyingQuestions.length
+              ? "clarification_required"
+              : undefined,
+            payload: intakePlan
+          },
+          now
+        )
+      ]
+    },
+    undefined,
+    { now }
+  );
+  return {
+    ok: true,
+    statusCode: intakePlan.status === "queued" ? 202 : 409,
+    taskItem: item,
+    task: item.payload,
+    plan: intakePlan,
+    blocked: intakePlan.status !== "queued"
+  };
+}
+
+export function reviewCodingAgentRisk(payload = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const risk = classifyCodingAgentRisk(payload);
+  const action = payload.action ?? payload.kind ?? payload.capabilityId ?? "coding-agent-action";
+  const requiresApproval = risk.highRisk || SIDE_EFFECT_ACTIONS.has(action);
+  const approved = risk.highRisk
+    ? riskApprovalPresent(payload)
+    : requiresApproval
+      ? approvalPresent(payload)
+      : true;
+  return {
+    id:
+      payload.id ??
+      `risk_${Date.parse(now) || Date.now()}_${slug(payload.taskId ?? payload.repo ?? action)}`,
+    app: CODING_AGENT_APP_ID,
+    type: "coding-risk-review",
+    externalId: payload.id,
+    status: approved ? "approved" : "blocked",
+    title: payload.title ?? `Risk review: ${action}`,
+    detail: risk.categories.join(", "),
+    payload: {
+      taskId: payload.taskId ?? payload.task_id,
+      repo: payload.repo,
+      action,
+      risk,
+      approved,
+      approvedBy: payload.approvedBy ?? payload.approved_by,
+      approvalId: payload.approvalId ?? payload.approval_id,
+      riskAcceptedBy: payload.riskAcceptedBy ?? payload.risk_accepted_by,
+      riskApprovalId: payload.riskApprovalId ?? payload.risk_approval_id,
+      createdAt: now,
+      updatedAt: now
+    }
+  };
+}
+
+export function normalizeCodingAgentSignal(payload = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const source = payload.source ?? "manual";
+  const kind = payload.kind ?? payload.type ?? "observation";
+  const severity = ["low", "medium", "high"].includes(payload.severity)
+    ? payload.severity
+    : "medium";
+  const taskId = payload.taskId ?? payload.task_id;
+  const repo = payload.repo ?? payload.githubRepo ?? payload.github_repo;
+  const prNumber = payload.prNumber ?? payload.pr_number;
+  const title = payload.title ?? `Coding-agent signal: ${kind}`;
+  const externalId =
+    payload.id ??
+    payload.externalId ??
+    payload.external_id ??
+    `signal_${slug(source)}_${slug(kind)}_${slug(taskId ?? repo ?? "global")}_${Date.parse(now) || Date.now()}`;
+  return {
+    id: externalId,
+    app: CODING_AGENT_APP_ID,
+    type: "coding-improvement-signal",
+    externalId,
+    status: payload.status ?? "active",
+    title,
+    detail: payload.summary ?? payload.detail,
+    payload: {
+      id: externalId,
+      source,
+      kind,
+      severity,
+      taskId,
+      repo,
+      prNumber,
+      summary: payload.summary ?? payload.detail ?? title,
+      evidence: payload.evidence ?? [],
+      tags: payload.tags ?? [],
+      createdAt: payload.createdAt ?? payload.created_at ?? now,
+      updatedAt: now
+    }
+  };
+}
+
 export function planPrMaintenance(
   existing,
   payload,
@@ -419,6 +725,11 @@ export function planPrMaintenance(
     const repo = item.payload.repo;
     const branch = item.payload.branch;
     const sideEffect = SIDE_EFFECT_ACTIONS.has(action);
+    const riskReview = classifyCodingAgentRisk({
+      ...payload,
+      action,
+      files: payload.files ?? payload.changedFiles
+    });
     let status = "approved";
     let rejectionReason;
 
@@ -434,6 +745,9 @@ export function planPrMaintenance(
     } else if (sideEffect && !approvalPresent(payload)) {
       status = "blocked";
       rejectionReason = "approval_required";
+    } else if (sideEffect && riskReview.highRisk && !riskApprovalPresent(payload)) {
+      status = "blocked";
+      rejectionReason = "high_risk_approval_required";
     } else if (["merge-pr", "reply-pr", "poll-pr"].includes(action) && !item.payload.prNumber) {
       status = "rejected";
       rejectionReason = "missing_pr_number";
@@ -445,6 +759,9 @@ export function planPrMaintenance(
       approvalRequired: sideEffect,
       approvedBy: payload.approvedBy,
       approvalId: payload.approvalId,
+      riskReview,
+      riskAcceptedBy: payload.riskAcceptedBy ?? payload.risk_accepted_by,
+      riskApprovalId: payload.riskApprovalId ?? payload.risk_approval_id,
       rejectionReason,
       updatedAt: now
     };

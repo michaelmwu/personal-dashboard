@@ -67,6 +67,22 @@
       }
     },
     {
+      "id": "plan-coding-task",
+      "title": "Plan coding task",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/intake-plan",
+      "description": "Turn a coding request into a durable intake plan with clarification questions and risk classification before execution.",
+      "inputSchema": {
+        "repo": "string?",
+        "title": "string?",
+        "request": "string",
+        "files": "array?",
+        "approvedBy": "string?",
+        "approvalId": "string?"
+      }
+    },
+    {
       "id": "pickup-existing-pr",
       "title": "Pick up existing PR",
       "kind": "deterministic",
@@ -128,6 +144,42 @@
       }
     },
     {
+      "id": "review-coding-risk",
+      "title": "Review coding risk",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/risk-review",
+      "description": "Classify coding-agent blast radius and gate high-risk side effects before provider mutation.",
+      "inputSchema": {
+        "taskId": "string?",
+        "repo": "string?",
+        "action": "string",
+        "files": "array?",
+        "approvedBy": "string?",
+        "approvalId": "string?",
+        "riskAcceptedBy": "string?",
+        "riskApprovalId": "string?"
+      }
+    },
+    {
+      "id": "record-improvement-signal",
+      "title": "Record improvement signal",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/signals",
+      "description": "Persist a typed signal from CI, PR reviews, Telegram corrections, guardrails, or Hermes runs for future improvement loops.",
+      "inputSchema": {
+        "source": "string",
+        "kind": "string",
+        "severity": "string?",
+        "taskId": "string?",
+        "repo": "string?",
+        "prNumber": "number?",
+        "summary": "string",
+        "evidence": "array?"
+      }
+    },
+    {
       "id": "archive-coding-task",
       "title": "Archive coding task",
       "kind": "deterministic",
@@ -140,5 +192,11 @@
       }
     }
   ],
-  "eventTypes": ["coding-task", "coding-run", "pr-status"]
+  "eventTypes": [
+    "coding-task",
+    "coding-run",
+    "pr-status",
+    "coding-risk-review",
+    "coding-improvement-signal"
+  ]
 }
