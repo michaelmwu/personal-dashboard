@@ -338,7 +338,8 @@ mark {
   grid-template-columns: 128px minmax(0, 1fr);
 }
 
-.bridge-console {
+.bridge-console,
+.operator-console {
   display: grid;
   gap: 10px;
   padding: 0 14px 14px;
@@ -356,7 +357,9 @@ mark {
   justify-content: space-between;
 }
 
-.bridge-console label {
+.bridge-console label,
+.operator-console label,
+.operator-console fieldset {
   display: grid;
   gap: 5px;
   color: var(--muted);
@@ -365,8 +368,38 @@ mark {
   text-transform: uppercase;
 }
 
+.operator-console fieldset {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.operator-console legend {
+  padding: 0 5px;
+  color: var(--ink);
+}
+
+.operator-grid,
+.operator-row {
+  display: grid;
+  gap: 10px;
+}
+
+.operator-grid {
+  grid-template-columns: 1fr;
+}
+
+.operator-row {
+  grid-template-columns: minmax(0, 1fr) 150px;
+}
+
 .bridge-console input,
-.bridge-console textarea {
+.bridge-console textarea,
+.operator-console input,
+.operator-console textarea,
+.operator-console select {
   width: 100%;
   min-width: 0;
   border: 1px solid var(--line);
@@ -377,11 +410,13 @@ mark {
   line-height: 1.35;
 }
 
-.bridge-console textarea {
+.bridge-console textarea,
+.operator-console textarea {
   resize: vertical;
 }
 
-.bridge-console button {
+.bridge-console button,
+.operator-console button {
   min-height: 34px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -392,18 +427,22 @@ mark {
   cursor: pointer;
 }
 
-.bridge-console button:hover {
+.bridge-console button:hover,
+.operator-console button:hover {
   border-color: var(--accent);
 }
 
 #bridge-start,
-#bridge-approve {
+#bridge-approve,
+#pickup-submit,
+#issue-submit {
   border-color: var(--accent);
   background: var(--accent);
   color: #fff;
 }
 
-#bridge-events {
+#bridge-events,
+#operator-result {
   min-height: 132px;
   max-height: 260px;
   overflow: auto;
@@ -418,10 +457,19 @@ mark {
   white-space: pre-wrap;
 }
 
+#operator-result {
+  min-height: 96px;
+}
+
 @media (max-width: 960px) {
   .metric-grid,
   .workspace,
   .domain-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .operator-grid,
+  .operator-row {
     grid-template-columns: 1fr;
   }
 

@@ -131,6 +131,69 @@
             </div>
             <pre id="bridge-events" aria-live="polite"></pre>
           </div>
+          <div class="operator-console" id="operator-console">
+            <div class="bridge-status-row">
+              <span class="pill" id="operator-status">Intake</span>
+            </div>
+            <div class="operator-grid">
+              <fieldset>
+                <legend>PR Pickup</legend>
+                <label>
+                  <span>Repo</span>
+                  <input id="pickup-repo" type="text" autocomplete="off" placeholder="michaelmwu/personal-dashboard">
+                </label>
+                <label>
+                  <span>PR</span>
+                  <input id="pickup-pr-number" type="number" min="1" inputmode="numeric">
+                </label>
+                <label>
+                  <span>Title</span>
+                  <input id="pickup-title" type="text" autocomplete="off">
+                </label>
+                <label>
+                  <span>Branch</span>
+                  <input id="pickup-branch" type="text" autocomplete="off">
+                </label>
+                <button type="button" id="pickup-submit">Pick Up</button>
+              </fieldset>
+              <fieldset>
+                <legend>Issue Triage</legend>
+                <label>
+                  <span>Repo</span>
+                  <input id="issue-repo" type="text" autocomplete="off" placeholder="michaelmwu/personal-dashboard">
+                </label>
+                <label>
+                  <span>Issue</span>
+                  <input id="issue-number" type="number" min="1" inputmode="numeric">
+                </label>
+                <label>
+                  <span>Title</span>
+                  <input id="issue-title" type="text" autocomplete="off">
+                </label>
+                <div class="operator-row">
+                  <label>
+                    <span>Author</span>
+                    <input id="issue-author" type="text" autocomplete="off">
+                  </label>
+                  <label>
+                    <span>Assoc.</span>
+                    <select id="issue-association">
+                      <option value="OWNER">OWNER</option>
+                      <option value="MEMBER">MEMBER</option>
+                      <option value="COLLABORATOR">COLLABORATOR</option>
+                      <option value="NONE">NONE</option>
+                    </select>
+                  </label>
+                </div>
+                <label>
+                  <span>Body</span>
+                  <textarea id="issue-body" rows="3"></textarea>
+                </label>
+                <button type="button" id="issue-submit">Triage</button>
+              </fieldset>
+            </div>
+            <pre id="operator-result" aria-live="polite"></pre>
+          </div>
         </section>
 
         <section class="panel">
