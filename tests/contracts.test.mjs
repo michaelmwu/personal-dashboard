@@ -255,6 +255,48 @@ describe("contracts", () => {
     }
   });
 
+  test("web server streams proxied Bridge event responses without buffering", async () => {
+    let upstreamResponse;
+    const apiServer = http.createServer((request, response) => {
+      if (request.url === "/api/hermes/bridge/runs/run_live/events") {
+        upstreamResponse = response;
+        response.writeHead(200, { "Content-Type": "text/event-stream" });
+        response.write('event: run.status\ndata: {"status":"waiting_for_approval"}\n\n');
+        return;
+      }
+      response.writeHead(404);
+      response.end("not found");
+    });
+    const apiPort = await listen(apiServer);
+    const rootDir = await mkdtemp(join(tmpdir(), "personal-dashboard-web-"));
+    await writeFile(join(rootDir, "index.html"), "<!doctype html><html></html>");
+    const webServer = createWebServer({
+      rootDir,
+      proxyBaseUrl: `http://127.0.0.1:${apiPort}`
+    });
+    const webPort = await listen(webServer);
+
+    try {
+      const clientAbort = new AbortController();
+      const proxied = await fetch(
+        `http://127.0.0.1:${webPort}/api/hermes/bridge/runs/run_live/events`,
+        { signal: clientAbort.signal }
+      );
+      expect(proxied.status).toBe(200);
+      expect(proxied.headers.get("content-type")).toContain("text/event-stream");
+      const reader = proxied.body.getReader();
+      const { value, done } = await reader.read();
+      expect(done).toBe(false);
+      expect(new TextDecoder().decode(value)).toContain("waiting_for_approval");
+      clientAbort.abort();
+    } finally {
+      upstreamResponse?.destroy();
+      await closeServer(webServer);
+      await closeServer(apiServer);
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   test("Hermes can pull compact dashboard context and create action envelopes", () => {
     const dashboard = dashboardFixture();
     const context = hermesContextFromDashboard(dashboard);
@@ -583,6 +625,38 @@ describe("contracts", () => {
       );
     } finally {
       await closeServer(unavailableServer);
+    }
+  });
+
+  test("Plaid webhook auth honors injected API server token", async () => {
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      const unauthenticated = await fetch(
+        `http://127.0.0.1:${apiPort}/api/integrations/plaid/webhook`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ webhook_type: "ITEM", webhook_code: "PENDING_EXPIRATION" })
+        }
+      );
+      expect(unauthenticated.status).toBe(401);
+
+      const authenticated = await fetch(
+        `http://127.0.0.1:${apiPort}/api/integrations/plaid/webhook`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ webhook_type: "ITEM", webhook_code: "PENDING_EXPIRATION" })
+        }
+      );
+      expect(authenticated.status).toBe(202);
+    } finally {
+      await closeServer(apiServer);
     }
   });
 

@@ -489,8 +489,13 @@ function requireHermesAuth(request, response, { apiToken = hermesApiToken } = {}
   return false;
 }
 
-async function requirePlaidWebhookAuth(request, response, rawBody) {
-  if (request.headers.authorization === `Bearer ${hermesApiToken}`) {
+async function requirePlaidWebhookAuth(
+  request,
+  response,
+  rawBody,
+  { apiToken = hermesApiToken } = {}
+) {
+  if (request.headers.authorization === `Bearer ${apiToken}`) {
     return true;
   }
 
@@ -499,7 +504,7 @@ async function requirePlaidWebhookAuth(request, response, rawBody) {
     return true;
   }
 
-  if (!hermesApiToken && !request.headers["plaid-verification"]) {
+  if (!apiToken && !request.headers["plaid-verification"]) {
     return true;
   }
 
@@ -695,7 +700,7 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
 
       if (request.method === "POST" && url.pathname === "/api/integrations/plaid/webhook") {
         const rawBody = await readRawBody(request);
-        if (!(await requirePlaidWebhookAuth(request, response, rawBody))) {
+        if (!(await requirePlaidWebhookAuth(request, response, rawBody, { apiToken }))) {
           return;
         }
         const payload = parseJson(rawBody);
