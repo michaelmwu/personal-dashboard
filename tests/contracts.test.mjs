@@ -257,11 +257,19 @@ describe("contracts", () => {
 
   test("web server streams proxied Bridge event responses without buffering", async () => {
     let upstreamResponse;
+    const apiRequests = [];
     const apiServer = http.createServer((request, response) => {
       if (request.url === "/api/hermes/bridge/runs/run_live/events") {
+        apiRequests.push({
+          method: request.method,
+          authorization: request.headers.authorization
+        });
         upstreamResponse = response;
         response.writeHead(200, { "Content-Type": "text/event-stream" });
         response.write('event: run.status\ndata: {"status":"waiting_for_approval"}\n\n');
+        setTimeout(() => {
+          response.write("event: token\ndata: still-running\n\n");
+        }, 5);
         return;
       }
       response.writeHead(404);
@@ -280,14 +288,26 @@ describe("contracts", () => {
       const clientAbort = new AbortController();
       const proxied = await fetch(
         `http://127.0.0.1:${webPort}/api/hermes/bridge/runs/run_live/events`,
-        { signal: clientAbort.signal }
+        {
+          headers: { Authorization: "Bearer dashboard-token" },
+          signal: clientAbort.signal
+        }
       );
       expect(proxied.status).toBe(200);
       expect(proxied.headers.get("content-type")).toContain("text/event-stream");
       const reader = proxied.body.getReader();
-      const { value, done } = await reader.read();
-      expect(done).toBe(false);
-      expect(new TextDecoder().decode(value)).toContain("waiting_for_approval");
+      const firstChunk = await reader.read();
+      expect(firstChunk.done).toBe(false);
+      expect(new TextDecoder().decode(firstChunk.value)).toContain("waiting_for_approval");
+      const secondChunk = await reader.read();
+      expect(secondChunk.done).toBe(false);
+      expect(new TextDecoder().decode(secondChunk.value)).toContain("still-running");
+      expect(apiRequests).toEqual([
+        {
+          method: "GET",
+          authorization: "Bearer dashboard-token"
+        }
+      ]);
       clientAbort.abort();
     } finally {
       upstreamResponse?.destroy();
@@ -579,6 +599,57 @@ describe("contracts", () => {
     }
   });
 
+  test("Hermes Bridge event proxy requires dashboard auth before contacting Bridge", async () => {
+    const bridgeRequests = [];
+    const bridgeFetch = async (url) => {
+      bridgeRequests.push(url);
+      return Response.json({ shouldNotBeCalled: true });
+    };
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      await withMockBridge(bridgeFetch, async (clientFetch) => {
+        const response = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/hermes/bridge/runs/run_live/events`
+        );
+        expect(response.status).toBe(401);
+        expect(bridgeRequests).toHaveLength(0);
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("Hermes Bridge event proxy wraps non-SSE event responses", async () => {
+    const bridgeFetch = async (url) => {
+      expect(new URL(url).pathname).toBe("/v1/runs/run_json/events");
+      return Response.json({ events: [{ status: "completed" }] });
+    };
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      await withMockBridge(bridgeFetch, async (clientFetch) => {
+        const response = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/hermes/bridge/runs/run_json/events`,
+          { headers: { Authorization: "Bearer dashboard-token" } }
+        );
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toContain("application/json");
+        expect(await response.json()).toMatchObject({
+          ok: true,
+          status: 200,
+          bridge: {
+            events: [{ status: "completed" }]
+          }
+        });
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
   test("Hermes Bridge API proxy reports Bridge auth failures and unavailable Bridge", async () => {
     const authFailureServer = createApiServer({ apiToken: "dashboard-token" });
     const authFailurePort = await listen(authFailureServer);
@@ -655,6 +726,26 @@ describe("contracts", () => {
         }
       );
       expect(authenticated.status).toBe(202);
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("Plaid webhook auth remains open only when no API token is configured", async () => {
+    const apiServer = createApiServer({ apiToken: "" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${apiPort}/api/integrations/plaid/webhook`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ webhook_type: "ITEM", webhook_code: "PENDING_EXPIRATION" })
+      });
+      expect(response.status).toBe(202);
+      expect(await response.json()).toMatchObject({
+        accepted: true,
+        ignored: true
+      });
     } finally {
       await closeServer(apiServer);
     }
