@@ -352,6 +352,17 @@ function renderBridgeEvent(payload) {
     typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
 }
 
+function renderOperatorResult(payload) {
+  byId("operator-result").textContent =
+    typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
+}
+
+function updateOperatorStatus(label, level = "") {
+  const status = byId("operator-status");
+  status.textContent = label;
+  status.className = `pill ${level}`.trim();
+}
+
 function appendBridgeEventText(text) {
   const events = byId("bridge-events");
   events.textContent = `${events.textContent}${text}`.slice(-12000);
@@ -481,6 +492,67 @@ async function submitBridgeApproval(approved) {
   updateBridgeStatus(response.ok ? (approved ? "Approved" : "Rejected") : "Error");
 }
 
+function positiveIntegerInput(id, label) {
+  const input = byId(id);
+  const rawValue = input.value.trim();
+  const value = Number(rawValue);
+  if (!rawValue || !input.checkValidity() || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return value;
+}
+
+function requiredField(id, label) {
+  const value = byId(id).value.trim();
+  if (!value) {
+    throw new Error(`${label} is required`);
+  }
+  return value;
+}
+
+function optionalField(id) {
+  return byId(id).value.trim() || undefined;
+}
+
+async function submitPrPickup() {
+  const repo = requiredField("pickup-repo", "Repo");
+  const prNumber = positiveIntegerInput("pickup-pr-number", "PR");
+  updateOperatorStatus("Pickup");
+  const response = await apiFetch("/api/apps/coding-agent/pr-pickup", {
+    method: "POST",
+    body: JSON.stringify({
+      githubRepo: repo,
+      prNumber,
+      title: optionalField("pickup-title"),
+      branch: optionalField("pickup-branch"),
+      pickupSource: "dashboard"
+    })
+  });
+  const payload = await response.json().catch(() => ({}));
+  updateOperatorStatus(response.ok ? "Picked Up" : "Blocked", response.ok ? "" : "warning");
+  renderOperatorResult(payload);
+}
+
+async function submitIssueTriage() {
+  const repo = requiredField("issue-repo", "Repo");
+  const issueNumber = positiveIntegerInput("issue-number", "Issue");
+  updateOperatorStatus("Triage");
+  const response = await apiFetch("/api/apps/coding-agent/issue-triage", {
+    method: "POST",
+    body: JSON.stringify({
+      githubRepo: repo,
+      issueNumber,
+      title: requiredField("issue-title", "Title"),
+      body: optionalField("issue-body"),
+      author: optionalField("issue-author"),
+      authorAssociation: byId("issue-association").value
+    })
+  });
+  const payload = await response.json().catch(() => ({}));
+  updateOperatorStatus(response.ok ? "Drafted" : "Approval", response.ok ? "" : "warning");
+  renderOperatorResult(payload);
+}
+
 function setupHermesBridgeControls() {
   byId("bridge-token").value = sessionStorage.getItem(bridgeTokenStorageKey) ?? "";
   byId("bridge-run-id").value = sessionStorage.getItem(bridgeRunStorageKey) ?? "";
@@ -505,6 +577,18 @@ function setupHermesBridgeControls() {
   });
   byId("bridge-reject").addEventListener("click", () => {
     submitBridgeApproval(false).catch((error) => renderBridgeEvent(String(error)));
+  });
+  byId("pickup-submit").addEventListener("click", () => {
+    submitPrPickup().catch((error) => {
+      updateOperatorStatus("Error", "warning");
+      renderOperatorResult(String(error));
+    });
+  });
+  byId("issue-submit").addEventListener("click", () => {
+    submitIssueTriage().catch((error) => {
+      updateOperatorStatus("Error", "warning");
+      renderOperatorResult(String(error));
+    });
   });
   setInterval(() => {
     pollBridgeEvents().catch(() => {});
