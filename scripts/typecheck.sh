@@ -9,6 +9,7 @@ bun build \
   scripts/dev.mjs \
   packages/contracts/index.mjs \
   packages/fixtures/dashboard.mjs \
+  packages/integrations/coding-agent.mjs \
   packages/integrations/hermes-bridge.mjs \
   packages/integrations/hermes.mjs \
   packages/integrations/hotel-rates.mjs \

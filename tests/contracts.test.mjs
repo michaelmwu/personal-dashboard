@@ -15,6 +15,14 @@ import {
   startHermesBridgeRun
 } from "../packages/integrations/hermes-bridge.mjs";
 import {
+  archiveCodingTask,
+  codingAgentExecutorPayload,
+  codingTaskItem,
+  commentRequestsCodingAgentPickup,
+  pickupExistingPrTask,
+  planPrMaintenance
+} from "../packages/integrations/coding-agent.mjs";
+import {
   createHermesAction,
   hermesActionIdFromIdempotencyKey,
   hermesCapabilities,
@@ -57,7 +65,12 @@ import {
   upsertHermesAction,
   upsertNormalizedEvent
 } from "../packages/storage/dashboard-store.mjs";
-import { runIngestion } from "../scripts/integration-worker.mjs";
+import {
+  discoverCodingAgentPrPickups,
+  fetchCodingTaskPrSnapshot,
+  pollCodingAgentPrs,
+  runIngestion
+} from "../scripts/integration-worker.mjs";
 
 function listen(server) {
   return new Promise((resolve) => {
@@ -181,7 +194,7 @@ describe("contracts", () => {
     const registry = await loadPluginRegistry(new URL("..", import.meta.url).pathname);
 
     expect(registry.apps.map((app) => app.id)).toEqual(
-      expect.arrayContaining(["asia-travel-deals", "hotel-rate-finder", "plaid"])
+      expect.arrayContaining(["asia-travel-deals", "coding-agent", "hotel-rate-finder", "plaid"])
     );
     expect(registry.panels).toEqual(
       expect.arrayContaining([
@@ -205,6 +218,36 @@ describe("contracts", () => {
           id: "reservation_parse",
           kind: "agentic",
           target: "gmail-intake"
+        }),
+        expect.objectContaining({
+          id: "register-coding-task",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/tasks"
+        }),
+        expect.objectContaining({
+          id: "pickup-existing-pr",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/pr-pickup"
+        }),
+        expect.objectContaining({
+          id: "start-coding-task",
+          kind: "agentic",
+          target: "coding-agent"
+        }),
+        expect.objectContaining({
+          id: "update-coding-task",
+          kind: "agentic",
+          target: "coding-agent"
+        }),
+        expect.objectContaining({
+          id: "run-pr-maintenance",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/pr-maintenance"
+        }),
+        expect.objectContaining({
+          id: "archive-coding-task",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/archive"
         })
       ])
     );
@@ -402,6 +445,48 @@ describe("contracts", () => {
     });
     expect(JSON.parse(requests[0].options.body)).toMatchObject({
       session_id: "dashboard:action_bridge_001"
+    });
+
+    const executorAction = createHermesAction({
+      id: "action_executor_001",
+      origin: "dashboard",
+      capabilityId: "update-coding-task",
+      idempotencyKey: "idem_action_executor_001",
+      payload: {
+        hermesSessionKey: "coding-agent:task-001",
+        sessionId: "coding-agent:task-001",
+        prompt: "Fix the failing contract test.",
+        instructions: "Change into the registered worktree before editing.",
+        metadata: {
+          runtimeOwner: "personal-dashboard.integration-worker",
+          taskId: "task-001",
+          mode: "test-fix",
+          worktreeDir: "/tmp/task-001"
+        }
+      }
+    });
+    await createHermesBridgeRun(executorAction, {
+      fetch,
+      config: {
+        baseUrl: "http://127.0.0.1:8642",
+        password: "bridge-secret",
+        sessionKey: "personal-dashboard-test"
+      }
+    });
+    expect(requests[1].options.headers).toMatchObject({
+      "X-Hermes-Session-Key": "coding-agent:task-001",
+      "Idempotency-Key": "idem_action_executor_001"
+    });
+    expect(JSON.parse(requests[1].options.body)).toMatchObject({
+      input: "Fix the failing contract test.",
+      instructions: "Change into the registered worktree before editing.",
+      session_id: "coding-agent:task-001",
+      metadata: {
+        runtimeOwner: "personal-dashboard.integration-worker",
+        taskId: "task-001",
+        mode: "test-fix",
+        worktreeDir: "/tmp/task-001"
+      }
     });
 
     await expect(
@@ -760,6 +845,833 @@ describe("contracts", () => {
     } finally {
       await closeServer(unavailableServer);
     }
+  });
+
+  test("coding agent registry persists task anchors through deterministic Hermes actions", async () => {
+    const taskId = `coding_test_${Date.now()}`;
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      const register = await fetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json",
+          "Idempotency-Key": `${taskId}_register`
+        },
+        body: JSON.stringify({
+          capabilityId: "register-coding-task",
+          origin: "dashboard",
+          payload: {
+            id: taskId,
+            repo: "personal-dashboard",
+            title: "Build coding task registry",
+            branch: "michaelmwu/coding-agent-plugin",
+            worktreeDir:
+              "/Users/michaelwu/conductor/workspaces/personal-dashboard/coding-agent-plugin",
+            hermesSessionKey: `dashboard:${taskId}`,
+            prNumber: 42,
+            previewUrl: "https://preview.example.test"
+          }
+        })
+      });
+      expect(register.status).toBe(202);
+      expect(await register.json()).toMatchObject({
+        accepted: true,
+        dispatch: {
+          dispatched: true,
+          target: "coding-agent",
+          response: {
+            task: {
+              id: taskId,
+              repo: "personal-dashboard",
+              status: "queued",
+              prNumber: 42
+            }
+          }
+        }
+      });
+
+      const sync = await fetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json",
+          "Idempotency-Key": `${taskId}_sync`
+        },
+        body: JSON.stringify({
+          capabilityId: "sync-pr-status",
+          origin: "dashboard",
+          payload: {
+            taskId,
+            repo: "personal-dashboard",
+            prNumber: 42,
+            status: "changes-requested",
+            reviewState: "CHANGES_REQUESTED",
+            checks: {
+              conclusion: "failure"
+            }
+          }
+        })
+      });
+      expect(sync.status).toBe(202);
+      expect(await sync.json()).toMatchObject({
+        accepted: true,
+        dispatch: {
+          dispatched: true,
+          response: {
+            task: {
+              id: taskId,
+              status: "changes-requested",
+              reviewState: "CHANGES_REQUESTED",
+              checks: {
+                conclusion: "failure"
+              }
+            }
+          }
+        }
+      });
+
+      const tasks = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`);
+      expect(tasks.status).toBe(200);
+      expect(await tasks.json()).toEqual({
+        tasks: expect.arrayContaining([
+          expect.objectContaining({
+            id: taskId,
+            repo: "personal-dashboard",
+            branch: "michaelmwu/coding-agent-plugin",
+            status: "changes-requested"
+          })
+        ])
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("coding agent can pick up an existing PR from dashboard state", async () => {
+    const taskId = `coding_personal-dashboard_pr_91`;
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      const pickup = await fetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json",
+          "Idempotency-Key": `${taskId}_pickup`
+        },
+        body: JSON.stringify({
+          capabilityId: "pickup-existing-pr",
+          origin: "dashboard",
+          payload: {
+            githubRepo: "michaelmwu/personal-dashboard",
+            prNumber: 91,
+            title: "Existing PR",
+            branch: "feature/existing-pr",
+            prUrl: "https://github.com/michaelmwu/personal-dashboard/pull/91",
+            pickupSource: "dashboard"
+          }
+        })
+      });
+      expect(pickup.status).toBe(202);
+      expect(await pickup.json()).toMatchObject({
+        accepted: true,
+        dispatch: {
+          dispatched: true,
+          target: "coding-agent",
+          response: {
+            task: {
+              id: taskId,
+              repo: "personal-dashboard",
+              githubRepo: "michaelmwu/personal-dashboard",
+              prNumber: 91,
+              status: "pr-open",
+              pickupSource: "dashboard",
+              queue: [
+                expect.objectContaining({
+                  kind: "pickup-existing-pr",
+                  status: "approved",
+                  approvalRequired: false
+                })
+              ]
+            }
+          }
+        }
+      });
+
+      const duplicate = pickupExistingPrTask(
+        codingTaskItem({
+          id: taskId,
+          repo: "personal-dashboard",
+          githubRepo: "michaelmwu/personal-dashboard",
+          prNumber: 91,
+          status: "pr-open"
+        }),
+        {
+          githubRepo: "michaelmwu/personal-dashboard",
+          prNumber: 91,
+          pickupSource: "dashboard"
+        },
+        {
+          allowedRepos: ["personal-dashboard"],
+          branchPrefix: "hermes",
+          defaultBaseBranch: "origin/main"
+        }
+      );
+      expect(duplicate).toMatchObject({
+        ok: true,
+        statusCode: 200,
+        task: {
+          id: taskId,
+          prNumber: 91
+        }
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("coding agent executor dispatch stores Hermes run id on the task record", async () => {
+    const taskId = `coding_run_${Date.now()}`;
+    const bridgeRequests = [];
+    const bridgeFetch = async (url, options = {}) => {
+      const path = new URL(url).pathname;
+      bridgeRequests.push({
+        path,
+        method: options.method ?? "GET",
+        headers: options.headers,
+        body: options.body ? JSON.parse(options.body) : undefined
+      });
+      if (path === "/v1/runs" && options.method === "POST") {
+        return Response.json({ run_id: "run_coding_001", status: "running" }, { status: 202 });
+      }
+      if (path === "/v1/runs/run_coding_001/events") {
+        return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+      }
+      return Response.json({ error: "not_found" }, { status: 404 });
+    };
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      await withMockBridge(bridgeFetch, async (clientFetch) => {
+        const register = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              id: taskId,
+              repo: "personal-dashboard",
+              githubRepo: "michaelmwu/personal-dashboard",
+              title: "Run id task",
+              branch: "hermes/run-id",
+              worktreeDir: "/tmp/coding-run-id",
+              hermesSessionKey: `coding-agent:${taskId}`,
+              prNumber: 42,
+              status: "pr-open"
+            })
+          }
+        );
+        expect(register.status).toBe(202);
+
+        const action = await clientFetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json",
+            "Idempotency-Key": `${taskId}_update`
+          },
+          body: JSON.stringify({
+            capabilityId: "update-coding-task",
+            origin: "dashboard",
+            payload: codingAgentExecutorPayload(
+              {
+                id: taskId,
+                repo: "personal-dashboard",
+                githubRepo: "michaelmwu/personal-dashboard",
+                title: "Run id task",
+                worktreeDir: "/tmp/coding-run-id",
+                hermesSessionKey: `coding-agent:${taskId}`,
+                prNumber: 42
+              },
+              {
+                events: [{ kind: "review", state: "CHANGES_REQUESTED" }]
+              }
+            )
+          })
+        });
+        expect(action.status).toBe(202);
+        expect(await action.json()).toMatchObject({
+          accepted: true,
+          dispatch: {
+            dispatched: true,
+            runId: "run_coding_001"
+          }
+        });
+        expect(bridgeRequests[0]).toMatchObject({
+          path: "/v1/runs",
+          headers: {
+            "X-Hermes-Session-Key": `coding-agent:${taskId}`
+          },
+          body: {
+            session_id: `coding-agent:${taskId}`,
+            metadata: {
+              taskId,
+              worktreeDir: "/tmp/coding-run-id"
+            }
+          }
+        });
+
+        const tasks = await clientFetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`);
+        expect(await tasks.json()).toEqual({
+          tasks: expect.arrayContaining([
+            expect.objectContaining({
+              id: taskId,
+              hermesRunId: "run_coding_001",
+              latestHermesRunId: "run_coding_001",
+              hermesRunStatus: "running"
+            })
+          ])
+        });
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("coding agent PR maintenance blocks side effects until approved and archives queues", async () => {
+    const taskId = `coding_lifecycle_${Date.now()}`;
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      const register = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          id: taskId,
+          repo: "personal-dashboard",
+          title: "Lifecycle task",
+          branch: "hermes/lifecycle-task",
+          prNumber: 77,
+          status: "pr-open"
+        })
+      });
+      expect(register.status).toBe(202);
+
+      const blocked = await fetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json",
+          "Idempotency-Key": `${taskId}_blocked_push`
+        },
+        body: JSON.stringify({
+          capabilityId: "run-pr-maintenance",
+          origin: "dashboard",
+          payload: {
+            taskId,
+            actions: ["push-update"]
+          }
+        })
+      });
+      expect(blocked.status).toBe(202);
+      expect(await blocked.json()).toMatchObject({
+        accepted: true,
+        dispatch: {
+          dispatched: false,
+          response: {
+            blocked: true,
+            maintenance: [
+              {
+                kind: "push-update",
+                status: "blocked",
+                rejectionReason: "approval_required"
+              }
+            ],
+            task: {
+              id: taskId,
+              status: "waiting-for-approval",
+              queue: [
+                expect.objectContaining({
+                  kind: "push-update",
+                  status: "blocked",
+                  approvalRequired: true
+                })
+              ]
+            }
+          }
+        }
+      });
+
+      const approved = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/pr-maintenance`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            taskId,
+            actions: ["poll-pr", "reply-pr"],
+            approvedBy: "michaelmwu",
+            approvalId: "approval-123"
+          })
+        }
+      );
+      expect(approved.status).toBe(202);
+      expect(await approved.json()).toMatchObject({
+        accepted: true,
+        blocked: false,
+        task: {
+          id: taskId,
+          queue: expect.arrayContaining([
+            expect.objectContaining({ kind: "poll-pr", status: "approved" }),
+            expect.objectContaining({
+              kind: "reply-pr",
+              status: "approved",
+              approvalRequired: true,
+              approvedBy: "michaelmwu"
+            })
+          ])
+        }
+      });
+
+      const archive = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/archive`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          taskId,
+          reason: "merged"
+        })
+      });
+      expect(archive.status).toBe(202);
+      expect(await archive.json()).toMatchObject({
+        accepted: true,
+        task: {
+          id: taskId,
+          status: "archived",
+          archiveReason: "merged",
+          queue: expect.arrayContaining([
+            expect.objectContaining({ kind: "push-update", status: "archived" }),
+            expect.objectContaining({ kind: "poll-pr", status: "archived" })
+          ])
+        }
+      });
+
+      const activeTasks = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`);
+      expect((await activeTasks.json()).tasks.some((task) => task.id === taskId)).toBe(false);
+
+      const archivedTasks = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks?includeArchived=true`
+      );
+      expect(await archivedTasks.json()).toEqual({
+        tasks: expect.arrayContaining([
+          expect.objectContaining({
+            id: taskId,
+            status: "archived"
+          })
+        ])
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("coding agent guardrails reject unallowlisted repos and default branch side effects", () => {
+    const task = codingTaskItem({
+      id: "coding_policy_001",
+      repo: "personal-dashboard",
+      title: "Policy task",
+      branch: "hermes/policy-task",
+      prNumber: 88,
+      status: "pr-open"
+    });
+
+    const unallowed = planPrMaintenance(
+      task,
+      {
+        actions: ["poll-pr"]
+      },
+      {
+        allowedRepos: ["moo-infra"],
+        branchPrefix: "hermes",
+        defaultBaseBranch: "origin/main"
+      }
+    );
+    expect(unallowed).toMatchObject({
+      rejected: true,
+      maintenance: [
+        {
+          status: "rejected",
+          rejectionReason: "repo_not_allowed"
+        }
+      ]
+    });
+
+    const defaultBranch = planPrMaintenance(
+      codingTaskItem({ status: "pr-open", branch: "main" }, task),
+      {
+        actions: ["push-update"],
+        approvedBy: "michaelmwu",
+        approvalId: "approval-branch"
+      },
+      {
+        allowedRepos: ["personal-dashboard"],
+        branchPrefix: "hermes",
+        defaultBaseBranch: "origin/main"
+      }
+    );
+    expect(defaultBranch).toMatchObject({
+      rejected: true,
+      maintenance: [
+        {
+          status: "rejected",
+          rejectionReason: "branch_not_allowed"
+        }
+      ]
+    });
+
+    const archived = archiveCodingTask(task, { reason: "done" });
+    expect(archived.payload).toMatchObject({
+      status: "archived",
+      archiveReason: "done"
+    });
+  });
+
+  test("coding agent executor payload selects test, feedback, and update modes", () => {
+    const task = {
+      id: "coding_executor_001",
+      repo: "personal-dashboard",
+      githubRepo: "michaelmwu/personal-dashboard",
+      title: "Fix review feedback",
+      prompt: "Implement the coding agent loop.",
+      branch: "hermes/executor",
+      worktreeDir: "/Users/michaelwu/agents/work/personal-dashboard/executor",
+      hermesSessionKey: "coding-agent:executor",
+      prNumber: 42
+    };
+
+    const testFix = codingAgentExecutorPayload(task, {
+      events: [
+        {
+          kind: "check",
+          name: "unit-contract-tests",
+          conclusion: "failure"
+        }
+      ],
+      checks: {
+        conclusion: "failure"
+      },
+      cursor: {
+        updatedAt: "2026-07-06T12:00:00Z"
+      }
+    });
+    expect(testFix).toMatchObject({
+      mode: "test-fix",
+      sessionId: "coding-agent:executor",
+      metadata: {
+        runtimeOwner: "personal-dashboard.integration-worker",
+        actionId: "update-coding-task",
+        taskId: "coding_executor_001",
+        mode: "test-fix",
+        worktreeDir: "/Users/michaelwu/agents/work/personal-dashboard/executor"
+      }
+    });
+    expect(testFix.instructions).toContain("change into this task worktree");
+    expect(testFix.instructions).toContain("Do not push, create PRs, merge, or clean up worktrees");
+    expect(testFix.prompt).toContain("Mode: test-fix");
+    expect(testFix.prompt).toContain("unit-contract-tests");
+
+    expect(
+      codingAgentExecutorPayload(task, {
+        events: [{ kind: "review", state: "CHANGES_REQUESTED" }]
+      }).mode
+    ).toBe("pr-feedback");
+    expect(codingAgentExecutorPayload(task, { events: [] }).mode).toBe("update");
+  });
+
+  test("coding agent PR poller normalizes GitHub reviews, comments, checks, and cursor", async () => {
+    const calls = [];
+    const payloads = new Map([
+      [
+        "repos/michaelmwu/personal-dashboard/pulls/42",
+        {
+          state: "open",
+          html_url: "https://github.com/michaelmwu/personal-dashboard/pull/42",
+          head: {
+            ref: "hermes/pr-feedback",
+            sha: "abc123"
+          }
+        }
+      ],
+      [
+        "repos/michaelmwu/personal-dashboard/pulls/42/reviews",
+        [
+          {
+            id: 101,
+            state: "CHANGES_REQUESTED",
+            body: "Please tighten error handling.",
+            submitted_at: "2026-07-06T10:00:00Z",
+            html_url: "https://github.com/review/101",
+            user: { login: "reviewer" }
+          }
+        ]
+      ],
+      ["repos/michaelmwu/personal-dashboard/issues/42/comments", []],
+      [
+        "repos/michaelmwu/personal-dashboard/pulls/42/comments",
+        [
+          {
+            id: 202,
+            body: "This line needs a null check.",
+            created_at: "2026-07-06T10:03:00Z",
+            updated_at: "2026-07-06T10:04:00Z",
+            html_url: "https://github.com/comment/202",
+            user: { login: "reviewer" }
+          }
+        ]
+      ],
+      [
+        "repos/michaelmwu/personal-dashboard/commits/abc123/check-runs",
+        {
+          check_runs: [
+            {
+              id: 303,
+              name: "unit-contract-tests",
+              status: "completed",
+              conclusion: "failure",
+              completed_at: "2026-07-06T10:05:00Z",
+              html_url: "https://github.com/check/303"
+            }
+          ]
+        }
+      ]
+    ]);
+    const command = async (cmd, args) => {
+      calls.push({ cmd, args });
+      return { stdout: JSON.stringify(payloads.get(args[1])) };
+    };
+
+    const snapshot = await fetchCodingTaskPrSnapshot(
+      {
+        id: "coding_poll_001",
+        repo: "personal-dashboard",
+        prNumber: 42,
+        githubCursor: { updatedAt: "2026-07-06T09:00:00Z" }
+      },
+      {
+        command,
+        env: {
+          CODING_AGENT_GITHUB_OWNER: "michaelmwu"
+        }
+      }
+    );
+
+    expect(calls.map((call) => call.args[1])).toEqual([
+      "repos/michaelmwu/personal-dashboard/pulls/42",
+      "repos/michaelmwu/personal-dashboard/pulls/42/reviews",
+      "repos/michaelmwu/personal-dashboard/issues/42/comments",
+      "repos/michaelmwu/personal-dashboard/pulls/42/comments",
+      "repos/michaelmwu/personal-dashboard/commits/abc123/check-runs"
+    ]);
+    expect(snapshot).toMatchObject({
+      repo: "michaelmwu/personal-dashboard",
+      prNumber: 42,
+      branch: "hermes/pr-feedback",
+      reviewState: "CHANGES_REQUESTED",
+      checks: {
+        conclusion: "failure",
+        failed: [
+          {
+            name: "unit-contract-tests",
+            conclusion: "failure"
+          }
+        ]
+      },
+      cursor: {
+        updatedAt: "2026-07-06T10:05:00.000Z"
+      }
+    });
+    expect(snapshot.actionable.map((event) => event.kind)).toEqual(["review", "comment", "check"]);
+  });
+
+  test("coding agent PR poller syncs task status and dispatches actionable updates", async () => {
+    const synced = [];
+    const dispatched = [];
+    const result = await pollCodingAgentPrs({
+      tasksResponse: {
+        tasks: [
+          {
+            id: "coding_poll_002",
+            repo: "personal-dashboard",
+            prNumber: 42,
+            status: "pr-open"
+          },
+          {
+            id: "coding_poll_archived",
+            repo: "personal-dashboard",
+            prNumber: 41,
+            status: "archived"
+          }
+        ]
+      },
+      async command(cmd, args) {
+        const path = args[1];
+        const payloads = {
+          "repos/michaelmwu/personal-dashboard/pulls/42": {
+            state: "open",
+            html_url: "https://github.com/michaelmwu/personal-dashboard/pull/42",
+            head: { ref: "hermes/poll", sha: "def456" }
+          },
+          "repos/michaelmwu/personal-dashboard/pulls/42/reviews": [
+            {
+              id: 404,
+              state: "COMMENTED",
+              body: "Could use a regression test.",
+              submitted_at: "2026-07-06T11:00:00Z",
+              user: { login: "reviewer" }
+            }
+          ],
+          "repos/michaelmwu/personal-dashboard/issues/42/comments": [],
+          "repos/michaelmwu/personal-dashboard/pulls/42/comments": [],
+          "repos/michaelmwu/personal-dashboard/commits/def456/check-runs": {
+            check_runs: []
+          }
+        };
+        expect(cmd).toBe("gh");
+        return { stdout: JSON.stringify(payloads[path]) };
+      },
+      env: {
+        CODING_AGENT_GITHUB_OWNER: "michaelmwu"
+      },
+      async syncTaskPrSnapshot(task, snapshot) {
+        synced.push({ task, snapshot });
+        return { accepted: true };
+      },
+      async dispatchCodingTaskUpdate(task, snapshot) {
+        dispatched.push({ task, snapshot });
+        return { accepted: true, action: { capabilityId: "update-coding-task" } };
+      }
+    });
+
+    expect(result).toMatchObject({
+      taskCount: 1,
+      results: [
+        {
+          taskId: "coding_poll_002",
+          repo: "michaelmwu/personal-dashboard",
+          prNumber: 42,
+          events: 1,
+          actionable: 1,
+          synced: true
+        }
+      ]
+    });
+    expect(synced).toHaveLength(1);
+    expect(synced[0].snapshot.cursor.updatedAt).toBe("2026-07-06T11:00:00.000Z");
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0].snapshot.actionable[0]).toMatchObject({
+      kind: "review",
+      state: "COMMENTED"
+    });
+  });
+
+  test("coding agent PR pickup discovers explicit comments without mutating GitHub", async () => {
+    expect(commentRequestsCodingAgentPickup("@coding-agent pick up this PR")).toBe(true);
+    expect(commentRequestsCodingAgentPickup("normal review comment")).toBe(false);
+
+    const calls = [];
+    const pickups = [];
+    const result = await discoverCodingAgentPrPickups({
+      repos: ["michaelmwu/personal-dashboard"],
+      tasksResponse: {
+        tasks: [
+          {
+            id: "coding_existing",
+            repo: "personal-dashboard",
+            githubRepo: "michaelmwu/personal-dashboard",
+            prNumber: 41,
+            status: "pr-open"
+          }
+        ]
+      },
+      async command(cmd, args) {
+        calls.push({ cmd, args });
+        const path = args[1];
+        const payloads = {
+          "repos/michaelmwu/personal-dashboard/issues/comments?per_page=100": [
+            {
+              id: 500,
+              body: "@coding-agent pick up this PR",
+              html_url: "https://github.com/michaelmwu/personal-dashboard/pull/42#issuecomment-500",
+              issue_url: "https://api.github.com/repos/michaelmwu/personal-dashboard/issues/42"
+            },
+            {
+              id: 501,
+              body: "@coding-agent pickup already managed",
+              html_url: "https://github.com/michaelmwu/personal-dashboard/pull/41#issuecomment-501",
+              issue_url: "https://api.github.com/repos/michaelmwu/personal-dashboard/issues/41"
+            },
+            {
+              id: 502,
+              body: "Looks fine.",
+              html_url: "https://github.com/michaelmwu/personal-dashboard/pull/43#issuecomment-502",
+              issue_url: "https://api.github.com/repos/michaelmwu/personal-dashboard/issues/43"
+            }
+          ],
+          "repos/michaelmwu/personal-dashboard/pulls/42": {
+            state: "open",
+            title: "Existing pickup PR",
+            html_url: "https://github.com/michaelmwu/personal-dashboard/pull/42",
+            head: { ref: "feature/existing-pickup", sha: "pickup-sha" },
+            base: { ref: "main" }
+          }
+        };
+        return { stdout: JSON.stringify(payloads[path]) };
+      },
+      async postPickup(payload) {
+        pickups.push(payload);
+        return { accepted: true, task: { id: "coding_personal-dashboard_pr_42" } };
+      }
+    });
+
+    expect(calls.map((call) => call.args)).toEqual([
+      ["api", "repos/michaelmwu/personal-dashboard/issues/comments?per_page=100"],
+      ["api", "repos/michaelmwu/personal-dashboard/pulls/42"]
+    ]);
+    expect(pickups).toEqual([
+      expect.objectContaining({
+        repo: "personal-dashboard",
+        githubRepo: "michaelmwu/personal-dashboard",
+        prNumber: 42,
+        branch: "feature/existing-pickup",
+        pickupSource: "github-comment",
+        pickupCommentId: "500"
+      })
+    ]);
+    expect(result).toMatchObject({
+      repoCount: 1,
+      pickedUp: 1,
+      results: expect.arrayContaining([
+        expect.objectContaining({ prNumber: 42, pickedUp: true }),
+        expect.objectContaining({ prNumber: 41, skipped: true, reason: "already_managed" })
+      ])
+    });
   });
 
   test("Plaid webhook auth honors injected API server token", async () => {
