@@ -338,6 +338,86 @@ mark {
   grid-template-columns: 128px minmax(0, 1fr);
 }
 
+.bridge-console {
+  display: grid;
+  gap: 10px;
+  padding: 0 14px 14px;
+}
+
+.bridge-status-row,
+.bridge-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.bridge-status-row {
+  justify-content: space-between;
+}
+
+.bridge-console label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.bridge-console input,
+.bridge-console textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.35;
+}
+
+.bridge-console textarea {
+  resize: vertical;
+}
+
+.bridge-console button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 11px;
+  background: #fff;
+  color: var(--ink);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.bridge-console button:hover {
+  border-color: var(--accent);
+}
+
+#bridge-start,
+#bridge-approve {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+#bridge-events {
+  min-height: 132px;
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: #0f172a;
+  color: #dbeafe;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 960px) {
   .metric-grid,
   .workspace,

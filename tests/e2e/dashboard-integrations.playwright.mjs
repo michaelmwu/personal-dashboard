@@ -1,7 +1,11 @@
 import { expect, test } from "@playwright/test";
 
+const apiToken = process.env.PERSONAL_DASHBOARD_API_TOKEN ?? "";
+const authHeaders = apiToken ? { Authorization: `Bearer ${apiToken}` } : {};
+
 test("source events upsert into the dashboard contract", async ({ request }) => {
   const event = await request.post("/api/integrations/asia-travel-deals/events", {
+    headers: authHeaders,
     data: {
       id: "deal_e2e_001",
       dealGroupId: "group_e2e_001",
@@ -34,6 +38,7 @@ test("source events upsert into the dashboard contract", async ({ request }) => 
 
 test("Plaid Link token endpoint fails closed without server credentials", async ({ request }) => {
   const response = await request.post("/api/integrations/plaid/link-token", {
+    headers: authHeaders,
     data: {
       userId: "e2e-user"
     }
@@ -50,6 +55,7 @@ test("Plaid Link token endpoint fails closed without server credentials", async 
 
 test("Hotel Rate Finder sync endpoint fails closed without service URL", async ({ request }) => {
   const response = await request.post("/api/integrations/hotel-rate-finder/sync", {
+    headers: authHeaders,
     data: {
       reservationId: "reservation_hotel_e2e_001"
     }
@@ -80,6 +86,7 @@ test("plugin registry exposes enabled apps and accepts opaque app events", async
   });
 
   const event = await request.post("/api/apps/hotel-rate-finder/events", {
+    headers: authHeaders,
     data: {
       type: "status",
       externalId: "e2e-status",
@@ -106,6 +113,7 @@ test("plugin registry exposes enabled apps and accepts opaque app events", async
 test("Hermes actions dedupe by Idempotency-Key before dispatch", async ({ request }) => {
   const first = await request.post("/api/hermes/actions", {
     headers: {
+      ...authHeaders,
       "Idempotency-Key": "verify-deal-e2e-001"
     },
     data: {
@@ -121,6 +129,7 @@ test("Hermes actions dedupe by Idempotency-Key before dispatch", async ({ reques
 
   const second = await request.post("/api/hermes/actions", {
     headers: {
+      ...authHeaders,
       "Idempotency-Key": "verify-deal-e2e-001"
     },
     data: {
@@ -147,6 +156,7 @@ test("Hermes actions dedupe by Idempotency-Key before dispatch", async ({ reques
 test("Hermes actions dedupe by stable payload id", async ({ request }) => {
   const actionId = "stable-action-e2e-001";
   const first = await request.post("/api/hermes/actions", {
+    headers: authHeaders,
     data: {
       id: actionId,
       capabilityId: "asia_deal_verify",
@@ -159,6 +169,7 @@ test("Hermes actions dedupe by stable payload id", async ({ request }) => {
   expect(first.status()).toBe(202);
 
   const second = await request.post("/api/hermes/actions", {
+    headers: authHeaders,
     data: {
       id: actionId,
       capabilityId: "asia_deal_verify",

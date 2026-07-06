@@ -17,6 +17,173 @@ export function isHermesBridgeConfigured(config = hermesBridgeConfig()) {
   return Boolean(config.baseUrl && config.password);
 }
 
+function bridgeBaseUrl(config) {
+  return config.baseUrl.replace(/\/$/, "");
+}
+
+function bridgeHeaders(config, headers = {}) {
+  return {
+    Authorization: `Bearer ${config.password}`,
+    "X-Hermes-Session-Key": config.sessionKey,
+    ...headers
+  };
+}
+
+async function bridgeResponseBody(response) {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    return response.json();
+  }
+  return response.text();
+}
+
+export async function hermesBridgeRequest(path, options = {}) {
+  const config = options.config ?? hermesBridgeConfig();
+  if (!isHermesBridgeConfigured(config)) {
+    return {
+      ok: false,
+      status: 503,
+      body: {
+        error: "missing_hermes_bridge_config",
+        message: "Hermes Bridge URL and password are required."
+      }
+    };
+  }
+
+  const fetchImpl = options.fetch ?? fetch;
+  const headers = {
+    ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
+    ...(options.accept ? { Accept: options.accept } : {}),
+    ...(options.headers ?? {})
+  };
+  try {
+    const response = await fetchImpl(`${bridgeBaseUrl(config)}${path}`, {
+      method: options.method ?? "GET",
+      headers: bridgeHeaders(config, headers),
+      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      signal: options.signal
+    });
+    return {
+      ok: response.ok,
+      status: response.status,
+      contentType: response.headers.get("content-type") ?? "application/octet-stream",
+      body: await bridgeResponseBody(response)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 502,
+      body: {
+        error: "hermes_bridge_unavailable",
+        message: error instanceof Error ? error.message : String(error)
+      }
+    };
+  }
+}
+
+export function hermesBridgeStatus(config = hermesBridgeConfig()) {
+  return {
+    configured: isHermesBridgeConfigured(config),
+    baseUrl: config.baseUrl || undefined,
+    sessionKey: config.sessionKey
+  };
+}
+
+export function createHermesBridgeRunPayload(payload = {}) {
+  return {
+    input: payload.input ?? payload.prompt ?? "",
+    instructions: payload.instructions,
+    session_id: payload.sessionId ?? payload.session_id,
+    metadata: payload.metadata
+  };
+}
+
+export async function startHermesBridgeRun(payload, options = {}) {
+  return hermesBridgeRequest("/v1/runs", {
+    ...options,
+    method: "POST",
+    headers: {
+      ...(options.headers ?? {}),
+      ...(options.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : {})
+    },
+    body: createHermesBridgeRunPayload(payload)
+  });
+}
+
+export async function getHermesBridgeRun(runId, options = {}) {
+  return hermesBridgeRequest(`/v1/runs/${encodeURIComponent(runId)}`, options);
+}
+
+export async function getHermesBridgeRunEvents(runId, options = {}) {
+  return hermesBridgeRequest(`/v1/runs/${encodeURIComponent(runId)}/events`, {
+    ...options,
+    accept: options.accept ?? "text/event-stream, application/json"
+  });
+}
+
+export async function openHermesBridgeRunEvents(runId, options = {}) {
+  const config = options.config ?? hermesBridgeConfig();
+  if (!isHermesBridgeConfigured(config)) {
+    return {
+      ok: false,
+      status: 503,
+      body: {
+        error: "missing_hermes_bridge_config",
+        message: "Hermes Bridge URL and password are required."
+      }
+    };
+  }
+
+  const fetchImpl = options.fetch ?? fetch;
+  try {
+    const response = await fetchImpl(
+      `${bridgeBaseUrl(config)}/v1/runs/${encodeURIComponent(runId)}/events`,
+      {
+        headers: bridgeHeaders(config, {
+          Accept: options.accept ?? "text/event-stream, application/json",
+          ...(options.headers ?? {})
+        }),
+        signal: options.signal
+      }
+    );
+    return {
+      ok: response.ok,
+      status: response.status,
+      contentType: response.headers.get("content-type") ?? "application/octet-stream",
+      response
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 502,
+      body: {
+        error: "hermes_bridge_unavailable",
+        message: error instanceof Error ? error.message : String(error)
+      }
+    };
+  }
+}
+
+export async function approveHermesBridgeRun(runId, payload, options = {}) {
+  return hermesBridgeRequest(`/v1/runs/${encodeURIComponent(runId)}/approval`, {
+    ...options,
+    method: "POST",
+    body: payload ?? {}
+  });
+}
+
+export async function stopHermesBridgeRun(runId, payload, options = {}) {
+  return hermesBridgeRequest(`/v1/runs/${encodeURIComponent(runId)}/stop`, {
+    ...options,
+    method: "POST",
+    body: payload ?? {}
+  });
+}
+
+export async function getHermesBridgeCapabilities(options = {}) {
+  return hermesBridgeRequest("/v1/capabilities", options);
+}
+
 export function assertBridgeDispatchable(action) {
   if (action.origin === "hermes") {
     throw new HermesBridgeLoopError(action.id);
@@ -42,12 +209,11 @@ export async function createHermesBridgeRun(action, options = {}) {
   }
 
   const fetchImpl = options.fetch ?? fetch;
-  const response = await fetchImpl(`${config.baseUrl.replace(/\/$/, "")}/v1/runs`, {
+  const response = await fetchImpl(`${bridgeBaseUrl(config)}/v1/runs`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${config.password}`,
-      "X-Hermes-Session-Key": config.sessionKey,
+      ...bridgeHeaders(config),
       ...(action.idempotencyKey ? { "Idempotency-Key": action.idempotencyKey } : {})
     },
     body: JSON.stringify({
@@ -102,13 +268,11 @@ export async function streamHermesBridgeRunEvents(runId, onEvent, options = {}) 
 
   const fetchImpl = options.fetch ?? fetch;
   const response = await fetchImpl(
-    `${config.baseUrl.replace(/\/$/, "")}/v1/runs/${encodeURIComponent(runId)}/events`,
+    `${bridgeBaseUrl(config)}/v1/runs/${encodeURIComponent(runId)}/events`,
     {
-      headers: {
-        Accept: "text/event-stream",
-        Authorization: `Bearer ${config.password}`,
-        "X-Hermes-Session-Key": config.sessionKey
-      },
+      headers: bridgeHeaders(config, {
+        Accept: "text/event-stream"
+      }),
       signal: options.signal
     }
   );

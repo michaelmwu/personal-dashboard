@@ -58,13 +58,47 @@ async function proxyApiRequest(request, response, { baseUrl = apiBaseUrl } = {})
   headers.delete("host");
   headers.delete("connection");
   headers.delete("content-length");
+  const abortController = new AbortController();
+  response.on("close", () => {
+    abortController.abort();
+  });
 
   const upstreamResponse = await fetch(upstreamUrl, {
     method: request.method,
     headers,
     body:
-      request.method === "GET" || request.method === "HEAD" ? undefined : await requestBody(request)
+      request.method === "GET" || request.method === "HEAD"
+        ? undefined
+        : await requestBody(request),
+    signal: abortController.signal
   });
+
+  const contentType = upstreamResponse.headers.get("content-type") ?? "";
+  if (contentType.includes("text/event-stream") && upstreamResponse.body) {
+    response.writeHead(upstreamResponse.status, {
+      ...responseHeaders(upstreamResponse.headers),
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no"
+    });
+    try {
+      for await (const chunk of upstreamResponse.body) {
+        if (response.destroyed) {
+          break;
+        }
+        response.write(chunk);
+      }
+    } catch (error) {
+      if (!abortController.signal.aborted) {
+        throw error;
+      }
+    } finally {
+      if (!response.destroyed) {
+        response.end();
+      }
+    }
+    return;
+  }
+
   const body = Buffer.from(await upstreamResponse.arrayBuffer());
   response.writeHead(upstreamResponse.status, responseHeaders(upstreamResponse.headers));
   response.end(body);
@@ -84,8 +118,12 @@ export function createWebServer({ rootDir = __dirname, proxyBaseUrl = apiBaseUrl
       try {
         await proxyApiRequest(request, response, { baseUrl: proxyBaseUrl });
       } catch {
-        response.writeHead(502);
-        response.end("Bad gateway");
+        if (!response.headersSent && !response.destroyed) {
+          response.writeHead(502);
+          response.end("Bad gateway");
+        } else if (!response.destroyed) {
+          response.end();
+        }
       }
       return;
     }
