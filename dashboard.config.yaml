@@ -43,3 +43,15 @@ apps:
         enabled: true
         position: travel
         order: 30
+  - id: coding-agent
+    enabled: true
+    manifest: packages/integrations/manifests/coding-agent.dashboard-manifest.json
+    panels:
+      - id: task-queue
+        enabled: true
+        position: operations
+        order: 10
+      - id: active-runs
+        enabled: true
+        position: operations
+        order: 15

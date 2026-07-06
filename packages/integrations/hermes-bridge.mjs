@@ -219,6 +219,9 @@ export async function createHermesBridgeRun(action, options = {}) {
     headers: {
       "Content-Type": "application/json",
       ...bridgeHeaders(config),
+      ...(action.payload?.hermesSessionKey
+        ? { "X-Hermes-Session-Key": action.payload.hermesSessionKey }
+        : {}),
       ...(action.idempotencyKey ? { "Idempotency-Key": action.idempotencyKey } : {})
     },
     body: JSON.stringify({
@@ -226,7 +229,9 @@ export async function createHermesBridgeRun(action, options = {}) {
       instructions:
         action.payload?.instructions ??
         "You are Hermes acting on a Personal Dashboard action envelope. Use dashboard context when needed and report concise status.",
-      session_id: `dashboard:${action.id}`
+      session_id:
+        action.payload?.sessionId ?? action.payload?.session_id ?? `dashboard:${action.id}`,
+      metadata: action.payload?.metadata
     })
   });
 

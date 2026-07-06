@@ -86,6 +86,34 @@ Set `PERSONAL_DASHBOARD_API_TOKEN` to require `Authorization: Bearer ...` on
 the Hermes endpoints. The Bridge password stays server-side in the API process;
 it must never be sent to the web client.
 
+Coding Agent endpoints:
+
+- `GET /api/apps/coding-agent/tasks`: list active coding tasks. Pass
+  `includeArchived=true` to include archived records.
+- `POST /api/apps/coding-agent/tasks`: register the durable task anchor
+  `{id, repo, branch, worktreeDir, hermesSessionKey, prNumber, previewUrl}`.
+- `POST /api/apps/coding-agent/queue`: append typed work items to a task queue.
+- `POST /api/apps/coding-agent/pr-status`: sync PR review/check/preview status
+  onto a registered task.
+- `POST /api/apps/coding-agent/pr-maintenance`: deterministically plan PR
+  maintenance after enforcing repo allowlists, branch policy, PR-only rules, and
+  side-effect approval requirements.
+- `POST /api/apps/coding-agent/archive`: archive a completed or abandoned task
+  and its remaining queue items.
+
+Set `CODING_AGENT_ALLOWED_REPOS` to a comma-separated repo allowlist when
+enforcing PR-maintenance repo policy. `CODING_AGENT_BRANCH_PREFIX` defaults to
+`hermes`, and side-effecting maintenance actions such as push, PR creation,
+merge, cleanup, and PR replies require `approvedBy` plus `approvalId`.
+
+Set `CODING_AGENT_PR_POLL_ENABLED=true` on the integration worker to poll active
+coding-task PRs with `gh api`. The poller reads `pr-open`,
+`changes-requested`, and `waiting-for-approval` tasks, advances the task's
+GitHub cursor through `/api/apps/coding-agent/pr-status`, and dispatches the
+agentic `update-coding-task` capability only when new actionable reviews,
+comments, or failed checks are found. Use `CODING_AGENT_GITHUB_OWNER` when task
+records store repo names without an owner.
+
 Plaid-facing endpoints:
 
 - `POST /api/integrations/plaid/link-token`: create a Plaid Link token for the

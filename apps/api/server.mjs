@@ -23,6 +23,15 @@ import {
   streamHermesBridgeRunEvents
 } from "../../packages/integrations/hermes-bridge.mjs";
 import {
+  applyPrStatus,
+  archiveCodingTask,
+  codingAgentPolicyFromEnv,
+  codingTaskItem,
+  enqueueCodingTaskItems,
+  planPrMaintenance,
+  visibleCodingTasks
+} from "../../packages/integrations/coding-agent.mjs";
+import {
   integrationCatalog,
   isSupportedSourceAdapter,
   normalizeSourceEvent
@@ -81,6 +90,7 @@ const storePath = dashboardStorePath(root);
 const asiaTravelDealsApiBaseUrl = process.env.ASIA_TRAVEL_DEALS_API_BASE_URL ?? "";
 const asiaTravelDealsApiToken = process.env.ASIA_TRAVEL_DEALS_API_TOKEN ?? "";
 const hotelRateFinderConfig = hotelRatesConfig();
+const codingAgentPolicy = codingAgentPolicyFromEnv();
 
 async function dashboardSnapshot() {
   const dashboard = await loadDashboard(dashboardFixture(), storePath);
@@ -118,6 +128,106 @@ async function appItems(appId, { type } = {}) {
   const projectedItems = genericAppItemsFromDashboard(dashboard, appId);
   const overlayItems = await listAppItems(storePath, { app: appId, type });
   return [...projectedItems, ...overlayItems].filter((item) => !type || item.type === type);
+}
+
+async function codingTaskItems() {
+  return listAppItems(storePath, { app: "coding-agent", type: "coding-task" });
+}
+
+async function findCodingTask(payload) {
+  const taskId = payload.taskId ?? payload.task_id ?? payload.id;
+  const prNumber = payload.prNumber ?? payload.pr_number;
+  const repo = payload.repo;
+  return (await codingTaskItems()).find(
+    (item) =>
+      (taskId && item.id === taskId) ||
+      (repo && prNumber && item.payload?.repo === repo && item.payload?.prNumber === prNumber)
+  );
+}
+
+async function persistCodingTaskItem(item) {
+  await upsertAppItem(storePath, item);
+  return item;
+}
+
+async function registerCodingTask(payload) {
+  if (!payload.repo) {
+    return { ok: false, statusCode: 400, reason: "missing_repo" };
+  }
+  const item = codingTaskItem(payload);
+  await upsertAppItem(storePath, item);
+  return { ok: true, statusCode: 202, task: item.payload, item };
+}
+
+async function syncCodingPrStatus(payload) {
+  const existing = await findCodingTask(payload);
+  if (!existing) {
+    return { ok: false, statusCode: 404, reason: "coding_task_not_found" };
+  }
+  const item = applyPrStatus(existing, payload);
+  await persistCodingTaskItem(item);
+  return { ok: true, statusCode: 202, task: item.payload, item };
+}
+
+async function enqueueCodingTask(payload) {
+  const existing = await findCodingTask(payload);
+  if (!existing) {
+    return { ok: false, statusCode: 404, reason: "coding_task_not_found" };
+  }
+  const item = enqueueCodingTaskItems(existing, payload);
+  await persistCodingTaskItem(item);
+  return { ok: true, statusCode: 202, task: item.payload, item };
+}
+
+async function runCodingPrMaintenance(payload) {
+  const existing = await findCodingTask(payload);
+  if (!existing) {
+    return { ok: false, statusCode: 404, reason: "coding_task_not_found" };
+  }
+  const result = planPrMaintenance(existing, payload, codingAgentPolicy);
+  await persistCodingTaskItem(result.taskItem);
+  return {
+    ok: !result.rejected,
+    statusCode: result.rejected ? 400 : result.blocked ? 409 : 202,
+    task: result.taskItem.payload,
+    maintenance: result.maintenance,
+    blocked: result.blocked,
+    rejected: result.rejected,
+    reason: result.rejected
+      ? result.maintenance.find((item) => item.status === "rejected")?.rejectionReason
+      : undefined
+  };
+}
+
+async function archiveCodingTaskByPayload(payload) {
+  const existing = await findCodingTask(payload);
+  if (!existing) {
+    return { ok: false, statusCode: 404, reason: "coding_task_not_found" };
+  }
+  const item = archiveCodingTask(existing, payload);
+  await persistCodingTaskItem(item);
+  return { ok: true, statusCode: 202, task: item.payload, item };
+}
+
+async function recordCodingTaskHermesRun(action, dispatch) {
+  const taskId = action.payload?.taskId ?? action.payload?.task_id;
+  if (!taskId || !dispatch.runId) {
+    return;
+  }
+  const existing = await findCodingTask({ taskId });
+  if (!existing) {
+    return;
+  }
+  await persistCodingTaskItem(
+    codingTaskItem(
+      {
+        hermesRunId: dispatch.runId,
+        latestHermesRunId: dispatch.runId,
+        hermesRunStatus: "running"
+      },
+      existing
+    )
+  );
 }
 
 function activeHotelRateReservations(dashboard, { reservationId } = {}) {
@@ -336,6 +446,7 @@ async function dispatchHermesAction(action, capability) {
 
   const dispatch = await createHermesBridgeRun(action);
   if (dispatch.dispatched && dispatch.runId) {
+    await recordCodingTaskHermesRun(action, dispatch);
     queueMicrotask(() => {
       streamBridgeRunOntoAction(action, dispatch.runId);
     });
@@ -356,6 +467,30 @@ async function dispatchDeterministicCapability(action, capability) {
       forceRefresh: action.payload.forceRefresh ?? action.payload.force_refresh
     });
     return { dispatched: response.synced, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/tasks") {
+    const response = await registerCodingTask(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/pr-status") {
+    const response = await syncCodingPrStatus(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/queue") {
+    const response = await enqueueCodingTask(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/pr-maintenance") {
+    const response = await runCodingPrMaintenance(action.payload);
+    return {
+      dispatched: response.ok && !response.blocked,
+      target: capability.target,
+      response
+    };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/archive") {
+    const response = await archiveCodingTaskByPayload(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
   }
   if (action.capabilityId !== "asia_deal_verify") {
     return { dispatched: false, reason: "unsupported_deterministic_capability" };
@@ -608,6 +743,98 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         json(response, 202, {
           accepted: true,
           item
+        });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/apps/coding-agent/tasks") {
+        json(response, 200, {
+          tasks: visibleCodingTasks(await codingTaskItems(), {
+            includeArchived: url.searchParams.get("includeArchived") === "true",
+            status: url.searchParams.get("status")
+          }).map((item) => item.payload)
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/tasks") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await registerCodingTask(await readJson(request));
+        if (!result.ok) {
+          error(response, result.statusCode, result.reason, "Coding task repo is required.");
+          return;
+        }
+        json(response, result.statusCode, {
+          accepted: true,
+          task: result.task
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/queue") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await enqueueCodingTask(await readJson(request));
+        if (!result.ok) {
+          error(response, result.statusCode, result.reason, "Registered coding task not found.");
+          return;
+        }
+        json(response, result.statusCode, {
+          accepted: true,
+          task: result.task
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/pr-status") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await syncCodingPrStatus(await readJson(request));
+        if (!result.ok) {
+          error(response, result.statusCode, result.reason, "Registered coding task not found.");
+          return;
+        }
+        json(response, result.statusCode, {
+          accepted: true,
+          task: result.task
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/pr-maintenance") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await runCodingPrMaintenance(await readJson(request));
+        if (!result.ok && result.rejected) {
+          error(response, result.statusCode, result.reason, "PR maintenance guardrail rejected.");
+          return;
+        }
+        json(response, result.statusCode, {
+          accepted: !result.rejected,
+          blocked: result.blocked,
+          task: result.task,
+          maintenance: result.maintenance
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/archive") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await archiveCodingTaskByPayload(await readJson(request));
+        if (!result.ok) {
+          error(response, result.statusCode, result.reason, "Registered coding task not found.");
+          return;
+        }
+        json(response, result.statusCode, {
+          accepted: true,
+          task: result.task
         });
         return;
       }

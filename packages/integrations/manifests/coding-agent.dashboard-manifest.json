@@ -1,0 +1,127 @@
+{
+  "id": "coding-agent",
+  "name": "Coding Agent",
+  "version": "dashboard-app.v1",
+  "baseUrl": "internal:hermes-bridge",
+  "panels": [
+    {
+      "id": "task-queue",
+      "type": "task-queue",
+      "title": "Coding Tasks",
+      "dataSource": "/api/apps/coding-agent/items?type=coding-task",
+      "defaultPosition": "operations"
+    },
+    {
+      "id": "active-runs",
+      "type": "run-status",
+      "title": "Coding Agent Runs",
+      "dataSource": "/api/apps/coding-agent/items?type=coding-run",
+      "defaultPosition": "operations"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "start-coding-task",
+      "title": "Start coding task",
+      "kind": "agentic",
+      "target": "coding-agent",
+      "description": "Ask Hermes to create an isolated worktree, execute a coding task, and open a PR.",
+      "inputSchema": {
+        "repo": "string",
+        "title": "string",
+        "prompt": "string",
+        "baseBranch": "string?",
+        "approvalRequired": "boolean?"
+      }
+    },
+    {
+      "id": "update-coding-task",
+      "title": "Update coding task",
+      "kind": "agentic",
+      "target": "coding-agent",
+      "description": "Resume a registered coding task in its worktree after PR feedback, CI failures, or dashboard follow-up.",
+      "inputSchema": {
+        "taskId": "string",
+        "repo": "string",
+        "prNumber": "number?",
+        "worktreeDir": "string?",
+        "events": "array?"
+      }
+    },
+    {
+      "id": "register-coding-task",
+      "title": "Register coding task",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/tasks",
+      "description": "Persist the task, worktree, Hermes session, PR, and preview URL anchors for one coding task.",
+      "inputSchema": {
+        "id": "string?",
+        "repo": "string",
+        "title": "string",
+        "branch": "string?",
+        "worktreeDir": "string?",
+        "hermesSessionKey": "string?",
+        "prNumber": "number?",
+        "previewUrl": "string?"
+      }
+    },
+    {
+      "id": "sync-pr-status",
+      "title": "Sync PR status",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/pr-status",
+      "description": "Update a registered coding task from PR checks, review state, comments, or preview deployment data.",
+      "inputSchema": {
+        "taskId": "string?",
+        "repo": "string?",
+        "prNumber": "number?",
+        "status": "string?",
+        "previewUrl": "string?",
+        "checks": "object?"
+      }
+    },
+    {
+      "id": "enqueue-coding-task-item",
+      "title": "Enqueue coding task item",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/queue",
+      "description": "Append one or more typed work items to a registered coding task queue.",
+      "inputSchema": {
+        "taskId": "string",
+        "items": "array?"
+      }
+    },
+    {
+      "id": "run-pr-maintenance",
+      "title": "Run PR maintenance",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/pr-maintenance",
+      "description": "Plan PR maintenance work after enforcing repo allowlists, branch policy, PR-only rules, and approval requirements.",
+      "inputSchema": {
+        "taskId": "string?",
+        "repo": "string?",
+        "prNumber": "number?",
+        "actions": "array?",
+        "approvedBy": "string?",
+        "approvalId": "string?"
+      }
+    },
+    {
+      "id": "archive-coding-task",
+      "title": "Archive coding task",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/archive",
+      "description": "Archive a completed or abandoned coding task and its remaining queue items.",
+      "inputSchema": {
+        "taskId": "string",
+        "reason": "string?"
+      }
+    }
+  ],
+  "eventTypes": ["coding-task", "coding-run", "pr-status"]
+}
