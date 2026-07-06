@@ -24,16 +24,21 @@ import {
 } from "../../packages/integrations/hermes-bridge.mjs";
 import {
   applyPrStatus,
+  applyCodingTaskControl,
   archiveCodingTask,
   codingAgentPolicyFromEnv,
   codingTaskItem,
   enqueueCodingTaskItems,
   normalizeCodingAgentSignal,
+  normalizeCodingAgentFinding,
   pickupExistingPrTask,
   planCodingTaskIntake,
+  planCodingTaskQueue,
   planPrMaintenance,
   reviewCodingAgentRisk,
   shortRepoName,
+  synthesizeCodingAgentFindings,
+  updateCodingTaskCoordination,
   visibleCodingTasks
 } from "../../packages/integrations/coding-agent.mjs";
 import {
@@ -178,6 +183,12 @@ async function planCodingTask(payload) {
   return result;
 }
 
+async function planCodingQueue(payload) {
+  const result = planCodingTaskQueue(payload, await codingTaskItems());
+  await persistCodingTaskItem(result.taskItem);
+  return result;
+}
+
 async function pickupCodingPr(payload) {
   const existing = await findCodingTask(payload);
   const result = pickupExistingPrTask(existing, payload, codingAgentPolicy);
@@ -203,6 +214,49 @@ async function recordCodingSignal(payload) {
   const item = normalizeCodingAgentSignal(payload);
   await upsertAppItem(storePath, item);
   return { ok: true, statusCode: 202, signal: item.payload, item };
+}
+
+async function recordCodingFinding(payload) {
+  const item = normalizeCodingAgentFinding(payload);
+  await upsertAppItem(storePath, item);
+  return { ok: true, statusCode: 202, finding: item.payload, item };
+}
+
+async function synthesizeCodingFindings(payload = {}) {
+  const signals = await listAppItems(storePath, {
+    app: "coding-agent",
+    type: "coding-improvement-signal"
+  });
+  const findings = synthesizeCodingAgentFindings(signals, {
+    minimumSignals: payload.minimumSignals ?? payload.minimum_signals
+  });
+  for (const finding of findings) {
+    await upsertAppItem(storePath, finding);
+  }
+  return { ok: true, statusCode: 202, findings: findings.map((item) => item.payload) };
+}
+
+async function updateCodingCoordination(payload) {
+  const existing = await findCodingTask(payload);
+  if (!existing) {
+    return { ok: false, statusCode: 404, reason: "coding_task_not_found" };
+  }
+  const item = updateCodingTaskCoordination(existing, payload);
+  await persistCodingTaskItem(item);
+  return { ok: true, statusCode: 202, task: item.payload, item };
+}
+
+async function applyCodingControl(payload) {
+  const existing = await findCodingTask(payload);
+  if (!existing) {
+    return { ok: false, statusCode: 404, reason: "coding_task_not_found" };
+  }
+  const result = applyCodingTaskControl(existing, payload);
+  if (!result.ok) {
+    return result;
+  }
+  await persistCodingTaskItem(result.taskItem);
+  return result;
 }
 
 async function syncCodingPrStatus(payload) {
@@ -526,6 +580,14 @@ async function dispatchDeterministicCapability(action, capability) {
       response
     };
   }
+  if (capability.endpoint === "/api/apps/coding-agent/queue-plan") {
+    const response = await planCodingQueue(action.payload);
+    return {
+      dispatched: response.ok && !response.blocked,
+      target: capability.target,
+      response
+    };
+  }
   if (capability.endpoint === "/api/apps/coding-agent/pr-pickup") {
     const response = await pickupCodingPr(action.payload);
     return { dispatched: response.ok, target: capability.target, response };
@@ -556,6 +618,20 @@ async function dispatchDeterministicCapability(action, capability) {
   }
   if (capability.endpoint === "/api/apps/coding-agent/signals") {
     const response = await recordCodingSignal(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/findings") {
+    const response = action.payload?.synthesize
+      ? await synthesizeCodingFindings(action.payload)
+      : await recordCodingFinding(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/coordination") {
+    const response = await updateCodingCoordination(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/control") {
+    const response = await applyCodingControl(action.payload);
     return { dispatched: response.ok, target: capability.target, response };
   }
   if (capability.endpoint === "/api/apps/coding-agent/archive") {
@@ -857,6 +933,23 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/queue-plan") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await planCodingQueue(await readJson(request));
+        json(response, result.statusCode, {
+          accepted: true,
+          blocked: result.blocked,
+          duplicateCandidates: result.duplicateCandidates,
+          priority: result.priority,
+          workspacePolicy: result.workspacePolicy,
+          plan: result.plan,
+          task: result.task
+        });
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/pr-pickup") {
         if (!requireAuth(request, response)) {
           return;
@@ -868,6 +961,39 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         }
         json(response, result.statusCode, {
           accepted: true,
+          task: result.task
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/coordination") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await updateCodingCoordination(await readJson(request));
+        if (!result.ok) {
+          error(response, result.statusCode, result.reason, "Registered coding task not found.");
+          return;
+        }
+        json(response, result.statusCode, {
+          accepted: true,
+          task: result.task
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/control") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await applyCodingControl(await readJson(request));
+        if (!result.ok) {
+          error(response, result.statusCode, result.reason, "Coding task control rejected.");
+          return;
+        }
+        json(response, result.statusCode, {
+          accepted: true,
+          control: result.control,
           task: result.task
         });
         return;
@@ -893,6 +1019,22 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         json(response, result.statusCode, {
           accepted: true,
           signal: result.signal
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/findings") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const payload = await readJson(request);
+        const result = payload.synthesize
+          ? await synthesizeCodingFindings(payload)
+          : await recordCodingFinding(payload);
+        json(response, result.statusCode, {
+          accepted: true,
+          finding: result.finding,
+          findings: result.findings
         });
         return;
       }

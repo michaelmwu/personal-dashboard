@@ -11,6 +11,7 @@ export const CODING_AGENT_PICKUP_MARKERS = [
 export const CODING_TASK_STATUSES = [
   "queued",
   "needs-clarification",
+  "paused",
   "running",
   "pr-open",
   "changes-requested",
@@ -28,6 +29,19 @@ const SIDE_EFFECT_ACTIONS = new Set([
   "cleanup-worktree",
   "reply-pr"
 ]);
+
+export const CODING_AGENT_PRIORITIES = ["urgent", "high", "normal", "low"];
+
+export const CODING_AGENT_CONTROL_ACTIONS = [
+  "pause",
+  "explain",
+  "continue",
+  "tests",
+  "preview",
+  "open-pr",
+  "archive",
+  "handoff"
+];
 
 export const CODING_AGENT_RISK_CATEGORIES = [
   "docs",
@@ -53,6 +67,7 @@ const HIGH_RISK_CATEGORIES = new Set([
 const LIFECYCLE_TRANSITIONS = {
   queued: [
     "needs-clarification",
+    "paused",
     "running",
     "pr-open",
     "changes-requested",
@@ -62,7 +77,16 @@ const LIFECYCLE_TRANSITIONS = {
     "archived"
   ],
   "needs-clarification": ["queued", "running", "waiting-for-approval", "abandoned", "archived"],
+  paused: [
+    "running",
+    "pr-open",
+    "changes-requested",
+    "waiting-for-approval",
+    "abandoned",
+    "archived"
+  ],
   running: [
+    "paused",
     "pr-open",
     "changes-requested",
     "waiting-for-approval",
@@ -72,6 +96,7 @@ const LIFECYCLE_TRANSITIONS = {
   ],
   "pr-open": [
     "running",
+    "paused",
     "changes-requested",
     "waiting-for-approval",
     "merged",
@@ -80,13 +105,21 @@ const LIFECYCLE_TRANSITIONS = {
   ],
   "changes-requested": [
     "running",
+    "paused",
     "pr-open",
     "waiting-for-approval",
     "failed",
     "abandoned",
     "archived"
   ],
-  "waiting-for-approval": ["running", "pr-open", "changes-requested", "abandoned", "archived"],
+  "waiting-for-approval": [
+    "paused",
+    "running",
+    "pr-open",
+    "changes-requested",
+    "abandoned",
+    "archived"
+  ],
   failed: ["running", "abandoned", "archived"],
   merged: ["archived"],
   abandoned: ["archived"],
@@ -180,6 +213,83 @@ function existingPayload(existing) {
   return existing?.payload ?? existing ?? {};
 }
 
+export function normalizeCodingAgentPriority(priority = "normal") {
+  const normalized = String(priority ?? "normal").toLowerCase();
+  return CODING_AGENT_PRIORITIES.includes(normalized) ? normalized : "normal";
+}
+
+function normalizedDuplicateText(task) {
+  return [
+    task.title,
+    task.request,
+    task.prompt,
+    task.description,
+    task.branch,
+    task.prNumber,
+    task.pr_number
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    .replace(/[^a-z0-9#]+/g, " ")
+    .trim();
+}
+
+export function duplicateCodingTaskCandidates(payload = {}, tasks = []) {
+  const candidateText = normalizedDuplicateText(payload);
+  const repo = shortRepoName(payload.repo ?? payload.githubRepo ?? payload.github_repo);
+  const prNumber = payload.prNumber ?? payload.pr_number;
+  const requestedId = payload.taskId ?? payload.task_id ?? payload.id;
+  return tasks
+    .map(existingPayload)
+    .filter((task) => task.status !== "archived" && (!requestedId || task.id !== requestedId))
+    .map((task) => {
+      const reasons = [];
+      if (
+        prNumber &&
+        task.prNumber === prNumber &&
+        repo &&
+        shortRepoName(task.repo ?? task.githubRepo) === repo
+      ) {
+        reasons.push("same_pr");
+      }
+      if (
+        payload.branch &&
+        task.branch === payload.branch &&
+        repo &&
+        shortRepoName(task.repo ?? task.githubRepo) === repo
+      ) {
+        reasons.push("same_branch");
+      }
+      const taskText = normalizedDuplicateText(task);
+      const sharedTerms = candidateText
+        ? candidateText
+            .split(" ")
+            .filter(
+              (term) =>
+                term.length > 3 &&
+                !["personal", "dashboard", "coding", "task", "hermes"].includes(term) &&
+                taskText.includes(term)
+            )
+            .slice(0, 8)
+        : [];
+      if (sharedTerms.length >= 3) {
+        reasons.push("similar_request");
+      }
+      return reasons.length
+        ? {
+            taskId: task.id,
+            repo: task.repo,
+            prNumber: task.prNumber,
+            status: task.status,
+            title: task.title,
+            reasons
+          }
+        : undefined;
+    })
+    .filter(Boolean);
+}
+
 export function codingTaskItem(payload, existing, options = {}) {
   const now = options.now ?? new Date().toISOString();
   const previous = existingPayload(existing);
@@ -225,8 +335,17 @@ export function codingTaskItem(payload, existing, options = {}) {
       githubRepo: payload.githubRepo ?? payload.github_repo ?? previous.githubRepo,
       title,
       prompt: payload.prompt ?? previous.prompt,
+      priority: normalizeCodingAgentPriority(payload.priority ?? previous.priority),
+      duplicateOf: payload.duplicateOf ?? payload.duplicate_of ?? previous.duplicateOf,
+      duplicateCandidates:
+        payload.duplicateCandidates ?? payload.duplicate_candidates ?? previous.duplicateCandidates,
       intakePlan: payload.intakePlan ?? payload.intake_plan ?? previous.intakePlan,
       riskReview: payload.riskReview ?? payload.risk_review ?? previous.riskReview,
+      coordination: payload.coordination ?? previous.coordination,
+      latestControl: payload.latestControl ?? payload.latest_control ?? previous.latestControl,
+      handoff: payload.handoff ?? previous.handoff,
+      workspacePolicy:
+        payload.workspacePolicy ?? payload.workspace_policy ?? previous.workspacePolicy,
       baseBranch: payload.baseBranch ?? payload.base_branch ?? previous.baseBranch,
       branch,
       worktreeDir: payload.worktreeDir ?? payload.worktree_dir ?? previous.worktreeDir,
@@ -618,6 +737,77 @@ export function planCodingTaskIntake(payload = {}, options = {}) {
   };
 }
 
+export function planCodingTaskQueue(payload = {}, existingTasks = [], options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const intakePlan = codingAgentIntakePlan(payload, { now });
+  const duplicateCandidates = duplicateCodingTaskCandidates(payload, existingTasks);
+  const priority = normalizeCodingAgentPriority(payload.priority);
+  const blocked = intakePlan.status !== "queued" || duplicateCandidates.length > 0;
+  const workspacePolicy = {
+    mode: "one-task-one-worktree",
+    workRoot: payload.workRoot ?? payload.work_root,
+    branchPrefix: payload.branchPrefix ?? payload.branch_prefix ?? "hermes",
+    retention: payload.retention ?? "archive-before-cleanup"
+  };
+  const item = codingTaskItem(
+    {
+      id: payload.taskId ?? payload.task_id ?? payload.id,
+      repo: payload.repo,
+      githubRepo: payload.githubRepo ?? payload.github_repo,
+      title: intakePlan.title,
+      prompt: intakePlan.request,
+      branch: payload.branch,
+      baseBranch: payload.baseBranch ?? payload.base_branch,
+      priority,
+      status: blocked ? "needs-clarification" : "queued",
+      duplicateCandidates,
+      duplicateOf: duplicateCandidates[0]?.taskId,
+      intakePlan: {
+        ...intakePlan,
+        duplicateCandidates,
+        status: blocked ? "needs-clarification" : intakePlan.status
+      },
+      riskReview: intakePlan.risk,
+      workspacePolicy,
+      queue: [
+        queueItem(
+          {
+            kind: "queue-plan",
+            status: blocked ? "blocked" : "approved",
+            title: "Coding task queue plan",
+            approvalRequired: intakePlan.risk.highRisk,
+            rejectionReason: duplicateCandidates.length
+              ? "duplicate_candidate"
+              : blocked
+                ? "clarification_required"
+                : undefined,
+            payload: {
+              priority,
+              duplicateCandidates,
+              workspacePolicy,
+              intakePlan
+            }
+          },
+          now
+        )
+      ]
+    },
+    undefined,
+    { now }
+  );
+  return {
+    ok: true,
+    statusCode: blocked ? 409 : 202,
+    blocked,
+    duplicateCandidates,
+    priority,
+    workspacePolicy,
+    plan: item.payload.intakePlan,
+    taskItem: item,
+    task: item.payload
+  };
+}
+
 export function reviewCodingAgentRisk(payload = {}, options = {}) {
   const now = options.now ?? new Date().toISOString();
   const risk = classifyCodingAgentRisk(payload);
@@ -693,6 +883,148 @@ export function normalizeCodingAgentSignal(payload = {}, options = {}) {
       updatedAt: now
     }
   };
+}
+
+export function updateCodingTaskCoordination(existing, payload = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const previous = existingPayload(existing);
+  const anchor = {
+    surface: payload.surface ?? payload.channel ?? previous.coordination?.surface ?? "dashboard",
+    threadId: payload.threadId ?? payload.thread_id ?? previous.coordination?.threadId,
+    chatId: payload.chatId ?? payload.chat_id ?? previous.coordination?.chatId,
+    messageId: payload.messageId ?? payload.message_id ?? previous.coordination?.messageId,
+    url: payload.url ?? previous.coordination?.url,
+    createdBy: payload.createdBy ?? payload.created_by ?? previous.coordination?.createdBy,
+    updatedAt: now
+  };
+  return codingTaskItem(
+    {
+      coordination: anchor,
+      status: payload.status ?? previous.status
+    },
+    existing,
+    { now }
+  );
+}
+
+export function applyCodingTaskControl(existing, payload = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const previous = existingPayload(existing);
+  const action = payload.action ?? payload.kind;
+  if (!CODING_AGENT_CONTROL_ACTIONS.includes(action)) {
+    return { ok: false, statusCode: 400, reason: "unsupported_control_action" };
+  }
+  if (previous.status === "archived" && action !== "archive") {
+    return { ok: false, statusCode: 409, reason: "task_archived" };
+  }
+  const control = {
+    action,
+    requestedBy: payload.requestedBy ?? payload.requested_by,
+    reason: payload.reason,
+    createdAt: now
+  };
+  const handoff =
+    action === "handoff"
+      ? {
+          blocker: payload.blocker ?? payload.reason ?? "blocked",
+          attempted: payload.attempted ?? [],
+          artifacts: payload.artifacts ?? [],
+          nextAction: payload.nextAction ?? payload.next_action,
+          createdAt: now
+        }
+      : previous.handoff;
+  const status =
+    action === "pause"
+      ? "paused"
+      : action === "continue"
+        ? previous.prNumber
+          ? "pr-open"
+          : "running"
+        : action === "handoff"
+          ? "waiting-for-approval"
+          : action === "archive"
+            ? "archived"
+            : previous.status;
+  const item = enqueueCodingTaskItems(
+    existing,
+    {
+      status,
+      latestControl: control,
+      handoff,
+      items: [
+        {
+          kind: `control:${action}`,
+          status: "approved",
+          title: `Coding task control: ${action}`,
+          approvalRequired: false,
+          payload: control
+        }
+      ]
+    },
+    { now }
+  );
+  return { ok: true, statusCode: 202, taskItem: item, task: item.payload, control };
+}
+
+export function normalizeCodingAgentFinding(payload = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const title = payload.title ?? "Coding-agent improvement finding";
+  const evidence = payload.evidence ?? [];
+  const externalId =
+    payload.id ??
+    payload.externalId ??
+    payload.external_id ??
+    `finding_${slug(title)}_${Date.parse(now) || Date.now()}`;
+  return {
+    id: externalId,
+    app: CODING_AGENT_APP_ID,
+    type: "coding-improvement-finding",
+    externalId,
+    status: payload.status ?? "draft",
+    title,
+    detail: payload.summary,
+    payload: {
+      id: externalId,
+      title,
+      summary: payload.summary ?? title,
+      confidence: payload.confidence ?? "medium",
+      affectedSurfaces: payload.affectedSurfaces ?? payload.affected_surfaces ?? [],
+      evidence,
+      proposedActions: payload.proposedActions ?? payload.proposed_actions ?? [],
+      createdAt: payload.createdAt ?? payload.created_at ?? now,
+      updatedAt: now
+    }
+  };
+}
+
+export function synthesizeCodingAgentFindings(signals = [], options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const grouped = new Map();
+  for (const item of signals) {
+    const signal = existingPayload(item);
+    const key = [signal.repo ?? "global", signal.kind ?? "observation"].join(":");
+    grouped.set(key, [...(grouped.get(key) ?? []), signal]);
+  }
+  return [...grouped.entries()]
+    .filter(([, group]) => group.length >= (options.minimumSignals ?? 2))
+    .map(([key, group]) =>
+      normalizeCodingAgentFinding(
+        {
+          id: `finding_${slug(key)}`,
+          title: `Recurring ${group[0].kind} in ${group[0].repo ?? "coding-agent"}`,
+          summary: `${group.length} related coding-agent signals were observed.`,
+          confidence: group.length >= 3 ? "high" : "medium",
+          affectedSurfaces: [...new Set(group.flatMap((signal) => signal.tags ?? []))],
+          evidence: group.map((signal) => ({
+            signalId: signal.id,
+            source: signal.source,
+            summary: signal.summary
+          })),
+          proposedActions: ["review-recurring-failure"]
+        },
+        { now }
+      )
+    );
 }
 
 export function planPrMaintenance(

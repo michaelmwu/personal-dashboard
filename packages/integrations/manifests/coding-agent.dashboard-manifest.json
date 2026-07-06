@@ -83,6 +83,22 @@
       }
     },
     {
+      "id": "plan-coding-queue",
+      "title": "Plan coding queue",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/queue-plan",
+      "description": "Plan task priority, duplicate candidates, and one-task-one-worktree allocation before execution.",
+      "inputSchema": {
+        "repo": "string?",
+        "title": "string?",
+        "request": "string",
+        "priority": "string?",
+        "branch": "string?",
+        "prNumber": "number?"
+      }
+    },
+    {
       "id": "pickup-existing-pr",
       "title": "Pick up existing PR",
       "kind": "deterministic",
@@ -180,6 +196,53 @@
       }
     },
     {
+      "id": "record-improvement-finding",
+      "title": "Record improvement finding",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/findings",
+      "description": "Persist or synthesize recurring coding-agent improvement findings from typed signals.",
+      "inputSchema": {
+        "title": "string?",
+        "summary": "string?",
+        "evidence": "array?",
+        "proposedActions": "array?",
+        "synthesize": "boolean?"
+      }
+    },
+    {
+      "id": "sync-coding-coordination",
+      "title": "Sync coding coordination",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/coordination",
+      "description": "Attach or update Telegram, dashboard, or GitHub coordination anchors for a managed task.",
+      "inputSchema": {
+        "taskId": "string",
+        "surface": "string",
+        "threadId": "string?",
+        "chatId": "string?",
+        "messageId": "string?",
+        "url": "string?"
+      }
+    },
+    {
+      "id": "control-coding-task",
+      "title": "Control coding task",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/control",
+      "description": "Apply typed operator controls such as pause, continue, tests, preview, open-pr, archive, or handoff.",
+      "inputSchema": {
+        "taskId": "string",
+        "action": "string",
+        "requestedBy": "string?",
+        "reason": "string?",
+        "blocker": "string?",
+        "nextAction": "string?"
+      }
+    },
+    {
       "id": "archive-coding-task",
       "title": "Archive coding task",
       "kind": "deterministic",
@@ -197,6 +260,7 @@
     "coding-run",
     "pr-status",
     "coding-risk-review",
-    "coding-improvement-signal"
+    "coding-improvement-signal",
+    "coding-improvement-finding"
   ]
 }

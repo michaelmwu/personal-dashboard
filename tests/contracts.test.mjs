@@ -16,14 +16,18 @@ import {
 } from "../packages/integrations/hermes-bridge.mjs";
 import {
   archiveCodingTask,
+  assertTaskTransition,
   classifyCodingAgentRisk,
   codingAgentExecutorPayload,
   codingTaskItem,
   commentRequestsCodingAgentPickup,
+  duplicateCodingTaskCandidates,
   normalizeCodingAgentSignal,
+  planCodingTaskQueue,
   pickupExistingPrTask,
   planCodingTaskIntake,
-  planPrMaintenance
+  planPrMaintenance,
+  synthesizeCodingAgentFindings
 } from "../packages/integrations/coding-agent.mjs";
 import {
   createHermesAction,
@@ -233,6 +237,11 @@ describe("contracts", () => {
           endpoint: "/api/apps/coding-agent/intake-plan"
         }),
         expect.objectContaining({
+          id: "plan-coding-queue",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/queue-plan"
+        }),
+        expect.objectContaining({
           id: "pickup-existing-pr",
           kind: "deterministic",
           endpoint: "/api/apps/coding-agent/pr-pickup"
@@ -261,6 +270,21 @@ describe("contracts", () => {
           id: "record-improvement-signal",
           kind: "deterministic",
           endpoint: "/api/apps/coding-agent/signals"
+        }),
+        expect.objectContaining({
+          id: "record-improvement-finding",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/findings"
+        }),
+        expect.objectContaining({
+          id: "sync-coding-coordination",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/coordination"
+        }),
+        expect.objectContaining({
+          id: "control-coding-task",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/control"
         }),
         expect.objectContaining({
           id: "archive-coding-task",
@@ -1176,6 +1200,310 @@ describe("contracts", () => {
             type: "coding-improvement-signal"
           })
         ])
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("coding agent queue planning detects duplicates and preserves priority", async () => {
+    const existing = codingTaskItem({
+      id: "coding_existing_duplicate",
+      repo: "personal-dashboard",
+      title: "Fix checkout auth token refresh",
+      prompt: "Fix checkout auth token refresh failures",
+      branch: "hermes/auth-refresh",
+      status: "queued"
+    });
+    const duplicateCandidates = duplicateCodingTaskCandidates(
+      {
+        repo: "personal-dashboard",
+        title: "Fix auth token refresh",
+        request: "Fix checkout auth token refresh failures",
+        branch: "hermes/auth-refresh"
+      },
+      [existing]
+    );
+    expect(duplicateCandidates).toEqual([
+      expect.objectContaining({
+        taskId: "coding_existing_duplicate",
+        reasons: expect.arrayContaining(["same_branch"])
+      })
+    ]);
+    const requestOnlyDuplicates = duplicateCodingTaskCandidates(
+      {
+        repo: "personal-dashboard",
+        request: "Fix checkout auth token refresh failures"
+      },
+      [existing]
+    );
+    expect(requestOnlyDuplicates).toEqual([
+      expect.objectContaining({
+        taskId: "coding_existing_duplicate",
+        reasons: expect.arrayContaining(["similar_request"])
+      })
+    ]);
+
+    const planned = planCodingTaskQueue(
+      {
+        id: "coding_queue_duplicate",
+        repo: "personal-dashboard",
+        title: "Fix auth token refresh",
+        request: "Fix checkout auth token refresh failures",
+        priority: "urgent",
+        branch: "hermes/auth-refresh"
+      },
+      [existing],
+      { now: "2026-07-06T13:00:00.000Z" }
+    );
+    expect(planned).toMatchObject({
+      blocked: true,
+      statusCode: 409,
+      priority: "urgent",
+      duplicateCandidates: [
+        expect.objectContaining({
+          taskId: "coding_existing_duplicate"
+        })
+      ],
+      task: {
+        id: "coding_queue_duplicate",
+        status: "needs-clarification",
+        priority: "urgent",
+        duplicateOf: "coding_existing_duplicate",
+        workspacePolicy: {
+          mode: "one-task-one-worktree"
+        }
+      }
+    });
+
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+    try {
+      await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(existing.payload)
+      });
+      const response = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/queue-plan`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          id: "coding_queue_api",
+          repo: "personal-dashboard",
+          request: "Fix checkout auth token refresh failures",
+          priority: "high"
+        })
+      });
+      expect(response.status).toBe(409);
+      const queuePayload = await response.json();
+      expect(queuePayload.accepted).toBe(true);
+      expect(queuePayload.blocked).toBe(true);
+      expect(queuePayload.priority).toBe("high");
+      expect(queuePayload.duplicateCandidates.map((candidate) => candidate.taskId)).toContain(
+        "coding_existing_duplicate"
+      );
+      expect(queuePayload.task).toMatchObject({
+        id: "coding_queue_api",
+        duplicateOf: "coding_existing_duplicate"
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("coding agent coordination anchors and controls update task state", async () => {
+    expect(assertTaskTransition("running", "paused")).toBe(true);
+    const taskId = `coding_control_${Date.now()}`;
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      const register = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          id: taskId,
+          repo: "personal-dashboard",
+          title: "Coordination task",
+          branch: "hermes/coordination",
+          status: "running"
+        })
+      });
+      expect(register.status).toBe(202);
+
+      const coordination = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/coordination`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            taskId,
+            surface: "telegram",
+            chatId: "chat-1",
+            threadId: "thread-1",
+            messageId: "message-1",
+            url: "https://t.me/c/1/2"
+          })
+        }
+      );
+      expect(coordination.status).toBe(202);
+      expect(await coordination.json()).toMatchObject({
+        accepted: true,
+        task: {
+          id: taskId,
+          coordination: {
+            surface: "telegram",
+            chatId: "chat-1",
+            threadId: "thread-1",
+            messageId: "message-1"
+          }
+        }
+      });
+
+      const pause = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/control`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          taskId,
+          action: "pause",
+          requestedBy: "michaelmwu",
+          reason: "operator requested pause"
+        })
+      });
+      expect(pause.status).toBe(202);
+      expect(await pause.json()).toMatchObject({
+        accepted: true,
+        control: {
+          action: "pause",
+          requestedBy: "michaelmwu"
+        },
+        task: {
+          id: taskId,
+          status: "paused",
+          latestControl: {
+            action: "pause"
+          },
+          queue: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "control:pause",
+              status: "approved"
+            })
+          ])
+        }
+      });
+
+      const handoff = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/control`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          taskId,
+          action: "handoff",
+          blocker: "CI requires manual credential refresh",
+          attempted: ["reran unit-contract-tests"],
+          nextAction: "Refresh CI secret and continue"
+        })
+      });
+      expect(handoff.status).toBe(202);
+      expect(await handoff.json()).toMatchObject({
+        accepted: true,
+        task: {
+          id: taskId,
+          status: "waiting-for-approval",
+          handoff: {
+            blocker: "CI requires manual credential refresh",
+            nextAction: "Refresh CI secret and continue"
+          }
+        }
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("coding agent findings synthesize recurring improvement signals", async () => {
+    const signals = [
+      normalizeCodingAgentSignal({
+        id: "signal_one",
+        source: "github-check",
+        kind: "test-failure",
+        repo: "personal-dashboard",
+        summary: "contract tests failed after queue changes",
+        tags: ["contracts"]
+      }),
+      normalizeCodingAgentSignal({
+        id: "signal_two",
+        source: "github-check",
+        kind: "test-failure",
+        repo: "personal-dashboard",
+        summary: "contract tests failed after risk changes",
+        tags: ["contracts"]
+      })
+    ];
+    const findings = synthesizeCodingAgentFindings(signals, {
+      now: "2026-07-06T14:00:00.000Z"
+    });
+    expect(findings).toEqual([
+      expect.objectContaining({
+        type: "coding-improvement-finding",
+        status: "draft",
+        payload: expect.objectContaining({
+          confidence: "medium",
+          evidence: [
+            expect.objectContaining({ signalId: "signal_one" }),
+            expect.objectContaining({ signalId: "signal_two" })
+          ],
+          proposedActions: ["review-recurring-failure"]
+        })
+      })
+    ]);
+
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+    try {
+      for (const signal of signals) {
+        await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/signals`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(signal.payload)
+        });
+      }
+      const response = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/findings`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ synthesize: true })
+      });
+      expect(response.status).toBe(202);
+      expect(await response.json()).toMatchObject({
+        accepted: true,
+        findings: [
+          expect.objectContaining({
+            title: "Recurring test-failure in personal-dashboard"
+          })
+        ]
       });
     } finally {
       await closeServer(apiServer);
