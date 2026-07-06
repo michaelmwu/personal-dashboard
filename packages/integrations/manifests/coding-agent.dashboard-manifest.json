@@ -116,6 +116,23 @@
       }
     },
     {
+      "id": "triage-github-issue",
+      "title": "Triage GitHub issue",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/issue-triage",
+      "description": "Classify a GitHub issue as trusted work intake or approval-required untrusted text before creating coding tasks.",
+      "inputSchema": {
+        "repo": "string?",
+        "githubRepo": "string?",
+        "issueNumber": "number",
+        "title": "string",
+        "body": "string?",
+        "author": "string?",
+        "authorAssociation": "string?"
+      }
+    },
+    {
       "id": "sync-pr-status",
       "title": "Sync PR status",
       "kind": "deterministic",
@@ -293,6 +310,8 @@
     "coding-task",
     "coding-run",
     "pr-status",
+    "coding-pr-pickup-attempt",
+    "coding-issue-triage",
     "coding-risk-review",
     "coding-improvement-signal",
     "coding-improvement-finding",

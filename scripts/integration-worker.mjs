@@ -4,8 +4,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
 
 import {
+  codingAgentPolicyFromEnv,
   codingAgentExecutorPayload,
   commentRequestsCodingAgentPickup,
+  evaluateCodingAgentPrPickup,
   relevantCodingAgentRegressionMemory,
   shortRepoName
 } from "../packages/integrations/coding-agent.mjs";
@@ -264,6 +266,18 @@ function codingAgentPickupRepos(env = process.env) {
     .filter((repo, index, repos) => repos.indexOf(repo) === index);
 }
 
+function codingAgentIssueTriageRepos(env = process.env) {
+  const owner = env.CODING_AGENT_GITHUB_OWNER;
+  const configured = envList("CODING_AGENT_ISSUE_TRIAGE_REPOS", env);
+  const repos = configured.length
+    ? configured
+    : envList("CODING_AGENT_PICKUP_REPOS", env).concat(envList("CODING_AGENT_ALLOWED_REPOS", env));
+  return repos
+    .map((repo) => (repo.includes("/") || !owner ? repo : `${owner}/${repo}`))
+    .filter((repo) => repo.includes("/"))
+    .filter((repo, index, candidates) => candidates.indexOf(repo) === index);
+}
+
 function prNumberFromIssueComment(comment) {
   const match = String(comment.issue_url ?? comment.html_url ?? "").match(
     /\/issues\/(\d+)(?:$|[#?])/
@@ -276,6 +290,16 @@ function codingTaskPrKeys(task, env = process.env) {
   const shortRepo = shortRepoName(task.repo ?? repo);
   const prNumber = task.prNumber ?? task.pr_number;
   return [`${repo}:${prNumber}`, `${shortRepo}:${prNumber}`].filter(
+    (key) => !key.includes("undefined")
+  );
+}
+
+function codingIssueTriageKeys(item) {
+  const payload = item.payload ?? item;
+  const repo = payload.githubRepo ?? payload.github_repo ?? payload.repo;
+  const shortRepo = shortRepoName(payload.repo ?? repo);
+  const issueNumber = payload.issueNumber ?? payload.issue_number;
+  return [`${repo}:${issueNumber}`, `${shortRepo}:${issueNumber}`].filter(
     (key) => !key.includes("undefined")
   );
 }
@@ -294,7 +318,39 @@ function pickupPayloadFromPr({ repo, prNumber, pr, comment }) {
     pickupSource: "github-comment",
     pickupMarker: comment.body,
     pickupCommentId: String(comment.id),
-    pickupCommentUrl: comment.html_url
+    pickupCommentUrl: comment.html_url,
+    pickupActor: comment.user?.login,
+    pickupActorType: comment.user?.type,
+    pickupActorAssociation: comment.author_association
+  };
+}
+
+function pickupPolicyPayloadFromComment({ repo, prNumber, comment }) {
+  return {
+    repo: shortRepoName(repo),
+    githubRepo: repo,
+    prNumber,
+    pickupSource: "github-comment",
+    pickupMarker: comment.body,
+    pickupCommentId: String(comment.id),
+    pickupCommentUrl: comment.html_url,
+    pickupActor: comment.user?.login,
+    pickupActorType: comment.user?.type,
+    pickupActorAssociation: comment.author_association
+  };
+}
+
+function issueTriagePayloadFromIssue({ repo, issue }) {
+  return {
+    repo: shortRepoName(repo),
+    githubRepo: repo,
+    issueNumber: issue.number,
+    title: issue.title,
+    body: issue.body,
+    issueUrl: issue.html_url,
+    author: issue.user?.login,
+    authorAssociation: issue.author_association,
+    source: "github-issue"
   };
 }
 
@@ -312,6 +368,7 @@ export async function discoverCodingAgentPrPickups(options = {}) {
     (tasksResponse.tasks ?? []).flatMap((task) => codingTaskPrKeys(task, env))
   );
   const command = options.command ?? execFileAsync;
+  const policy = options.policy ?? codingAgentPolicyFromEnv(env);
   const postPickup =
     options.postPickup ??
     ((payload) => postDashboardAction("/api/apps/coding-agent/pr-pickup", payload));
@@ -323,6 +380,22 @@ export async function discoverCodingAgentPrPickups(options = {}) {
       const prNumber = prNumberFromIssueComment(comment);
       if (!prNumber) {
         results.push({ repo, commentId: comment.id, skipped: true, reason: "missing_pr_number" });
+        continue;
+      }
+      const pickupPolicy = evaluateCodingAgentPrPickup(
+        pickupPolicyPayloadFromComment({ repo, prNumber, comment }),
+        policy
+      );
+      if (!pickupPolicy.ok) {
+        results.push({
+          repo,
+          prNumber,
+          commentId: comment.id,
+          skipped: true,
+          reason: pickupPolicy.reason,
+          reasonCodes: pickupPolicy.reasonCodes,
+          providerMutationAllowed: false
+        });
         continue;
       }
       if (
@@ -381,6 +454,78 @@ export async function discoverCodingAgentPrPickups(options = {}) {
   return {
     repoCount: repos.length,
     pickedUp: results.filter((result) => result.pickedUp).length,
+    results
+  };
+}
+
+export async function discoverCodingAgentIssueTriage(options = {}) {
+  const env = options.env ?? process.env;
+  const repos = options.repos ?? codingAgentIssueTriageRepos(env);
+  if (!repos.length) {
+    return { skipped: true, reason: "no_issue_triage_repos_configured", triaged: 0, results: [] };
+  }
+
+  const itemsResponse =
+    options.itemsResponse ??
+    (await getDashboardJson("/api/apps/coding-agent/items?type=coding-issue-triage"));
+  const triagedKeys = new Set((itemsResponse.items ?? []).flatMap(codingIssueTriageKeys));
+  const command = options.command ?? execFileAsync;
+  const postTriage =
+    options.postTriage ??
+    ((payload) => postDashboardAction("/api/apps/coding-agent/issue-triage", payload));
+  const results = [];
+
+  for (const repo of repos) {
+    const issues = await ghJson(
+      `repos/${repo}/issues?state=open&per_page=100&sort=created&direction=desc`,
+      { command }
+    );
+    for (const issue of issues) {
+      if (issue.pull_request) {
+        results.push({
+          repo,
+          issueNumber: issue.number,
+          skipped: true,
+          reason: "pull_request_not_issue"
+        });
+        continue;
+      }
+      if (!issue.number) {
+        results.push({ repo, skipped: true, reason: "missing_issue_number" });
+        continue;
+      }
+      if (
+        triagedKeys.has(`${repo}:${issue.number}`) ||
+        triagedKeys.has(`${shortRepoName(repo)}:${issue.number}`)
+      ) {
+        results.push({
+          repo,
+          issueNumber: issue.number,
+          skipped: true,
+          reason: "already_triaged"
+        });
+        continue;
+      }
+
+      const payload = issueTriagePayloadFromIssue({ repo, issue });
+      const triage = await postTriage(payload);
+      triagedKeys.add(`${repo}:${issue.number}`);
+      triagedKeys.add(`${shortRepoName(repo)}:${issue.number}`);
+      results.push({
+        repo,
+        issueNumber: issue.number,
+        triaged: true,
+        accepted: triage.accepted,
+        blocked: triage.blocked,
+        reason: triage.reason,
+        triage
+      });
+    }
+  }
+
+  return {
+    repoCount: repos.length,
+    triaged: results.filter((result) => result.triaged).length,
     results
   };
 }
@@ -552,6 +697,9 @@ export async function runConfiguredIngestions() {
   }
   if (process.env.CODING_AGENT_PR_PICKUP_ENABLED === "true") {
     results.push(await runIngestion("coding-agent-pr-pickup", discoverCodingAgentPrPickups));
+  }
+  if (process.env.CODING_AGENT_ISSUE_TRIAGE_ENABLED === "true") {
+    results.push(await runIngestion("coding-agent-issue-triage", discoverCodingAgentIssueTriage));
   }
   return results;
 }

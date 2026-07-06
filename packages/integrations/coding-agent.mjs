@@ -8,6 +8,8 @@ export const CODING_AGENT_PICKUP_MARKERS = [
   "coding-agent pickup"
 ];
 
+const TRUSTED_GITHUB_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
 export const CODING_TASK_STATUSES = [
   "queued",
   "needs-clarification",
@@ -135,13 +137,23 @@ const LIFECYCLE_TRANSITIONS = {
 };
 
 export function codingAgentPolicyFromEnv(env = process.env) {
+  const pickupTrustedActors = (
+    env.CODING_AGENT_PICKUP_TRUSTED_ACTORS ??
+    env.CODING_AGENT_TRUSTED_ACTORS ??
+    ""
+  )
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
   return {
     allowedRepos: (env.CODING_AGENT_ALLOWED_REPOS ?? "")
       .split(",")
       .map((item) => item.trim())
       .filter(Boolean),
     branchPrefix: env.CODING_AGENT_BRANCH_PREFIX ?? "hermes",
-    defaultBaseBranch: env.CODING_AGENT_DEFAULT_BASE_BRANCH ?? "origin/main"
+    defaultBaseBranch: env.CODING_AGENT_DEFAULT_BASE_BRANCH ?? "origin/main",
+    pickupTrustedActors,
+    denyBotPickup: env.CODING_AGENT_PICKUP_ALLOW_BOTS !== "true"
   };
 }
 
@@ -1415,6 +1427,250 @@ export function commentRequestsCodingAgentPickup(body, markers = CODING_AGENT_PI
   return markers.some((marker) => normalizedBody.includes(String(marker).toLowerCase()));
 }
 
+function githubActorFromPayload(payload = {}) {
+  const user = payload.pickupActorUser ?? payload.pickup_actor_user ?? payload.user ?? {};
+  return {
+    login: String(
+      payload.pickupActor ??
+        payload.pickup_actor ??
+        payload.actor ??
+        payload.author ??
+        user.login ??
+        ""
+    ).trim(),
+    type: String(payload.pickupActorType ?? payload.pickup_actor_type ?? user.type ?? "").trim(),
+    association: String(
+      payload.pickupActorAssociation ??
+        payload.pickup_actor_association ??
+        payload.authorAssociation ??
+        payload.author_association ??
+        ""
+    )
+      .trim()
+      .toUpperCase()
+  };
+}
+
+function actorIsBot(actor) {
+  const login = actor.login.toLowerCase();
+  return (
+    actor.type.toLowerCase() === "bot" ||
+    login.endsWith("[bot]") ||
+    login.endsWith("-bot") ||
+    login.endsWith("_bot")
+  );
+}
+
+function actorTrustedForPickup(actor, policy = codingAgentPolicyFromEnv()) {
+  const trustedActors = new Set(
+    (policy.pickupTrustedActors ?? []).map((item) => item.toLowerCase())
+  );
+  if (actor.login && trustedActors.has(actor.login.toLowerCase())) {
+    return true;
+  }
+  return TRUSTED_GITHUB_AUTHOR_ASSOCIATIONS.has(actor.association);
+}
+
+export function evaluateCodingAgentPrPickup(payload = {}, policy = codingAgentPolicyFromEnv()) {
+  const pickupSource = payload.pickupSource ?? payload.pickup_source ?? "dashboard";
+  const githubRepo = payload.githubRepo ?? payload.github_repo;
+  const repo = githubRepo ?? payload.repo;
+  const prNumber = payload.prNumber ?? payload.pr_number;
+  const marker =
+    payload.pickupMarker ?? payload.pickup_marker ?? payload.commentBody ?? payload.body;
+  const markerMatched =
+    pickupSource === "dashboard" || commentRequestsCodingAgentPickup(marker, payload.markers);
+  const actor = githubActorFromPayload(payload);
+  const reasonCodes = [];
+
+  if (!repo) {
+    reasonCodes.push("missing_repo");
+  } else if (!repoAllowed(repo, policy)) {
+    reasonCodes.push("repo_not_allowed");
+  }
+  if (!prNumber) {
+    reasonCodes.push("missing_pr_number");
+  }
+  if (pickupSource === "github-comment" && !markerMatched) {
+    reasonCodes.push("missing_explicit_pickup_marker");
+  }
+  if (pickupSource === "github-comment") {
+    if (!actor.login) {
+      reasonCodes.push("missing_pickup_actor");
+    } else if (policy.denyBotPickup && actorIsBot(actor)) {
+      reasonCodes.push("bot_actor_denied");
+    } else if (!actorTrustedForPickup(actor, policy)) {
+      reasonCodes.push("actor_not_trusted_for_pickup");
+    }
+  }
+
+  const ok = reasonCodes.length === 0;
+  return {
+    ok,
+    statusCode: ok
+      ? 202
+      : reasonCodes.includes("missing_repo") || reasonCodes.includes("missing_pr_number")
+        ? 400
+        : 403,
+    reason: reasonCodes[0],
+    reasonCodes,
+    pickupSource,
+    markerMatched,
+    actor: actor.login || undefined,
+    actorType: actor.type || undefined,
+    actorAssociation: actor.association || undefined,
+    actorTrusted: actor.login ? actorTrustedForPickup(actor, policy) && !actorIsBot(actor) : false,
+    providerMutationAllowed: false
+  };
+}
+
+export function normalizeCodingAgentPrPickupAttempt(payload = {}, evaluation = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const githubRepo = payload.githubRepo ?? payload.github_repo;
+  const repo = shortRepoName(payload.repo ?? githubRepo ?? "repo");
+  const prNumber = payload.prNumber ?? payload.pr_number ?? "unknown";
+  const commentId = payload.pickupCommentId ?? payload.pickup_comment_id ?? "manual";
+  const id =
+    payload.attemptId ??
+    payload.attempt_id ??
+    `coding_pr_pickup_attempt_${slug(repo)}_${prNumber}_${slug(commentId)}`;
+  return {
+    id,
+    app: CODING_AGENT_APP_ID,
+    type: "coding-pr-pickup-attempt",
+    status: evaluation.ok ? "accepted" : "rejected",
+    title: `PR pickup ${repo}#${prNumber}`,
+    payload: {
+      id,
+      repo,
+      githubRepo,
+      prNumber: payload.prNumber ?? payload.pr_number,
+      pickupSource: evaluation.pickupSource ?? payload.pickupSource ?? payload.pickup_source,
+      pickupCommentId: payload.pickupCommentId ?? payload.pickup_comment_id,
+      pickupCommentUrl: payload.pickupCommentUrl ?? payload.pickup_comment_url,
+      actor: evaluation.actor,
+      actorType: evaluation.actorType,
+      actorAssociation: evaluation.actorAssociation,
+      actorTrusted: evaluation.actorTrusted,
+      markerMatched: evaluation.markerMatched,
+      accepted: Boolean(evaluation.ok),
+      reason: evaluation.reason,
+      reasonCodes: evaluation.reasonCodes ?? [],
+      providerMutationAllowed: false,
+      evaluatedAt: now
+    }
+  };
+}
+
+const PROMPT_INJECTION_PATTERNS = [
+  /ignore (all )?(previous|prior|above) (instructions|prompts|rules)/i,
+  /system prompt/i,
+  /developer (message|instructions)/i,
+  /reveal (your )?(secrets|tokens|credentials|instructions)/i,
+  /exfiltrat/i,
+  /api[_ -]?key|access token|secret/i,
+  /rm -rf|sudo |curl .*sh|base64 -d/i
+];
+
+function issueActorTrusted(payload = {}, policy = codingAgentPolicyFromEnv()) {
+  const actor = githubActorFromPayload({
+    actor: payload.author ?? payload.actor,
+    authorAssociation: payload.authorAssociation ?? payload.author_association
+  });
+  return actorTrustedForPickup(actor, policy) && !actorIsBot(actor);
+}
+
+export function triageCodingAgentIssue(
+  payload = {},
+  policy = codingAgentPolicyFromEnv(),
+  options = {}
+) {
+  const now = options.now ?? new Date().toISOString();
+  const repo = payload.repo ?? payload.githubRepo ?? payload.github_repo;
+  const issueNumber = payload.issueNumber ?? payload.issue_number ?? payload.number;
+  const body = String(payload.body ?? payload.description ?? "");
+  const title = String(payload.title ?? `GitHub issue #${issueNumber ?? "unknown"}`).trim();
+  const injectionMatches = PROMPT_INJECTION_PATTERNS.filter((pattern) => pattern.test(body)).map(
+    (pattern) => pattern.source
+  );
+  const trustedActor = issueActorTrusted(payload, policy);
+  const reasonCodes = [];
+
+  if (!repo) {
+    reasonCodes.push("missing_repo");
+  } else if (!repoAllowed(repo, policy)) {
+    reasonCodes.push("repo_not_allowed");
+  }
+  if (!issueNumber) {
+    reasonCodes.push("missing_issue_number");
+  }
+  if (!trustedActor) {
+    reasonCodes.push("untrusted_issue_author");
+  }
+  if (injectionMatches.length) {
+    reasonCodes.push("prompt_injection_risk");
+  }
+
+  const highRisk = classifyCodingAgentRisk({
+    repo,
+    title,
+    request: `${title}\n\n${body}`,
+    files: payload.files ?? payload.changedFiles ?? payload.changed_files
+  });
+  if (highRisk.highRisk) {
+    reasonCodes.push("high_risk_issue_scope");
+  }
+
+  const decision = reasonCodes.length === 0 ? "draft-task" : "needs-approval";
+  const issueKey = issueNumber ?? (Date.parse(now) || Date.now());
+  const id = payload.id ?? `coding_issue_triage_${slug(shortRepoName(repo ?? "repo"))}_${issueKey}`;
+  const item = {
+    id,
+    app: CODING_AGENT_APP_ID,
+    type: "coding-issue-triage",
+    status: decision,
+    title: `Issue triage: ${title}`,
+    payload: {
+      id,
+      source: payload.source ?? "github-issue",
+      repo: shortRepoName(repo),
+      githubRepo: payload.githubRepo ?? payload.github_repo ?? repo,
+      issueNumber,
+      issueUrl: payload.issueUrl ?? payload.issue_url ?? payload.html_url,
+      title,
+      author: payload.author ?? payload.actor,
+      authorAssociation: payload.authorAssociation ?? payload.author_association,
+      trustedActor,
+      promptInjectionRisk: injectionMatches.length > 0,
+      promptInjectionMatches: injectionMatches,
+      riskReview: highRisk,
+      decision,
+      reasonCodes,
+      providerMutationAllowed: false,
+      taskDraft:
+        decision === "draft-task"
+          ? {
+              repo: shortRepoName(repo),
+              title,
+              request: body || title,
+              sourceIssueNumber: issueNumber,
+              sourceIssueUrl: payload.issueUrl ?? payload.issue_url ?? payload.html_url
+            }
+          : undefined,
+      evaluatedAt: now
+    }
+  };
+
+  return {
+    ok: decision === "draft-task",
+    statusCode: decision === "draft-task" ? 202 : 409,
+    blocked: decision !== "draft-task",
+    reason: reasonCodes[0],
+    triage: item.payload,
+    item
+  };
+}
+
 export function pickupExistingPrTask(
   existing,
   payload,
@@ -1425,17 +1681,32 @@ export function pickupExistingPrTask(
   const githubRepo = payload.githubRepo ?? payload.github_repo;
   const repo = shortRepoName(payload.repo ?? githubRepo);
   const prNumber = payload.prNumber ?? payload.pr_number;
-  if (!repo) {
-    return { ok: false, statusCode: 400, reason: "missing_repo" };
-  }
-  if (!prNumber) {
-    return { ok: false, statusCode: 400, reason: "missing_pr_number" };
-  }
-  if (!repoAllowed(githubRepo ?? repo, policy)) {
-    return { ok: false, statusCode: 403, reason: "repo_not_allowed" };
+  const pickupPolicy = evaluateCodingAgentPrPickup(payload, policy);
+  const pickupAttemptItem = normalizeCodingAgentPrPickupAttempt(payload, pickupPolicy, { now });
+  if (!pickupPolicy.ok) {
+    return {
+      ok: false,
+      statusCode: pickupPolicy.statusCode,
+      reason: pickupPolicy.reason,
+      policy: pickupPolicy,
+      pickupAttemptItem
+    };
   }
   if (existing?.payload?.status === "archived") {
-    return { ok: false, statusCode: 409, reason: "coding_task_archived" };
+    const archivedPolicy = {
+      ...pickupPolicy,
+      ok: false,
+      statusCode: 409,
+      reason: "coding_task_archived",
+      reasonCodes: ["coding_task_archived"]
+    };
+    return {
+      ok: false,
+      statusCode: 409,
+      reason: "coding_task_archived",
+      policy: archivedPolicy,
+      pickupAttemptItem: normalizeCodingAgentPrPickupAttempt(payload, archivedPolicy, { now })
+    };
   }
 
   const item = codingTaskItem(
@@ -1484,7 +1755,14 @@ export function pickupExistingPrTask(
     { now }
   );
 
-  return { ok: true, statusCode: existing ? 200 : 202, taskItem: item, task: item.payload };
+  return {
+    ok: true,
+    statusCode: existing ? 200 : 202,
+    taskItem: item,
+    task: item.payload,
+    policy: pickupPolicy,
+    pickupAttemptItem
+  };
 }
 
 export function archiveCodingTask(existing, payload = {}, options = {}) {
