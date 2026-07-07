@@ -1520,9 +1520,11 @@ export function planCodingAgentGoalMutation(payload = {}, options = {}) {
   const approved = approvalPresent(payload);
   const blocked = !dryRun && !approved;
   const sourceFindingId = payload.sourceFindingId ?? payload.source_finding_id ?? finding.id;
+  const requestId = payload.id ?? payload.requestId ?? payload.request_id;
   const id =
-    payload.id ??
-    `goal_mutation_${slug(action)}_${slug(sourceFindingId ?? payload.goalId ?? payload.title ?? "manual")}_${Date.parse(now) || Date.now()}`;
+    payload.mutationId ??
+    payload.mutation_id ??
+    `goal_mutation_${slug(action)}_${slug(sourceFindingId ?? requestId ?? payload.goalId ?? payload.title ?? "manual")}_${Date.parse(now) || Date.now()}`;
   const preview = goalMutationPreview(action, payload, finding);
   const decision = dryRun ? "dry_run" : approved ? "approved" : "approval_required";
   const status = dryRun ? "preview" : approved ? "approved" : "blocked";
@@ -1536,6 +1538,7 @@ export function planCodingAgentGoalMutation(payload = {}, options = {}) {
     detail: `${preview.provider}:${preview.operation}`,
     payload: {
       id,
+      requestId,
       goalId: payload.goalId ?? payload.goal_id,
       sourceFindingId,
       action,

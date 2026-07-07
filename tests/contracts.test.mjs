@@ -1923,7 +1923,7 @@ describe("contracts", () => {
 
     const blocked = planCodingAgentGoalMutation(
       {
-        id: "goal_mutation_blocked_issue",
+        mutationId: "goal_mutation_blocked_issue",
         finding,
         action: "create-github-issue",
         repo: "personal-dashboard",
@@ -1949,7 +1949,7 @@ describe("contracts", () => {
 
     const approved = planCodingAgentGoalMutation(
       {
-        id: "goal_mutation_approved_memory",
+        mutationId: "goal_mutation_approved_memory",
         finding,
         action: "write-hermes-memory",
         dryRun: false,
@@ -2030,7 +2030,7 @@ describe("contracts", () => {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            id: "goal_mutation_api_blocked",
+            mutationId: "goal_mutation_api_blocked",
             findingId: finding.id,
             action: "create-github-issue",
             repo: "personal-dashboard",
@@ -2049,6 +2049,52 @@ describe("contracts", () => {
             reason: "approval_required"
           }
         }
+      });
+
+      const collisionResponse = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/goal-mutations`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            id: finding.id,
+            findingId: finding.id,
+            action: "write-hermes-memory",
+            dryRun: true
+          })
+        }
+      );
+      expect(collisionResponse.status).toBe(202);
+      const collisionResponseJson = await collisionResponse.json();
+      expect(collisionResponseJson).toMatchObject({
+        accepted: true,
+        mutation: {
+          requestId: finding.id,
+          sourceFindingId: finding.id,
+          action: "write-hermes-memory",
+          dryRun: true
+        }
+      });
+      expect(collisionResponseJson.mutation.id).not.toBe(finding.id);
+
+      const findingItems = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/items?type=coding-improvement-finding`
+      );
+      expect(await findingItems.json()).toEqual({
+        app: "coding-agent",
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            id: finding.id,
+            type: "coding-improvement-finding",
+            payload: expect.objectContaining({
+              id: finding.id,
+              title: "Recurring PR feedback loops"
+            })
+          })
+        ])
       });
 
       const mutationItems = await fetch(

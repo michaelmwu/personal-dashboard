@@ -168,6 +168,8 @@
       "endpoint": "/api/apps/coding-agent/reconcile",
       "description": "Mark orphaned or stale running coding tasks as requiring operator attention during startup reconciliation.",
       "inputSchema": {
+        "id": "string?",
+        "auditId": "string?",
         "staleRunningMinutes": "number?"
       }
     },
@@ -263,6 +265,8 @@
       "endpoint": "/api/apps/coding-agent/goal-mutations",
       "description": "Draft GitHub issue, Hermes memory, Telegram, or coding-task mutations from validated findings without provider side effects.",
       "inputSchema": {
+        "id": "string?",
+        "mutationId": "string?",
         "findingId": "string?",
         "sourceFindingId": "string?",
         "action": "string?",
@@ -313,6 +317,7 @@
       "description": "Persist a concise operator handoff summary from blocked queue items, failed checks, PR events, and task artifacts.",
       "inputSchema": {
         "taskId": "string",
+        "summaryId": "string?",
         "blocker": "string?",
         "nextAction": "string?"
       }
