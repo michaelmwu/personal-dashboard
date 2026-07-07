@@ -105,11 +105,14 @@ Coding Agent endpoints:
   pause, continue, tests, preview, open-pr, archive, or handoff.
 - `POST /api/apps/coding-agent/handoff-summary`: persist a concise handoff
   summary from blocked queue items, failed checks, PR events, and artifacts.
+  Use `summaryId` only when explicitly choosing the stored summary item ID;
+  plain `id` is treated as a request/source ID.
 - `POST /api/apps/coding-agent/queue`: append typed work items to a task queue.
 - `POST /api/apps/coding-agent/pr-status`: sync PR review/check/preview status
   onto a registered task.
 - `POST /api/apps/coding-agent/reconcile`: mark orphaned or stale running tasks
   as requiring operator attention and persist a reconciliation audit record.
+  Use `auditId` only when explicitly choosing the stored audit item ID.
 - `POST /api/apps/coding-agent/pr-maintenance`: deterministically plan PR
   maintenance after enforcing repo allowlists, branch policy, PR-only rules, and
   side-effect approval requirements.
@@ -126,7 +129,9 @@ Coding Agent endpoints:
 - `POST /api/apps/coding-agent/goal-mutations`: draft and audit dry-run GitHub
   issue, Hermes memory, Telegram, or coding-task mutations from validated
   findings. Non-dry-run requests require `{approvedBy, approvalId}` and still
-  persist a preview instead of calling providers directly.
+  persist a preview instead of calling providers directly. Use `mutationId`
+  only when explicitly choosing the stored mutation item ID; plain `id` is
+  treated as a request/source ID.
 - `POST /api/apps/coding-agent/archive`: archive a completed or abandoned task
   and its remaining queue items.
 
