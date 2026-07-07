@@ -106,6 +106,8 @@ Coding Agent endpoints:
 - `POST /api/apps/coding-agent/queue`: append typed work items to a task queue.
 - `POST /api/apps/coding-agent/pr-status`: sync PR review/check/preview status
   onto a registered task.
+- `POST /api/apps/coding-agent/reconcile`: mark orphaned or stale running tasks
+  as requiring operator attention and persist a reconciliation audit record.
 - `POST /api/apps/coding-agent/pr-maintenance`: deterministically plan PR
   maintenance after enforcing repo allowlists, branch policy, PR-only rules, and
   side-effect approval requirements.
@@ -162,6 +164,14 @@ to scan open GitHub issues with `gh api`; use `CODING_AGENT_ISSUE_TRIAGE_REPOS`
 to narrow the scan list, otherwise it reuses pickup/allowed repos. The scanner
 skips PRs and already-triaged issues before posting to the dashboard triage
 endpoint.
+
+Set `CODING_AGENT_RECONCILE_ENABLED=true` on the integration worker to run
+dashboard-side startup reconciliation. It posts to
+`/api/apps/coding-agent/reconcile`, does not contact providers, and records
+`coding-reconciliation` audit items. Use `CODING_AGENT_STALE_RUNNING_MINUTES`
+to override the default 90-minute stale running threshold. Reconciliation runs
+only on worker startup by default; set `CODING_AGENT_RECONCILE_WATCHDOG_ENABLED`
+to run it on every polling interval.
 
 Plaid-facing endpoints:
 

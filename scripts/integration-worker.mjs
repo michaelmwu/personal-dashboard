@@ -667,7 +667,7 @@ export async function pollCodingAgentPrs(options = {}) {
   return { taskCount: tasks.length, results };
 }
 
-export async function runConfiguredIngestions() {
+export async function runConfiguredIngestions(options = {}) {
   const results = [];
   if (process.env.ASIA_TRAVEL_DEALS_API_BASE_URL) {
     results.push(await runIngestion("asia-travel-deals", pollAsiaTravelDeals));
@@ -701,15 +701,29 @@ export async function runConfiguredIngestions() {
   if (process.env.CODING_AGENT_ISSUE_TRIAGE_ENABLED === "true") {
     results.push(await runIngestion("coding-agent-issue-triage", discoverCodingAgentIssueTriage));
   }
+  if (
+    process.env.CODING_AGENT_RECONCILE_ENABLED === "true" &&
+    (options.startup || process.env.CODING_AGENT_RECONCILE_WATCHDOG_ENABLED === "true")
+  ) {
+    results.push(
+      await runIngestion("coding-agent-reconcile", () =>
+        postDashboardAction("/api/apps/coding-agent/reconcile", {
+          staleRunningMinutes: envNumber("CODING_AGENT_STALE_RUNNING_MINUTES", 90)
+        })
+      )
+    );
+  }
   return results;
 }
 
 async function main() {
   const once = process.argv.includes("--once");
   const intervalSeconds = envNumber("ASIA_TRAVEL_DEALS_POLL_INTERVAL_SECONDS", 300);
+  let startup = true;
 
   do {
-    const results = await runConfiguredIngestions();
+    const results = await runConfiguredIngestions({ startup });
+    startup = false;
     for (const result of results) {
       console.log(JSON.stringify(result));
     }
