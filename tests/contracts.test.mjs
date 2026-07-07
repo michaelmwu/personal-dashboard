@@ -3225,6 +3225,86 @@ describe("contracts", () => {
     });
   });
 
+  test("coding agent PR poller syncs quiet snapshots without dispatching executor updates", async () => {
+    const synced = [];
+    const result = await pollCodingAgentPrs({
+      tasksResponse: {
+        tasks: [
+          {
+            id: "coding_poll_quiet",
+            repo: "personal-dashboard",
+            prNumber: 43,
+            status: "changes-requested",
+            githubCursor: {
+              updatedAt: "2026-07-06T11:00:00.000Z"
+            }
+          }
+        ]
+      },
+      async command(cmd, args) {
+        const path = args[1];
+        const payloads = {
+          "repos/michaelmwu/personal-dashboard/pulls/43": {
+            state: "open",
+            html_url: "https://github.com/michaelmwu/personal-dashboard/pull/43",
+            head: { ref: "hermes/quiet-poll", sha: "quiet123" }
+          },
+          "repos/michaelmwu/personal-dashboard/pulls/43/reviews": [],
+          "repos/michaelmwu/personal-dashboard/issues/43/comments": [],
+          "repos/michaelmwu/personal-dashboard/pulls/43/comments": [],
+          "repos/michaelmwu/personal-dashboard/commits/quiet123/check-runs": {
+            check_runs: [
+              {
+                id: 505,
+                name: "unit-contract-tests",
+                status: "completed",
+                conclusion: "success",
+                completed_at: "2026-07-06T11:05:00Z",
+                html_url: "https://github.com/check/505"
+              }
+            ]
+          }
+        };
+        expect(cmd).toBe("gh");
+        return { stdout: JSON.stringify(payloads[path]) };
+      },
+      env: {
+        CODING_AGENT_GITHUB_OWNER: "michaelmwu"
+      },
+      async syncTaskPrSnapshot(task, snapshot) {
+        synced.push({ task, snapshot });
+        return { accepted: true };
+      },
+      async dispatchCodingTaskUpdate() {
+        throw new Error("quiet poll should not dispatch executor updates");
+      }
+    });
+
+    expect(result).toMatchObject({
+      taskCount: 1,
+      results: [
+        {
+          taskId: "coding_poll_quiet",
+          repo: "michaelmwu/personal-dashboard",
+          prNumber: 43,
+          events: 1,
+          actionable: 0,
+          synced: true,
+          dispatch: {
+            dispatched: false,
+            reason: "no_actionable_pr_events"
+          }
+        }
+      ]
+    });
+    expect(synced).toHaveLength(1);
+    expect(synced[0].snapshot.checks).toMatchObject({
+      conclusion: "success",
+      failed: []
+    });
+    expect(synced[0].snapshot.cursor.updatedAt).toBe("2026-07-06T11:05:00.000Z");
+  });
+
   test("coding agent PR pickup discovers explicit comments without mutating GitHub", async () => {
     expect(commentRequestsCodingAgentPickup("@coding-agent pick up this PR")).toBe(true);
     expect(commentRequestsCodingAgentPickup("normal review comment")).toBe(false);

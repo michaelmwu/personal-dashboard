@@ -649,10 +649,9 @@ export async function pollCodingAgentPrs(options = {}) {
       continue;
     }
     const sync = await (options.syncTaskPrSnapshot ?? syncTaskPrSnapshot)(task, snapshot);
-    const dispatch = await (options.dispatchCodingTaskUpdate ?? dispatchCodingTaskUpdate)(
-      task,
-      snapshot
-    );
+    const dispatch = snapshot.actionable.length
+      ? await (options.dispatchCodingTaskUpdate ?? dispatchCodingTaskUpdate)(task, snapshot)
+      : { dispatched: false, reason: "no_actionable_pr_events" };
     results.push({
       taskId: task.id,
       repo: snapshot.repo,
