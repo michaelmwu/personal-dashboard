@@ -599,9 +599,14 @@ export function codingAgentExecutorPayload(task, context = {}) {
 
 export function applyPrStatus(existing, payload, options = {}) {
   const previous = existingPayload(existing);
+  const incomingEvents = payload.latestPrEvents ?? payload.latest_pr_events;
   return codingTaskItem(
     {
       ...payload,
+      latestPrEvents:
+        Array.isArray(incomingEvents) && incomingEvents.length > 0
+          ? incomingEvents
+          : previous.latestPrEvents,
       status: inferPrStatus(payload, previous.status ?? "pr-open")
     },
     existing,
@@ -1220,6 +1225,105 @@ export function reconcileCodingAgentTasks(items = [], payload = {}, options = {}
     results,
     taskItems,
     auditItem
+  };
+}
+
+export function summarizeCodingTaskHandoff(existing, payload = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const task = existingPayload(existing);
+  if (!task.id) {
+    return { ok: false, statusCode: 404, reason: "coding_task_not_found" };
+  }
+
+  const queue = task.queue ?? [];
+  const blockedQueue = queue.filter((item) =>
+    ["blocked", "waiting-for-approval", "failed"].includes(item.status)
+  );
+  const failedChecks = [
+    ...(task.checks?.failed ?? []),
+    ...(task.checks?.checkRuns ?? task.checks?.check_runs ?? []).filter((check) =>
+      ["failure", "timed_out", "cancelled", "action_required"].includes(
+        String(check.conclusion ?? "").toLowerCase()
+      )
+    )
+  ];
+  const latestEvents = (task.latestPrEvents ?? []).slice(0, 5).map((event) => ({
+    kind: event.kind,
+    state: event.state,
+    author: event.author,
+    summary: event.summary ?? event.body ?? event.name
+  }));
+  const blocker =
+    payload.blocker ??
+    task.handoff?.blocker ??
+    blockedQueue[0]?.rejectionReason ??
+    failedChecks[0]?.name ??
+    "operator_attention_required";
+  const nextAction =
+    payload.nextAction ??
+    payload.next_action ??
+    task.handoff?.nextAction ??
+    (failedChecks.length ? "inspect failed checks and resume explicitly" : "review task state");
+  const attempted = [
+    ...(task.handoff?.attempted ?? []),
+    ...blockedQueue.map((item) => item.kind).filter(Boolean)
+  ].filter((item, index, items) => items.indexOf(item) === index);
+  const requestId = payload.id ?? payload.requestId ?? payload.request_id;
+  const id =
+    payload.summaryId ??
+    payload.summary_id ??
+    `coding_handoff_${slug(task.id)}_${Date.parse(now) || Date.now()}`;
+  const summary = [
+    task.title,
+    `${task.status} in ${task.repo ?? "repo"}`,
+    task.prNumber ? `PR #${task.prNumber}` : undefined,
+    blocker
+  ]
+    .filter(Boolean)
+    .join(" - ");
+  const item = {
+    id,
+    app: CODING_AGENT_APP_ID,
+    type: "coding-handoff-summary",
+    status: "ready",
+    title: `Handoff: ${task.title}`,
+    payload: {
+      id,
+      requestId,
+      taskId: task.id,
+      repo: task.repo,
+      githubRepo: task.githubRepo,
+      prNumber: task.prNumber,
+      status: task.status,
+      blocker,
+      attempted,
+      nextAction,
+      summary,
+      failedChecks,
+      blockedQueue: blockedQueue.map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        status: item.status,
+        title: item.title,
+        rejectionReason: item.rejectionReason
+      })),
+      latestEvents,
+      artifacts: [
+        task.prUrl,
+        task.previewUrl,
+        task.worktreeDir,
+        ...(task.handoff?.artifacts ?? [])
+      ].filter(Boolean),
+      providerMutationAllowed: false,
+      createdAt: now
+    }
+  };
+
+  return {
+    ok: true,
+    statusCode: 202,
+    summary: item.payload,
+    item
   };
 }
 

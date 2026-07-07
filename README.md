@@ -103,6 +103,8 @@ Coding Agent endpoints:
   GitHub coordination anchors to a managed task.
 - `POST /api/apps/coding-agent/control`: apply typed operator controls such as
   pause, continue, tests, preview, open-pr, archive, or handoff.
+- `POST /api/apps/coding-agent/handoff-summary`: persist a concise handoff
+  summary from blocked queue items, failed checks, PR events, and artifacts.
 - `POST /api/apps/coding-agent/queue`: append typed work items to a task queue.
 - `POST /api/apps/coding-agent/pr-status`: sync PR review/check/preview status
   onto a registered task.

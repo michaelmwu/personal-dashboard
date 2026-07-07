@@ -41,6 +41,7 @@ import {
   reconcileCodingAgentTasks,
   reviewCodingAgentRisk,
   shortRepoName,
+  summarizeCodingTaskHandoff,
   synthesizeCodingAgentFindings,
   triageCodingAgentIssue,
   updateCodingTaskCoordination,
@@ -342,6 +343,16 @@ async function reconcileCodingTasks(payload = {}) {
     await persistCodingTaskItem(item);
   }
   await upsertAppItem(storePath, result.auditItem);
+  return result;
+}
+
+async function summarizeCodingHandoff(payload = {}) {
+  const existing = await findCodingTask(payload);
+  const result = summarizeCodingTaskHandoff(existing, payload);
+  if (!result.ok) {
+    return result;
+  }
+  await upsertAppItem(storePath, result.item);
   return result;
 }
 
@@ -672,6 +683,10 @@ async function dispatchDeterministicCapability(action, capability) {
   }
   if (capability.endpoint === "/api/apps/coding-agent/reconcile") {
     const response = await reconcileCodingTasks(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/handoff-summary") {
+    const response = await summarizeCodingHandoff(action.payload);
     return { dispatched: response.ok, target: capability.target, response };
   }
   if (capability.endpoint === "/api/apps/coding-agent/pr-maintenance") {
@@ -1210,6 +1225,22 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
           reconciled: result.reconciled,
           results: result.results,
           audit: result.auditItem.payload
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/handoff-summary") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await summarizeCodingHandoff(await readJson(request));
+        if (!result.ok) {
+          error(response, result.statusCode, result.reason, "Registered coding task not found.");
+          return;
+        }
+        json(response, result.statusCode, {
+          accepted: true,
+          summary: result.summary
         });
         return;
       }
