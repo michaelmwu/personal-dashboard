@@ -33,6 +33,7 @@ import {
   proposeCodingAgentGoalMutations,
   reconcileCodingAgentTasks,
   relevantCodingAgentRegressionMemory,
+  summarizeCodingTaskHandoff,
   synthesizeCodingAgentFindings,
   triageCodingAgentIssue
 } from "../packages/integrations/coding-agent.mjs";
@@ -314,6 +315,11 @@ describe("contracts", () => {
           id: "control-coding-task",
           kind: "deterministic",
           endpoint: "/api/apps/coding-agent/control"
+        }),
+        expect.objectContaining({
+          id: "summarize-coding-handoff",
+          kind: "deterministic",
+          endpoint: "/api/apps/coding-agent/handoff-summary"
         }),
         expect.objectContaining({
           id: "archive-coding-task",
@@ -982,7 +988,15 @@ describe("contracts", () => {
             reviewState: "CHANGES_REQUESTED",
             checks: {
               conclusion: "failure"
-            }
+            },
+            latestPrEvents: [
+              {
+                kind: "review",
+                state: "CHANGES_REQUESTED",
+                author: "reviewer",
+                summary: "Please address the failing contract."
+              }
+            ]
           }
         })
       });
@@ -998,11 +1012,37 @@ describe("contracts", () => {
               reviewState: "CHANGES_REQUESTED",
               checks: {
                 conclusion: "failure"
-              }
+              },
+              latestPrEvents: [
+                {
+                  kind: "review",
+                  state: "CHANGES_REQUESTED",
+                  author: "reviewer"
+                }
+              ]
             }
           }
         }
       });
+
+      const emptyEventSync = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/pr-status`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            taskId,
+            repo: "personal-dashboard",
+            prNumber: 42,
+            status: "changes-requested",
+            latestPrEvents: []
+          })
+        }
+      );
+      expect(emptyEventSync.status).toBe(202);
 
       const tasks = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`);
       expect(tasks.status).toBe(200);
@@ -1012,7 +1052,14 @@ describe("contracts", () => {
             id: taskId,
             repo: "personal-dashboard",
             branch: "michaelmwu/coding-agent-plugin",
-            status: "changes-requested"
+            status: "changes-requested",
+            latestPrEvents: [
+              expect.objectContaining({
+                kind: "review",
+                state: "CHANGES_REQUESTED",
+                author: "reviewer"
+              })
+            ]
           })
         ])
       });
@@ -1564,9 +1611,190 @@ describe("contracts", () => {
           }
         }
       });
+
+      const summary = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/handoff-summary`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            taskId,
+            summaryId: "handoff_summary_coordination"
+          })
+        }
+      );
+      expect(summary.status).toBe(202);
+      expect(await summary.json()).toMatchObject({
+        accepted: true,
+        summary: {
+          id: "handoff_summary_coordination",
+          taskId,
+          blocker: "CI requires manual credential refresh",
+          attempted: ["reran unit-contract-tests"],
+          nextAction: "Refresh CI secret and continue",
+          providerMutationAllowed: false
+        }
+      });
+
+      const summaryItems = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/items?type=coding-handoff-summary`
+      );
+      expect(await summaryItems.json()).toEqual({
+        app: "coding-agent",
+        items: expect.arrayContaining([
+          expect.objectContaining({
+            id: "handoff_summary_coordination",
+            type: "coding-handoff-summary",
+            payload: expect.objectContaining({
+              taskId,
+              providerMutationAllowed: false
+            })
+          })
+        ])
+      });
+
+      const collisionSummary = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/handoff-summary`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            id: taskId
+          })
+        }
+      );
+      expect(collisionSummary.status).toBe(202);
+      const collisionSummaryJson = await collisionSummary.json();
+      expect(collisionSummaryJson).toMatchObject({
+        accepted: true,
+        summary: {
+          requestId: taskId,
+          taskId,
+          blocker: "CI requires manual credential refresh"
+        }
+      });
+      expect(collisionSummaryJson.summary.id).not.toBe(taskId);
+
+      const tasks = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks?includeArchived=true`
+      );
+      expect(tasks.status).toBe(200);
+      expect(await tasks.json()).toEqual({
+        tasks: expect.arrayContaining([
+          expect.objectContaining({
+            id: taskId,
+            status: "waiting-for-approval",
+            handoff: expect.objectContaining({
+              blocker: "CI requires manual credential refresh"
+            })
+          })
+        ])
+      });
     } finally {
       await closeServer(apiServer);
     }
+  });
+
+  test("coding agent handoff summaries collect blocked queue, checks, and PR events", () => {
+    const task = codingTaskItem(
+      {
+        id: "coding_handoff_source",
+        repo: "personal-dashboard",
+        githubRepo: "michaelmwu/personal-dashboard",
+        title: "Blocked handoff source",
+        status: "waiting-for-approval",
+        prNumber: 88,
+        prUrl: "https://github.com/michaelmwu/personal-dashboard/pull/88",
+        previewUrl: "https://preview.example.test",
+        worktreeDir: "/tmp/coding-handoff-source",
+        handoff: {
+          blocker: "Deployment approval is missing",
+          attempted: ["ran unit-contract-tests"],
+          artifacts: ["artifact://logs/unit"],
+          nextAction: "Approve deployment secret and continue"
+        },
+        checks: {
+          checkRuns: [
+            {
+              name: "e2e-tests",
+              conclusion: "failure",
+              detailsUrl: "https://github.com/checks/1"
+            }
+          ]
+        },
+        latestPrEvents: [
+          {
+            kind: "review",
+            state: "CHANGES_REQUESTED",
+            author: "reviewer",
+            summary: "Needs secret refresh."
+          }
+        ],
+        queue: [
+          {
+            id: "queue_blocked_push",
+            kind: "push-update",
+            status: "blocked",
+            title: "Push update",
+            rejectionReason: "approval_required"
+          }
+        ]
+      },
+      undefined,
+      { now: "2026-07-06T17:00:00.000Z" }
+    );
+
+    expect(
+      summarizeCodingTaskHandoff(
+        task,
+        { summaryId: "handoff_summary_pure" },
+        { now: "2026-07-06T17:05:00.000Z" }
+      )
+    ).toMatchObject({
+      ok: true,
+      summary: {
+        id: "handoff_summary_pure",
+        taskId: "coding_handoff_source",
+        blocker: "Deployment approval is missing",
+        attempted: ["ran unit-contract-tests", "push-update"],
+        nextAction: "Approve deployment secret and continue",
+        providerMutationAllowed: false,
+        failedChecks: [
+          {
+            name: "e2e-tests",
+            conclusion: "failure"
+          }
+        ],
+        blockedQueue: [
+          {
+            id: "queue_blocked_push",
+            kind: "push-update",
+            status: "blocked",
+            rejectionReason: "approval_required"
+          }
+        ],
+        latestEvents: [
+          {
+            kind: "review",
+            state: "CHANGES_REQUESTED",
+            author: "reviewer",
+            summary: "Needs secret refresh."
+          }
+        ],
+        artifacts: [
+          "https://github.com/michaelmwu/personal-dashboard/pull/88",
+          "https://preview.example.test",
+          "/tmp/coding-handoff-source",
+          "artifact://logs/unit"
+        ]
+      }
+    });
   });
 
   test("coding agent findings synthesize recurring improvement signals", async () => {

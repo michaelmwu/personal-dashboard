@@ -305,6 +305,19 @@
       }
     },
     {
+      "id": "summarize-coding-handoff",
+      "title": "Summarize coding handoff",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/handoff-summary",
+      "description": "Persist a concise operator handoff summary from blocked queue items, failed checks, PR events, and task artifacts.",
+      "inputSchema": {
+        "taskId": "string",
+        "blocker": "string?",
+        "nextAction": "string?"
+      }
+    },
+    {
       "id": "archive-coding-task",
       "title": "Archive coding task",
       "kind": "deterministic",
@@ -324,6 +337,7 @@
     "coding-pr-pickup-attempt",
     "coding-issue-triage",
     "coding-reconciliation",
+    "coding-handoff-summary",
     "coding-risk-review",
     "coding-improvement-signal",
     "coding-improvement-finding",
