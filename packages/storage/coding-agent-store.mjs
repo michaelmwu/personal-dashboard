@@ -8,6 +8,10 @@ import {
 
 const CODING_AGENT_APP_ID = "coding-agent";
 
+function sqlNullable(value) {
+  return value === undefined ? null : value;
+}
+
 export function codingAgentStateStoreMode(env = process.env) {
   const configured = String(env.CODING_AGENT_STATE_STORE ?? "")
     .trim()
@@ -40,6 +44,31 @@ function rowToItem(row) {
     detail: row.detail,
     payload: row.payload,
     ts: row.ts instanceof Date ? row.ts.toISOString() : row.ts
+  };
+}
+
+function runRowToItem(row) {
+  const payload = row.payload ?? {};
+  const lastEventAt =
+    row.last_event_at instanceof Date ? row.last_event_at.toISOString() : row.last_event_at;
+  const updatedAt = row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at;
+  return {
+    id: row.run_id,
+    app: CODING_AGENT_APP_ID,
+    type: "coding-run",
+    externalId: row.run_id,
+    status: row.status,
+    title: payload.title ?? `Hermes run ${row.run_id}`,
+    detail: row.task_id,
+    payload: {
+      ...payload,
+      id: row.run_id,
+      runId: row.run_id,
+      taskId: row.task_id,
+      status: row.status,
+      lastEventAt
+    },
+    ts: lastEventAt ?? updatedAt
   };
 }
 
@@ -126,19 +155,18 @@ export function createCodingAgentPostgresStore(sql) {
     return schemaPromise;
   }
 
-  async function upsertItem(item) {
-    await ensureSchema();
+  async function upsertItemInto(db, item) {
     const id = item.id ?? `${item.app}:${item.type}:${item.externalId ?? Date.now()}`;
     const app = item.app ?? CODING_AGENT_APP_ID;
     const payload = item.payload ?? {};
     const ts = item.ts ?? new Date().toISOString();
-    await sql`
+    await db`
       insert into coding_agent_app_items (
         app, type, id, external_id, status, title, detail, payload, ts, updated_at
       )
       values (
-        ${app}, ${item.type}, ${id}, ${item.externalId ?? item.external_id ?? id},
-        ${item.status ?? payload.status}, ${item.title}, ${item.detail},
+        ${app}, ${item.type}, ${id}, ${sqlNullable(item.externalId ?? item.external_id ?? id)},
+        ${sqlNullable(item.status ?? payload.status)}, ${sqlNullable(item.title)}, ${sqlNullable(item.detail)},
         ${sql.json(payload)}, ${ts}, now()
       )
       on conflict (id) do update set
@@ -153,9 +181,12 @@ export function createCodingAgentPostgresStore(sql) {
         updated_at = now()
     `;
     if (item.type === "coding-task") {
-      await sql`
+      await db`
         insert into coding_agent_tasks (task_id, repo, status, title, payload, updated_at)
-        values (${id}, ${payload.repo}, ${payload.status}, ${payload.title}, ${sql.json(payload)}, now())
+        values (
+          ${id}, ${sqlNullable(payload.repo)}, ${sqlNullable(payload.status)},
+          ${sqlNullable(payload.title)}, ${sql.json(payload)}, now()
+        )
         on conflict (task_id) do update set
           repo = excluded.repo,
           status = excluded.status,
@@ -165,11 +196,11 @@ export function createCodingAgentPostgresStore(sql) {
       `;
       const runId = payload.latestHermesRunId ?? payload.hermesRunId;
       if (runId) {
-        await sql`
+        await db`
           insert into coding_agent_runs (run_id, task_id, status, payload, last_event_at, updated_at)
           values (
-            ${runId}, ${id}, ${payload.hermesRunStatus}, ${sql.json(payload)},
-            ${payload.hermesLastEventAt ?? payload.lastEventAt ?? null}, now()
+            ${runId}, ${id}, ${sqlNullable(payload.hermesRunStatus)}, ${sql.json(payload)},
+            ${sqlNullable(payload.hermesLastEventAt ?? payload.lastEventAt ?? null)}, now()
           )
           on conflict (run_id) do update set
             task_id = excluded.task_id,
@@ -183,11 +214,24 @@ export function createCodingAgentPostgresStore(sql) {
     return { ...item, id, app, externalId: item.externalId ?? item.external_id ?? id, ts };
   }
 
+  async function upsertItem(item) {
+    await ensureSchema();
+    return upsertItemInto(sql, item);
+  }
+
   return {
     mode: "postgres",
     ensureSchema,
     async listItems({ type } = {}) {
       await ensureSchema();
+      if (type === "coding-run") {
+        const rows = await sql`
+          select run_id, task_id, status, payload, last_event_at, updated_at
+          from coding_agent_runs
+          order by updated_at desc
+        `;
+        return rows.map(runRowToItem);
+      }
       const rows = type
         ? await sql`
             select app, type, id, external_id, status, title, detail, payload, ts
@@ -206,41 +250,44 @@ export function createCodingAgentPostgresStore(sql) {
     upsertItem,
     async patchItemPayload(selector, patcher) {
       await ensureSchema();
-      const rows = await sql`
-        select app, type, id, external_id, status, title, detail, payload, ts
-        from coding_agent_app_items
-        where app = ${CODING_AGENT_APP_ID}
-          and (${selector.id ?? null}::text is null or id = ${selector.id ?? null})
-          and (${selector.type ?? null}::text is null or type = ${selector.type ?? null})
-        order by updated_at desc
-        limit 1
-      `;
-      const existing = rows[0] ? rowToItem(rows[0]) : undefined;
-      if (!existing) {
-        return undefined;
-      }
-      const patch =
-        typeof patcher === "function" ? patcher(existing.payload ?? {}, existing) : patcher;
-      if (!patch) {
-        return existing;
-      }
-      const next = {
-        ...existing,
-        payload: {
-          ...(existing.payload ?? {}),
-          ...patch
-        },
-        status: patch.status ?? existing.status,
-        ts: existing.ts ?? new Date().toISOString()
-      };
-      await upsertItem(next);
-      return next;
+      return sql.begin(async (tx) => {
+        const rows = await tx`
+          select app, type, id, external_id, status, title, detail, payload, ts
+          from coding_agent_app_items
+          where app = ${CODING_AGENT_APP_ID}
+            and (${selector.id ?? null}::text is null or id = ${selector.id ?? null})
+            and (${selector.type ?? null}::text is null or type = ${selector.type ?? null})
+          order by updated_at desc
+          limit 1
+          for update
+        `;
+        const existing = rows[0] ? rowToItem(rows[0]) : undefined;
+        if (!existing) {
+          return undefined;
+        }
+        const patch =
+          typeof patcher === "function" ? patcher(existing.payload ?? {}, existing) : patcher;
+        if (!patch) {
+          return existing;
+        }
+        const next = {
+          ...existing,
+          payload: {
+            ...(existing.payload ?? {}),
+            ...patch
+          },
+          status: patch.status ?? existing.status,
+          ts: existing.ts ?? new Date().toISOString()
+        };
+        await upsertItemInto(tx, next);
+        return next;
+      });
     },
     async appendRunEvent(runId, event, { taskId, eventType } = {}) {
       await ensureSchema();
       await sql`
         insert into coding_agent_run_events (run_id, task_id, event_type, event)
-        values (${runId}, ${taskId}, ${eventType}, ${sql.json(event)})
+        values (${runId}, ${sqlNullable(taskId)}, ${sqlNullable(eventType)}, ${sql.json(event)})
       `;
     },
     async close() {

@@ -10,7 +10,8 @@ function safeRunId(runId) {
 }
 
 export function runEvidenceRoot(root, env = process.env) {
-  return env.CODING_AGENT_RUN_EVIDENCE_DIR ?? join(root, ".data", "runs");
+  const configured = String(env.CODING_AGENT_RUN_EVIDENCE_DIR ?? "").trim();
+  return configured || join(root, ".data", "runs");
 }
 
 export function runEvidenceDir(root, runId, env = process.env) {
@@ -51,16 +52,51 @@ export async function captureRunGitDiff(root, runId, worktreeDir, options = {}) 
     return { captured: false, reason: "missing_worktree_dir" };
   }
   try {
-    const { stdout } = await (options.command ?? execFileAsync)(
+    const command = options.command ?? execFileAsync;
+    const commandOptions = {
+      cwd: worktreeDir,
+      maxBuffer: options.maxBuffer ?? 4 * 1024 * 1024
+    };
+    const chunks = [];
+    if (options.baseRef) {
+      const { stdout } = await command(
+        "git",
+        ["diff", "--no-ext-diff", "--binary", `${options.baseRef}...HEAD`],
+        commandOptions
+      );
+      chunks.push(stdout);
+    }
+    const { stdout: trackedDiff } = await command(
       "git",
-      ["diff", "--no-ext-diff", "--binary"],
-      {
-        cwd: worktreeDir,
-        maxBuffer: options.maxBuffer ?? 4 * 1024 * 1024
-      }
+      ["diff", "--no-ext-diff", "--binary", "HEAD"],
+      commandOptions
     );
-    const path = await writeRunEvidenceArtifact(root, runId, "final.diff", stdout, options);
-    return { captured: true, path, bytes: Buffer.byteLength(stdout) };
+    chunks.push(trackedDiff);
+
+    const { stdout: untrackedFiles } = await command(
+      "git",
+      ["ls-files", "--others", "--exclude-standard"],
+      commandOptions
+    );
+    for (const file of untrackedFiles.split("\n").filter(Boolean)) {
+      try {
+        const { stdout } = await command(
+          "git",
+          ["diff", "--no-index", "--binary", "--", "/dev/null", file],
+          commandOptions
+        );
+        chunks.push(stdout);
+      } catch (error) {
+        if (error?.code !== 1) {
+          throw error;
+        }
+        chunks.push(error.stdout ?? "");
+      }
+    }
+
+    const content = chunks.filter(Boolean).join("\n");
+    const path = await writeRunEvidenceArtifact(root, runId, "final.diff", content, options);
+    return { captured: true, path, bytes: Buffer.byteLength(content) };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await writeRunEvidenceArtifact(root, runId, "final-diff-error.txt", `${message}\n`, options);

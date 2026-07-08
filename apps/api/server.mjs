@@ -127,12 +127,17 @@ async function dashboardSnapshot() {
   const registryItems = registry.apps.flatMap((app) =>
     genericAppItemsFromDashboard(dashboard, app.id)
   );
+  const codingItems = await codingAgentStore.listItems();
+  const persistedItems = [
+    ...(dashboard.apps?.items ?? []).filter((item) => item.app !== "coding-agent"),
+    ...codingItems
+  ];
   return {
     ...dashboard,
     apps: {
       manifests: registry.apps,
       panels: registry.panels,
-      items: [...registryItems, ...(dashboard.apps?.items ?? [])]
+      items: [...registryItems, ...persistedItems]
     },
     hermes: {
       ...dashboard.hermes,
@@ -451,6 +456,26 @@ function codingTaskWorktreeFromAction(action) {
   );
 }
 
+function codingTaskBaseRefFromAction(action) {
+  return (
+    action.payload?.baseRef ??
+    action.payload?.base_ref ??
+    action.payload?.baseBranch ??
+    action.payload?.base_branch ??
+    action.payload?.metadata?.baseRef ??
+    action.payload?.metadata?.base_ref ??
+    action.payload?.metadata?.baseBranch ??
+    action.payload?.metadata?.base_branch
+  );
+}
+
+function evidencePackStatus(result) {
+  if (result?.streamed === false || (result?.statusCode && result.statusCode >= 400)) {
+    return "failed";
+  }
+  return result?.status ?? "completed";
+}
+
 async function recordCodingTaskHermesRun(action, dispatch) {
   const taskId = action.payload?.taskId ?? action.payload?.task_id;
   if (!taskId || !dispatch.runId) {
@@ -496,11 +521,15 @@ async function recordCodingTaskEvidencePack(action, runId, result) {
   }
   const completedAt = new Date().toISOString();
   const evidenceDir = runEvidenceDir(root, runId);
-  const diff = await captureRunGitDiff(root, runId, codingTaskWorktreeFromAction(action));
+  const diff = await captureRunGitDiff(root, runId, codingTaskWorktreeFromAction(action), {
+    baseRef: codingTaskBaseRefFromAction(action)
+  });
+  const status = evidencePackStatus(result);
   const pack = {
     runId,
     taskId,
-    status: result?.status ?? "completed",
+    status,
+    stream: result,
     evidenceDir,
     eventsPath: `${evidenceDir}/events.ndjson`,
     diff,
@@ -519,7 +548,7 @@ async function recordCodingTaskEvidencePack(action, runId, result) {
       {
         id: `evidence_${runId}_${Date.parse(completedAt) || Date.now()}`,
         kind: "coding-evidence-pack",
-        status: "completed",
+        status,
         title: "Coding run evidence pack",
         approvalRequired: false,
         createdAt: completedAt,
