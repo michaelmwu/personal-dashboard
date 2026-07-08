@@ -32,6 +32,8 @@
         "prompt": "string",
         "mission": "object",
         "baseBranch": "string?",
+        "conductorPort": "number?",
+        "portRange": "object?",
         "approvalRequired": "boolean?"
       }
     },
@@ -46,6 +48,8 @@
         "repo": "string",
         "prNumber": "number?",
         "worktreeDir": "string?",
+        "conductorPort": "number?",
+        "portRange": "object?",
         "events": "array?"
       }
     },
@@ -63,6 +67,8 @@
         "branch": "string?",
         "mission": "object?",
         "worktreeDir": "string?",
+        "conductorPort": "number?",
+        "portRange": "object?",
         "hermesSessionKey": "string?",
         "prNumber": "number?",
         "previewUrl": "string?"

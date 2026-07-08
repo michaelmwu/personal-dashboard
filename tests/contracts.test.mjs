@@ -29,6 +29,7 @@ import {
   duplicateCodingTaskCandidates,
   evaluateCodingAgentPrPickup,
   normalizeCodingTaskMission,
+  normalizeCodingTaskPortRange,
   applyCodingTaskValidation,
   normalizeCodingAgentSignal,
   normalizeCodingAgentRegressionMemory,
@@ -1459,8 +1460,85 @@ describe("contracts", () => {
         priority: "urgent",
         duplicateOf: "coding_existing_duplicate",
         workspacePolicy: {
-          mode: "one-task-one-worktree"
+          mode: "one-task-one-worktree",
+          portRangeSize: 10
+        },
+        portRange: {
+          size: 10,
+          env: {
+            CONDUCTOR_PORT: expect.any(String)
+          }
         }
+      }
+    });
+
+    const explicit = codingTaskItem(
+      {
+        id: "coding_explicit_port",
+        repo: "personal-dashboard",
+        title: "Run dev server",
+        conductorPort: 13004
+      },
+      undefined,
+      { now: "2026-07-08T12:00:00.000Z" }
+    );
+    expect(explicit.payload).toMatchObject({
+      conductorPort: 13000,
+      portRange: {
+        base: 13000,
+        start: 13000,
+        end: 13009,
+        size: 10,
+        env: {
+          CONDUCTOR_PORT: "13000"
+        }
+      }
+    });
+
+    const preferred = normalizeCodingTaskPortRange(
+      {
+        id: "coding_same_slot",
+        repo: "personal-dashboard",
+        threadId: "telegram-thread-ports"
+      },
+      [],
+      { portBase: 14000, portSlots: 1 }
+    );
+    const collision = planCodingTaskQueue(
+      {
+        id: "coding_same_slot",
+        repo: "personal-dashboard",
+        title: "Run another dev server",
+        request: "Use a separate dev port block.",
+        threadId: "telegram-thread-ports"
+      },
+      [
+        {
+          payload: {
+            id: "active_same_slot",
+            status: "running",
+            portRange: preferred
+          }
+        }
+      ],
+      {
+        policy: {
+          allowedRepos: ["personal-dashboard"],
+          branchPrefix: "hermes",
+          defaultBaseBranch: "origin/main",
+          portBase: 14000,
+          portSlots: 2
+        },
+        now: "2026-07-08T12:01:00.000Z"
+      }
+    );
+    expect(collision.task.portRange.start % 10).toBe(0);
+    expect(collision.task.portRange.base).not.toBe(preferred.base);
+    expect(collision.task.portRange).toMatchObject({
+      size: 10,
+      end: collision.task.portRange.start + 9,
+      env: {
+        CONDUCTOR_PORT: String(collision.task.portRange.base)
       }
     });
 
@@ -4200,6 +4278,15 @@ describe("contracts", () => {
       prompt: "Implement the coding agent loop.",
       branch: "hermes/executor",
       worktreeDir: "/Users/michaelwu/agents/work/personal-dashboard/executor",
+      portRange: {
+        base: 15000,
+        start: 15000,
+        end: 15009,
+        size: 10,
+        env: {
+          CONDUCTOR_PORT: "15000"
+        }
+      },
       hermesSessionKey: "coding-agent:executor",
       prNumber: 42
     };
@@ -4222,17 +4309,29 @@ describe("contracts", () => {
     expect(testFix).toMatchObject({
       mode: "test-fix",
       sessionId: "coding-agent:executor",
+      conductorPort: 15000,
+      env: {
+        CONDUCTOR_PORT: "15000"
+      },
       metadata: {
         runtimeOwner: "personal-dashboard.integration-worker",
         actionId: "update-coding-task",
         taskId: "coding_executor_001",
         mode: "test-fix",
-        worktreeDir: "/Users/michaelwu/agents/work/personal-dashboard/executor"
+        worktreeDir: "/Users/michaelwu/agents/work/personal-dashboard/executor",
+        conductorPort: 15000,
+        portRange: {
+          base: 15000,
+          start: 15000,
+          end: 15009
+        }
       }
     });
     expect(testFix.instructions).toContain("change into this task worktree");
+    expect(testFix.instructions).toContain("export CONDUCTOR_PORT=15000");
     expect(testFix.instructions).toContain("Do not push, create PRs, merge, or clean up worktrees");
     expect(testFix.prompt).toContain("Mode: test-fix");
+    expect(testFix.prompt).toContain("Port block: 15000-15009");
     expect(testFix.prompt).toContain("unit-contract-tests");
 
     expect(
