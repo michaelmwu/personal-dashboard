@@ -673,7 +673,7 @@ export async function runConfiguredIngestions(options = {}) {
   }
   for (const feed of [
     { source: "hotel-rate-finder", envName: "HOTEL_RATE_FINDER_EVENTS_FILE" },
-    { source: "flight-searcher", envName: "FLIGHT_SEARCHER_EVENTS_FILE" },
+    { source: "flight-searcher", envName: "FLIGHTS_EXTENSION_EVENTS_FILE" },
     { source: "plaid", envName: "PLAID_EVENTS_FILE" },
     { source: "gmail-intake", envName: "GMAIL_INTAKE_EVENTS_FILE" }
   ]) {
