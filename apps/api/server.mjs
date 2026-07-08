@@ -12,6 +12,7 @@ import {
 } from "../../packages/integrations/hermes.mjs";
 import {
   approveHermesBridgeRun,
+  bridgePromptForAction,
   createHermesBridgeRun,
   getHermesBridgeCapabilities,
   getHermesBridgeRun,
@@ -26,11 +27,13 @@ import {
   applyPrStatus,
   applyCodingTaskControl,
   archiveCodingTask,
+  codingTaskMissionApproved,
   codingAgentPolicyFromEnv,
   codingTaskItem,
   enqueueCodingTaskItems,
   normalizeCodingAgentSignal,
   normalizeCodingAgentFinding,
+  normalizeCodingTaskMission,
   normalizeCodingAgentRegressionMemory,
   pickupExistingPrTask,
   planCodingAgentGoalMutation,
@@ -88,6 +91,7 @@ import {
   listPlaidItems,
   loadDashboard,
   patchHermesAction,
+  patchAppItemPayload,
   patchHotelReservation,
   upsertAppItem,
   upsertPlaidItem,
@@ -391,20 +395,97 @@ async function recordCodingTaskHermesRun(action, dispatch) {
   if (!taskId || !dispatch.runId) {
     return;
   }
-  const existing = await findCodingTask({ taskId });
-  if (!existing) {
+  const lastEventAt = new Date().toISOString();
+  await patchAppItemPayload(
+    storePath,
+    { app: "coding-agent", type: "coding-task", id: taskId },
+    {
+      hermesRunId: dispatch.runId,
+      latestHermesRunId: dispatch.runId,
+      hermesRunStatus: "running",
+      lastEventAt,
+      hermesLastEventAt: lastEventAt
+    }
+  );
+}
+
+async function recordCodingTaskHermesRunEvent(action, runId, status, lastEventAt) {
+  const taskId =
+    action.payload?.taskId ??
+    action.payload?.task_id ??
+    action.payload?.metadata?.taskId ??
+    action.payload?.metadata?.task_id;
+  if (!taskId || !runId) {
     return;
   }
-  await persistCodingTaskItem(
-    codingTaskItem(
-      {
-        hermesRunId: dispatch.runId,
-        latestHermesRunId: dispatch.runId,
-        hermesRunStatus: "running"
-      },
-      existing
-    )
+  await patchAppItemPayload(
+    storePath,
+    { app: "coding-agent", type: "coding-task", id: taskId },
+    (task) => {
+      if (task.latestHermesRunId && task.latestHermesRunId !== runId) {
+        return undefined;
+      }
+      return {
+        hermesRunId: task.hermesRunId ?? runId,
+        latestHermesRunId: runId,
+        hermesRunStatus: typeof status === "string" ? status : (task.hermesRunStatus ?? "running"),
+        lastEventAt,
+        hermesLastEventAt: lastEventAt,
+        updatedAt: lastEventAt
+      };
+    }
   );
+}
+
+function actionWithMission(action, mission) {
+  const prompt =
+    typeof action.payload?.prompt === "string" && action.payload.prompt.length > 0
+      ? action.payload.prompt
+      : bridgePromptForAction({ ...action, payload: { ...action.payload, mission: undefined } });
+  const missionBlock = `Mission:\n${JSON.stringify(mission, null, 2)}`;
+  return {
+    ...action,
+    payload: {
+      ...action.payload,
+      mission,
+      prompt: [prompt, missionBlock].filter(Boolean).join("\n\n")
+    }
+  };
+}
+
+async function guardCodingAgentMission(action) {
+  const taskId =
+    action.payload?.taskId ??
+    action.payload?.task_id ??
+    action.payload?.metadata?.taskId ??
+    action.payload?.metadata?.task_id;
+  const existing = taskId ? await findCodingTask({ taskId }) : undefined;
+  const missionResult = normalizeCodingTaskMission(
+    {
+      ...(existing?.payload ?? {}),
+      ...(action.payload ?? {}),
+      mission: existing?.payload?.mission ?? action.payload?.mission
+    },
+    codingAgentPolicy
+  );
+  const { mission, errors = [] } = missionResult;
+  if (errors.length) {
+    return {
+      ok: false,
+      reason: errors[0],
+      errors,
+      mission
+    };
+  }
+  if (!codingTaskMissionApproved(mission)) {
+    return {
+      ok: false,
+      reason: "mission_approval_required",
+      retryable: true,
+      mission
+    };
+  }
+  return { ok: true, mission };
 }
 
 function activeHotelRateReservations(dashboard, { reservationId } = {}) {
@@ -590,22 +671,29 @@ async function streamBridgeRunOntoAction(action, runId) {
   try {
     await streamHermesBridgeRunEvents(runId, async (event) => {
       const status = event.data?.status;
+      const lastEventAt = new Date().toISOString();
       await patchHermesAction(storePath, action.id, {
         status: typeof status === "string" ? status : "running",
         bridgeRunId: runId,
+        lastEventAt,
         dispatch: {
           target: "hermes-bridge",
           runId,
+          lastEventAt,
           lastEvent: event
         }
       });
+      await recordCodingTaskHermesRunEvent(action, runId, status, lastEventAt);
     });
   } catch (error) {
+    const lastEventAt = new Date().toISOString();
     await patchHermesAction(storePath, action.id, {
       status: "dispatch_error",
+      lastEventAt,
       dispatch: {
         target: "hermes-bridge",
         runId,
+        lastEventAt,
         error: error instanceof Error ? error.message : String(error)
       }
     });
@@ -619,6 +707,21 @@ async function dispatchHermesAction(action, capability) {
 
   if (action.origin === "hermes") {
     return { dispatched: false, reason: "hermes_origin_loop_guard" };
+  }
+
+  if (capability?.kind === "agentic" && capability?.target === "coding-agent") {
+    const missionGuard = await guardCodingAgentMission(action);
+    if (!missionGuard.ok) {
+      return {
+        dispatched: false,
+        target: "coding-agent",
+        reason: missionGuard.reason,
+        errors: missionGuard.errors,
+        mission: missionGuard.mission,
+        retryable: missionGuard.retryable === true
+      };
+    }
+    action = actionWithMission(action, missionGuard.mission);
   }
 
   const dispatch = await createHermesBridgeRun(action);
@@ -1573,7 +1676,9 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
             dispatch
           };
         }
-        await upsertHermesAction(storePath, action);
+        if (!dispatch.retryable) {
+          await upsertHermesAction(storePath, action);
+        }
         json(response, 202, {
           accepted: true,
           action,

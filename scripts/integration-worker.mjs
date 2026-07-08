@@ -19,6 +19,14 @@ function envNumber(name, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function envBoolean(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined || value === "") {
+    return fallback;
+  }
+  return !["0", "false", "no", "off"].includes(value.toLowerCase());
+}
+
 function authHeaders(token) {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
@@ -109,10 +117,12 @@ async function readJsonFeed(filePath) {
   return Array.isArray(payload) ? payload : [payload];
 }
 
-async function ingestJsonFeed({ source, envName }) {
-  const filePath = process.env[envName];
+async function ingestJsonFeed({ source, envName, fallbackEnvNames = [] }) {
+  const envNames = [envName, ...fallbackEnvNames];
+  const configuredEnvName = envNames.find((name) => process.env[name]);
+  const filePath = configuredEnvName ? process.env[configuredEnvName] : undefined;
   if (!filePath) {
-    return { source, skipped: true, reason: `${envName} is not configured` };
+    return { source, skipped: true, reason: `${envNames.join(" or ")} is not configured` };
   }
 
   const items = await readJsonFeed(filePath);
@@ -673,7 +683,11 @@ export async function runConfiguredIngestions(options = {}) {
   }
   for (const feed of [
     { source: "hotel-rate-finder", envName: "HOTEL_RATE_FINDER_EVENTS_FILE" },
-    { source: "flight-searcher", envName: "FLIGHT_SEARCHER_EVENTS_FILE" },
+    {
+      source: "flight-searcher",
+      envName: "FLIGHTS_EXTENSION_EVENTS_FILE",
+      fallbackEnvNames: ["FLIGHT_SEARCHER_EVENTS_FILE"]
+    },
     { source: "plaid", envName: "PLAID_EVENTS_FILE" },
     { source: "gmail-intake", envName: "GMAIL_INTAKE_EVENTS_FILE" }
   ]) {
@@ -702,12 +716,13 @@ export async function runConfiguredIngestions(options = {}) {
   }
   if (
     process.env.CODING_AGENT_RECONCILE_ENABLED === "true" &&
-    (options.startup || process.env.CODING_AGENT_RECONCILE_WATCHDOG_ENABLED === "true")
+    (options.startup || envBoolean("CODING_AGENT_RECONCILE_WATCHDOG_ENABLED", true))
   ) {
     results.push(
       await runIngestion("coding-agent-reconcile", () =>
         postDashboardAction("/api/apps/coding-agent/reconcile", {
-          staleRunningMinutes: envNumber("CODING_AGENT_STALE_RUNNING_MINUTES", 90)
+          staleRunningMinutes: envNumber("CODING_AGENT_STALE_RUNNING_MINUTES", 90),
+          runQuietMinutes: envNumber("CODING_AGENT_RUN_QUIET_MINUTES", 10)
         })
       )
     );
