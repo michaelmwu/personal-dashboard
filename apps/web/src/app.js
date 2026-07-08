@@ -20,6 +20,7 @@ let transactionState = {
   limit: 75,
   offset: 0
 };
+let transactionRefreshToken = 0;
 
 async function loadConfig() {
   const response = await fetch("/config.json");
@@ -231,7 +232,16 @@ function localAggregate(dashboard, groupBy) {
       groupBy === "month"
         ? String(transaction.date ?? "").slice(0, 7) || "Unknown month"
         : transaction.category || "Unclassified";
-    const existing = groups.get(key) ?? { key, count: 0, spend: 0, credits: 0, net: 0 };
+    const currency = transaction.isoCurrencyCode ?? transaction.unofficialCurrencyCode ?? "USD";
+    const groupId = `${key}\u0000${currency}`;
+    const existing = groups.get(groupId) ?? {
+      key,
+      currency,
+      count: 0,
+      spend: 0,
+      credits: 0,
+      net: 0
+    };
     const amount = Number(transaction.amount ?? 0);
     existing.count += 1;
     existing.net += amount;
@@ -240,7 +250,7 @@ function localAggregate(dashboard, groupBy) {
     } else {
       existing.credits += Math.abs(amount);
     }
-    groups.set(key, existing);
+    groups.set(groupId, existing);
   }
   return { groupBy, total: dashboard.transactions?.length ?? 0, groups: [...groups.values()] };
 }
@@ -310,9 +320,9 @@ function renderAggregate(targetId, aggregate) {
             <span class="pill">${number.format(group.count)}</span>
             <div>
               <strong>${escapeHtml(group.key)}</strong>
-              <p>${signedMoney(group.spend)} spend · ${signedMoney(group.credits)} credits</p>
+              <p>${signedMoney(group.spend, group.currency ?? "USD")} spend · ${signedMoney(group.credits, group.currency ?? "USD")} credits</p>
             </div>
-            <small>${signedMoney(group.net)}</small>
+            <small>${signedMoney(group.net, group.currency ?? "USD")}</small>
           </article>
         `
       )
@@ -761,15 +771,33 @@ function markActiveSortButton() {
 }
 
 async function refreshTransactionView() {
-  const [transactions, categoryAggregate, monthAggregate] = await Promise.all([
-    loadTransactions(appConfig.apiBaseUrl),
-    loadTransactionAggregate(appConfig.apiBaseUrl, "category"),
-    loadTransactionAggregate(appConfig.apiBaseUrl, "month")
-  ]);
-  renderTransactions(transactions);
-  renderAggregate("aggregate-categories", categoryAggregate);
-  renderAggregate("aggregate-months", monthAggregate);
-  markActiveSortButton();
+  transactionRefreshToken += 1;
+  const refreshToken = transactionRefreshToken;
+  const requestedState = JSON.stringify(transactionState);
+  try {
+    const [transactions, categoryAggregate, monthAggregate] = await Promise.all([
+      loadTransactions(appConfig.apiBaseUrl),
+      loadTransactionAggregate(appConfig.apiBaseUrl, "category"),
+      loadTransactionAggregate(appConfig.apiBaseUrl, "month")
+    ]);
+    if (
+      refreshToken !== transactionRefreshToken ||
+      requestedState !== JSON.stringify(transactionState)
+    ) {
+      return;
+    }
+    renderTransactions(transactions);
+    renderAggregate("aggregate-categories", categoryAggregate);
+    renderAggregate("aggregate-months", monthAggregate);
+    markActiveSortButton();
+  } catch (error) {
+    if (
+      refreshToken === transactionRefreshToken &&
+      requestedState === JSON.stringify(transactionState)
+    ) {
+      reportTransactionError(error);
+    }
+  }
 }
 
 function reportTransactionError(error) {
@@ -788,7 +816,7 @@ function setupTransactionControls() {
   for (const id of filterIds) {
     byId(id).addEventListener("input", () => {
       updateTransactionStateFromControls();
-      refreshTransactionView().catch(reportTransactionError);
+      refreshTransactionView();
     });
   }
   for (const button of document.querySelectorAll("[data-sort]")) {
@@ -800,7 +828,7 @@ function setupTransactionControls() {
         direction:
           transactionState.sort === sort && transactionState.direction === "desc" ? "asc" : "desc"
       };
-      refreshTransactionView().catch(reportTransactionError);
+      refreshTransactionView();
     });
   }
   markActiveSortButton();
