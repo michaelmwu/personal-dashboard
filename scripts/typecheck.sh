@@ -18,7 +18,10 @@ bun build \
   packages/integrations/registry.mjs \
   packages/integrations/sources.mjs \
   packages/storage/dashboard-store.mjs \
+  packages/storage/coding-agent-store.mjs \
+  packages/storage/run-evidence.mjs \
   scripts/integration-worker.mjs \
+  scripts/migrate-coding-agent-state.mjs \
   tests/contracts.test.mjs \
   tests/dev_script.test.mjs \
   tests/worktree_ports.test.mjs \

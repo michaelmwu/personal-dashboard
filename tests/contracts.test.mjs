@@ -89,6 +89,19 @@ import {
   upsertNormalizedEvent
 } from "../packages/storage/dashboard-store.mjs";
 import {
+  codingAgentStateStoreMode,
+  createCodingAgentJsonStore,
+  migrateCodingAgentJsonToStore
+} from "../packages/storage/coding-agent-store.mjs";
+import {
+  appendRunEvidenceEvent,
+  captureRunGitDiff,
+  deleteRunEvidence,
+  readRunEvidenceEvents,
+  runEvidenceRoot,
+  writeRunEvidenceArtifact
+} from "../packages/storage/run-evidence.mjs";
+import {
   discoverCodingAgentIssueTriage,
   discoverCodingAgentPrPickups,
   fetchCodingTaskPrSnapshot,
@@ -3139,6 +3152,114 @@ describe("contracts", () => {
     }
   });
 
+  test("coding agent executor records failed evidence when Bridge event streaming fails", async () => {
+    const taskId = `coding_stream_failed_${Date.now()}`;
+    const bridgeFetch = async (url, options = {}) => {
+      const path = new URL(url).pathname;
+      if (path === "/v1/runs" && options.method === "POST") {
+        return Response.json({ run_id: "run_stream_failed", status: "running" }, { status: 202 });
+      }
+      if (path === "/v1/runs/run_stream_failed/events") {
+        return Response.json({ error: "stream failed" }, { status: 500 });
+      }
+      return Response.json({ error: "not_found" }, { status: 404 });
+    };
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      await withMockBridge(bridgeFetch, async (clientFetch) => {
+        const register = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              id: taskId,
+              repo: "personal-dashboard",
+              githubRepo: "michaelmwu/personal-dashboard",
+              title: "Stream failed task",
+              status: "pr-open",
+              mission: {
+                goal: "Stream failed task",
+                context: "Verify failed Bridge events do not look completed.",
+                constraints: [],
+                allowedRepos: ["personal-dashboard"],
+                definitionOfDone: ["Evidence pack is failed."],
+                validationCommands: ["bun test tests/contracts.test.mjs"],
+                rollback: "Revert the stream-failure task changes.",
+                status: "approved",
+                approvedBy: "michaelmwu",
+                approvalId: "approval-stream-failed"
+              }
+            })
+          }
+        );
+        expect(register.status).toBe(202);
+
+        const action = await clientFetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json",
+            "Idempotency-Key": `${taskId}_update`
+          },
+          body: JSON.stringify({
+            capabilityId: "update-coding-task",
+            origin: "dashboard",
+            payload: codingAgentExecutorPayload(
+              {
+                id: taskId,
+                repo: "personal-dashboard",
+                githubRepo: "michaelmwu/personal-dashboard",
+                title: "Stream failed task"
+              },
+              {
+                events: [{ kind: "review", state: "CHANGES_REQUESTED" }]
+              }
+            )
+          })
+        });
+        expect(action.status).toBe(202);
+
+        const tasksJson = await waitFor(async () => {
+          const tasks = await clientFetch(
+            `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`
+          );
+          const json = await tasks.json();
+          const task = json.tasks.find((candidate) => candidate.id === taskId);
+          return task?.queue?.some(
+            (item) => item.kind === "coding-evidence-pack" && item.status === "failed"
+          )
+            ? json
+            : false;
+        });
+        expect(tasksJson.tasks).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: taskId,
+              evidencePacks: expect.arrayContaining([
+                expect.objectContaining({
+                  runId: "run_stream_failed",
+                  status: "failed",
+                  stream: expect.objectContaining({
+                    streamed: false,
+                    statusCode: 500
+                  })
+                })
+              ])
+            })
+          ])
+        );
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
   test("coding agent validation gates PR-ready transitions", () => {
     const runningTask = codingTaskItem(
       {
@@ -5673,6 +5794,264 @@ describe("contracts", () => {
         })
       ])
     );
+  });
+
+  test("coding agent store migrates JSON overlay items through the storage facade", async () => {
+    expect(codingAgentStateStoreMode({ DATABASE_URL: "postgres://example" })).toBe("postgres");
+    expect(
+      codingAgentStateStoreMode({
+        DATABASE_URL: "postgres://example",
+        DASHBOARD_DATA_FILE: "/tmp/dashboard-store.json"
+      })
+    ).toBe("json");
+    expect(codingAgentStateStoreMode({ CODING_AGENT_STATE_STORE: "postgres" })).toBe("postgres");
+
+    const sourcePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-coding-source-${Date.now()}.json`;
+    const targetPath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-coding-target-${Date.now()}.json`;
+    await upsertAppItem(sourcePath, {
+      id: "coding_migrate_task",
+      app: "coding-agent",
+      type: "coding-task",
+      externalId: "coding_migrate_task",
+      status: "running",
+      title: "Migrate coding task",
+      payload: {
+        id: "coding_migrate_task",
+        repo: "personal-dashboard",
+        status: "running",
+        queue: [{ id: "queue_1", kind: "user-request" }]
+      }
+    });
+    await upsertAppItem(sourcePath, {
+      id: "coding_migrate_memory",
+      app: "coding-agent",
+      type: "coding-regression-memory",
+      externalId: "coding_migrate_memory",
+      status: "active",
+      payload: {
+        id: "coding_migrate_memory",
+        repo: "personal-dashboard",
+        rootCause: "Remember this failure."
+      }
+    });
+
+    const targetStore = createCodingAgentJsonStore(targetPath);
+    expect(
+      await migrateCodingAgentJsonToStore({ filePath: sourcePath, store: targetStore })
+    ).toEqual({
+      migrated: 2,
+      mode: "json"
+    });
+    await expect(targetStore.listItems({ type: "coding-task" })).resolves.toEqual([
+      expect.objectContaining({
+        id: "coding_migrate_task",
+        payload: expect.objectContaining({
+          queue: [{ id: "queue_1", kind: "user-request" }]
+        })
+      })
+    ]);
+    await expect(targetStore.listItems({ type: "coding-regression-memory" })).resolves.toEqual([
+      expect.objectContaining({
+        id: "coding_migrate_memory"
+      })
+    ]);
+  });
+
+  test("dashboard snapshots include persisted coding-agent items", async () => {
+    const taskId = `coding_dashboard_snapshot_${Date.now()}`;
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      const register = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          id: taskId,
+          repo: "personal-dashboard",
+          title: "Snapshot coding task",
+          status: "queued"
+        })
+      });
+      expect(register.status).toBe(202);
+
+      const dashboard = await fetch(`http://127.0.0.1:${apiPort}/api/dashboard`, {
+        headers: { Authorization: "Bearer dashboard-token" }
+      });
+      expect(dashboard.status).toBe(200);
+      const json = await dashboard.json();
+      expect(json.apps.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            app: "coding-agent",
+            type: "coding-task",
+            id: taskId
+          })
+        ])
+      );
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("coding run evidence writes event logs, diff artifacts, and retention cleanup", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "dashboard-run-evidence-"));
+    try {
+      expect(runEvidenceRoot(rootDir, { CODING_AGENT_RUN_EVIDENCE_DIR: "" })).toBe(
+        join(rootDir, ".data", "runs")
+      );
+      await appendRunEvidenceEvent(rootDir, "run/evidence:1", {
+        event: "run.output",
+        data: { text: "hello" }
+      });
+      await writeRunEvidenceArtifact(rootDir, "run/evidence:1", "validation.json", "{}\n");
+      const gitCalls = [];
+      const diff = await captureRunGitDiff(rootDir, "run/evidence:1", "/tmp/worktree", {
+        command: async (executable, args, options) => {
+          expect(executable).toBe("git");
+          expect(options.cwd).toBe("/tmp/worktree");
+          gitCalls.push(args);
+          if (args[0] === "diff" && args.at(-1) === "origin/main...HEAD") {
+            return { stdout: "diff --git a/committed.js b/committed.js\n" };
+          }
+          if (args[0] === "diff" && args.at(-1) === "HEAD") {
+            return { stdout: "diff --git a/app.js b/app.js\n" };
+          }
+          if (args[0] === "ls-files") {
+            return { stdout: "new-file.js\n" };
+          }
+          if (args[0] === "diff" && args.includes("--no-index")) {
+            const error = new Error("files differ");
+            error.code = 1;
+            error.stdout = "diff --git a/dev/null b/new-file.js\n";
+            throw error;
+          }
+          return { stdout: "" };
+        }
+      });
+
+      expect(diff).toMatchObject({ captured: true, bytes: expect.any(Number) });
+      expect(gitCalls).toEqual([
+        ["diff", "--no-ext-diff", "--binary", "HEAD"],
+        ["ls-files", "--others", "--exclude-standard"],
+        ["diff", "--no-index", "--binary", "--", "/dev/null", "new-file.js"]
+      ]);
+      const baseDiff = await captureRunGitDiff(rootDir, "run/evidence:base", "/tmp/worktree", {
+        baseRef: "origin/main",
+        command: async (executable, args, options) => {
+          expect(executable).toBe("git");
+          expect(options.cwd).toBe("/tmp/worktree");
+          if (args.at(-1) === "origin/main...HEAD") {
+            return { stdout: "diff --git a/committed.js b/committed.js\n" };
+          }
+          if (args[0] === "ls-files") {
+            return { stdout: "" };
+          }
+          return { stdout: "" };
+        }
+      });
+      expect(baseDiff).toMatchObject({ captured: true });
+      expect(await readRunEvidenceEvents(rootDir, "run/evidence:1")).toEqual([
+        expect.objectContaining({
+          runId: "run/evidence:1",
+          event: {
+            event: "run.output",
+            data: { text: "hello" }
+          }
+        })
+      ]);
+
+      await deleteRunEvidence(rootDir, "run/evidence:1");
+      await expect(readRunEvidenceEvents(rootDir, "run/evidence:1")).rejects.toThrow();
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  test("coding task archive removes run evidence unless retention is requested", async () => {
+    const previousEvidenceDir = process.env.CODING_AGENT_RUN_EVIDENCE_DIR;
+    const rootDir = await mkdtemp(join(tmpdir(), "dashboard-archive-evidence-"));
+    process.env.CODING_AGENT_RUN_EVIDENCE_DIR = join(rootDir, "runs");
+    const taskId = `coding_archive_evidence_${Date.now()}`;
+    const runId = `run_archive_${Date.now()}`;
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      await appendRunEvidenceEvent(".", runId, { event: "run.output", data: { text: "done" } });
+      const register = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          id: taskId,
+          repo: "personal-dashboard",
+          title: "Archive evidence task",
+          status: "running",
+          latestHermesRunId: runId,
+          evidencePacks: [{ runId }]
+        })
+      });
+      expect(register.status).toBe(202);
+
+      const archive = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/archive`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ taskId, reason: "done" })
+      });
+      expect(archive.status).toBe(202);
+      await expect(readRunEvidenceEvents(".", runId)).rejects.toThrow();
+
+      const keepRunId = `${runId}_keep`;
+      await appendRunEvidenceEvent(".", keepRunId, {
+        event: "run.output",
+        data: { text: "keep" }
+      });
+      const keepTask = `${taskId}_keep`;
+      const keepRegister = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          id: keepTask,
+          repo: "personal-dashboard",
+          title: "Keep evidence task",
+          status: "running",
+          latestHermesRunId: keepRunId,
+          keepEvidence: true,
+          evidencePacks: [{ runId: keepRunId }]
+        })
+      });
+      expect(keepRegister.status).toBe(202);
+      const keepArchive = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/archive`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ taskId: keepTask, reason: "done" })
+      });
+      expect(keepArchive.status).toBe(202);
+      await expect(readRunEvidenceEvents(".", keepRunId)).resolves.toHaveLength(1);
+    } finally {
+      await closeServer(apiServer);
+      if (previousEvidenceDir === undefined) {
+        delete process.env.CODING_AGENT_RUN_EVIDENCE_DIR;
+      } else {
+        process.env.CODING_AGENT_RUN_EVIDENCE_DIR = previousEvidenceDir;
+      }
+      await rm(rootDir, { recursive: true, force: true });
+    }
   });
 
   test("dashboard store patches app item payloads without replacing concurrent fields", async () => {

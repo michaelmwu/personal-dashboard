@@ -421,6 +421,8 @@ export function codingTaskItem(payload, existing, options = {}) {
         0,
       validationOverride:
         payload.validationOverride ?? payload.validation_override ?? previous.validationOverride,
+      evidencePacks: payload.evidencePacks ?? payload.evidence_packs ?? previous.evidencePacks,
+      keepEvidence: payload.keepEvidence ?? payload.keep_evidence ?? previous.keepEvidence,
       queue: payload.queue ?? previous.queue ?? [],
       history,
       status: requestedStatus,

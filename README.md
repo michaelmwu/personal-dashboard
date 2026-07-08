@@ -135,6 +135,15 @@ Coding Agent endpoints:
 - `POST /api/apps/coding-agent/archive`: archive a completed or abandoned task
   and its remaining queue items.
 
+Coding-agent state uses the JSON dashboard store by default for local
+development. Set `CODING_AGENT_STATE_STORE=postgres` with `DATABASE_URL` to move
+coding-agent items, task anchors, run status, and run events into Postgres; run
+`bun run migrate:coding-agent` once after configuring the database to backfill
+existing JSON records. Hermes run evidence is written under
+`CODING_AGENT_RUN_EVIDENCE_DIR` or `.data/runs` as NDJSON events plus final
+artifacts such as diffs and status output. Archiving a task removes its evidence
+packs unless the task has `keepEvidence=true`.
+
 Set `CODING_AGENT_ALLOWED_REPOS` to a comma-separated repo allowlist when
 enforcing PR-maintenance repo policy. `CODING_AGENT_BRANCH_PREFIX` defaults to
 `hermes`, and side-effecting maintenance actions such as push, PR creation,
