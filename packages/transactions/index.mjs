@@ -26,6 +26,18 @@ function transactionDate(transaction) {
   return transaction.date ?? transaction.authorizedDate ?? "";
 }
 
+function transactionCategory(transaction) {
+  return transaction.category ?? "Unclassified";
+}
+
+function transactionStatus(transaction) {
+  return transaction.status ?? "posted";
+}
+
+function transactionCurrency(transaction) {
+  return transaction.isoCurrencyCode ?? transaction.unofficialCurrencyCode ?? "USD";
+}
+
 function accountLabel(transaction, accountById = new Map()) {
   const account = accountById.get(transaction.accountId);
   return transaction.card ?? account?.name ?? transaction.accountId ?? "Unknown account";
@@ -95,13 +107,13 @@ export function transactionFacets(transactions, accounts = []) {
         count: (facets.accounts.get(accountId)?.count ?? 0) + 1
       });
     }
-    const category = transaction.category ?? "Unclassified";
+    const category = transactionCategory(transaction);
     facets.categories.set(category, {
       id: category,
       label: category,
       count: (facets.categories.get(category)?.count ?? 0) + 1
     });
-    const status = transaction.status ?? "posted";
+    const status = transactionStatus(transaction);
     facets.statuses.set(status, {
       id: status,
       label: status,
@@ -139,7 +151,7 @@ export function filterTransactions(transactions, query = {}, accounts = []) {
     const searchable = [
       transaction.merchant,
       transaction.name,
-      transaction.category,
+      transactionCategory(transaction),
       transaction.categoryDetailed,
       label,
       transaction.paymentChannel
@@ -151,8 +163,8 @@ export function filterTransactions(transactions, query = {}, accounts = []) {
       (!search || searchable.includes(search)) &&
       matchesList(transaction.accountId, accountIds) &&
       matchesList(label, cards) &&
-      matchesList(transaction.category, categories) &&
-      matchesList(transaction.status, statuses) &&
+      matchesList(transactionCategory(transaction), categories) &&
+      matchesList(transactionStatus(transaction), statuses) &&
       matchesList(transaction.paymentChannel, paymentChannels) &&
       (startDate === undefined || (Number.isFinite(time) && time >= startDate)) &&
       (endDate === undefined || (Number.isFinite(time) && time <= endDate)) &&
@@ -173,12 +185,12 @@ export function sortTransactions(transactions, query = {}, accounts = []) {
       case "amount":
         return Number(transaction.amount ?? 0);
       case "category":
-        return normalizedText(transaction.category);
+        return normalizedText(transactionCategory(transaction));
       case "card":
       case "account":
         return normalizedText(accountLabel(transaction, accountById));
       case "status":
-        return normalizedText(transaction.status);
+        return normalizedText(transactionStatus(transaction));
       default:
         return dateValue(transactionDate(transaction));
     }
@@ -228,15 +240,24 @@ export function aggregateTransactions(transactions, query = {}, accounts = []) {
       case "month":
         return transactionDate(transaction).slice(0, 7) || "Unknown month";
       case "status":
-        return transaction.status ?? "posted";
+        return transactionStatus(transaction);
       default:
-        return transaction.category ?? "Unclassified";
+        return transactionCategory(transaction);
     }
   };
 
   for (const transaction of filtered) {
     const key = keyFor(transaction);
-    const existing = groups.get(key) ?? { key, count: 0, spend: 0, credits: 0, net: 0 };
+    const currency = transactionCurrency(transaction);
+    const groupId = `${key}\u0000${currency}`;
+    const existing = groups.get(groupId) ?? {
+      key,
+      currency,
+      count: 0,
+      spend: 0,
+      credits: 0,
+      net: 0
+    };
     const amount = Number(transaction.amount ?? 0);
     existing.count += 1;
     existing.net += amount;
@@ -245,7 +266,7 @@ export function aggregateTransactions(transactions, query = {}, accounts = []) {
     } else {
       existing.credits += Math.abs(amount);
     }
-    groups.set(key, existing);
+    groups.set(groupId, existing);
   }
 
   return {

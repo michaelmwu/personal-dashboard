@@ -5250,6 +5250,7 @@ describe("contracts", () => {
     expect(aggregate.groups).toEqual([
       expect.objectContaining({
         key: "TRAVEL",
+        currency: "USD",
         count: 2,
         spend: 812.12,
         credits: 50
@@ -5273,6 +5274,43 @@ describe("contracts", () => {
         expect.objectContaining({ merchant: "United Airlines" })
       ]
     });
+
+    const legacyRows = [
+      {
+        id: "legacy_txn_001",
+        merchant: "Legacy Import",
+        amount: 42,
+        date: "2026-06-01"
+      }
+    ];
+    expect(queryTransactions(legacyRows, { category: "Unclassified" }).items).toHaveLength(1);
+    expect(queryTransactions(legacyRows, { status: "posted" }).items).toHaveLength(1);
+
+    const mixedCurrency = aggregateTransactions(
+      [
+        {
+          id: "txn_usd_001",
+          merchant: "Cafe USD",
+          amount: 10,
+          category: "FOOD_AND_DRINK",
+          isoCurrencyCode: "USD"
+        },
+        {
+          id: "txn_eur_001",
+          merchant: "Cafe EUR",
+          amount: 10,
+          category: "FOOD_AND_DRINK",
+          isoCurrencyCode: "EUR"
+        }
+      ],
+      { groupBy: "category" }
+    );
+    expect(mixedCurrency.groups).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "FOOD_AND_DRINK", currency: "USD", spend: 10 }),
+        expect.objectContaining({ key: "FOOD_AND_DRINK", currency: "EUR", spend: 10 })
+      ])
+    );
   });
 
   test("Hotel Rate Finder client creates saved searches, runs jobs, and polls status", async () => {
