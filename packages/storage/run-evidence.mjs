@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_RUN_EVIDENCE_RETENTION_DAYS = 30;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function safeRunId(runId) {
   return String(runId ?? "unknown").replace(/[^a-zA-Z0-9_.-]/g, "_");
@@ -16,6 +18,15 @@ export function runEvidenceRoot(root, env = process.env) {
 
 export function runEvidenceDir(root, runId, env = process.env) {
   return join(runEvidenceRoot(root, env), safeRunId(runId));
+}
+
+export function runEvidenceRetentionDays(env = process.env) {
+  const configured = String(env.CODING_AGENT_RUN_EVIDENCE_RETENTION_DAYS ?? "").trim();
+  if (!configured) {
+    return DEFAULT_RUN_EVIDENCE_RETENTION_DAYS;
+  }
+  const days = Number.parseInt(configured, 10);
+  return Number.isFinite(days) ? days : DEFAULT_RUN_EVIDENCE_RETENTION_DAYS;
 }
 
 export async function appendRunEvidenceEvent(root, runId, event, metadata = {}) {
@@ -106,4 +117,76 @@ export async function captureRunGitDiff(root, runId, worktreeDir, options = {}) 
 
 export async function deleteRunEvidence(root, runId, env = process.env) {
   await rm(runEvidenceDir(root, runId, env), { recursive: true, force: true });
+}
+
+function taskPayload(item) {
+  return item?.payload ?? item ?? {};
+}
+
+function evidencePackCompletedAt(task, pack) {
+  return (
+    pack?.completedAt ??
+    pack?.completed_at ??
+    pack?.createdAt ??
+    pack?.created_at ??
+    task.archivedAt ??
+    task.archived_at ??
+    task.updatedAt ??
+    task.updated_at
+  );
+}
+
+export async function pruneRunEvidence(root, tasks = [], options = {}) {
+  const env = options.env ?? process.env;
+  const configuredRetentionDays =
+    options.retentionDays ?? options.retention_days ?? runEvidenceRetentionDays(env);
+  const retentionDays =
+    typeof configuredRetentionDays === "number"
+      ? configuredRetentionDays
+      : Number.parseInt(configuredRetentionDays, 10);
+  if (!Number.isFinite(retentionDays) || retentionDays < 0) {
+    return {
+      pruned: 0,
+      runIds: [],
+      skipped: true,
+      reason: "retention_disabled",
+      retentionDays
+    };
+  }
+
+  const parsedNowMs = Date.parse(options.now ?? new Date().toISOString());
+  const nowMs = Number.isFinite(parsedNowMs) ? parsedNowMs : Date.now();
+  const cutoffMs = nowMs - retentionDays * DAY_MS;
+  const expiredRunIds = new Set();
+
+  for (const item of tasks) {
+    const task = taskPayload(item);
+    if (task.keepEvidence === true || task.keep_evidence === true) {
+      continue;
+    }
+    for (const pack of task.evidencePacks ?? task.evidence_packs ?? []) {
+      if (!pack?.runId && !pack?.run_id) {
+        continue;
+      }
+      const completedMs = Date.parse(evidencePackCompletedAt(task, pack) ?? "");
+      if (Number.isFinite(completedMs) && completedMs <= cutoffMs) {
+        expiredRunIds.add(pack.runId ?? pack.run_id);
+      }
+    }
+  }
+
+  const runIds = [...expiredRunIds];
+  if (options.dryRun !== true) {
+    for (const runId of runIds) {
+      await deleteRunEvidence(root, runId, env);
+    }
+  }
+
+  return {
+    pruned: runIds.length,
+    runIds,
+    retentionDays,
+    cutoff: new Date(cutoffMs).toISOString(),
+    dryRun: options.dryRun === true
+  };
 }

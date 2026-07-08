@@ -98,6 +98,7 @@ import {
   appendRunEvidenceEvent,
   captureRunGitDiff,
   deleteRunEvidence,
+  pruneRunEvidence,
   readRunEvidenceEvents,
   runEvidenceRoot,
   writeRunEvidenceArtifact
@@ -2465,6 +2466,16 @@ describe("contracts", () => {
           artifacts: ["artifact://logs/unit"],
           nextAction: "Approve deployment secret and continue"
         },
+        evidencePacks: [
+          {
+            runId: "run_handoff_001",
+            status: "completed",
+            completedAt: "2026-07-06T17:03:00.000Z",
+            evidenceDir: "/tmp/runs/run_handoff_001",
+            eventsPath: "/tmp/runs/run_handoff_001/events.ndjson",
+            diff: { path: "/tmp/runs/run_handoff_001/final.diff" }
+          }
+        ],
         checks: {
           checkRuns: [
             {
@@ -2533,11 +2544,23 @@ describe("contracts", () => {
             summary: "Needs secret refresh."
           }
         ],
+        evidencePacks: [
+          {
+            runId: "run_handoff_001",
+            status: "completed",
+            eventsPath: "/tmp/runs/run_handoff_001/events.ndjson",
+            diffPath: "/tmp/runs/run_handoff_001/final.diff",
+            finalStatusPath: "/tmp/runs/run_handoff_001/final-status.json"
+          }
+        ],
         artifacts: [
           "https://github.com/michaelmwu/personal-dashboard/pull/88",
           "https://preview.example.test",
           "/tmp/coding-handoff-source",
-          "artifact://logs/unit"
+          "artifact://logs/unit",
+          "/tmp/runs/run_handoff_001/events.ndjson",
+          "/tmp/runs/run_handoff_001/final.diff",
+          "/tmp/runs/run_handoff_001/final-status.json"
         ]
       }
     });
@@ -3929,10 +3952,19 @@ describe("contracts", () => {
   test("coding agent reconciliation API persists task transitions and audit records", async () => {
     const orphanId = `coding_reconcile_orphan_${Date.now()}`;
     const staleId = `coding_reconcile_stale_${Date.now()}`;
+    const evidenceId = `coding_reconcile_evidence_${Date.now()}`;
+    const runId = `run_reconcile_evidence_${Date.now()}`;
+    const previousEvidenceDir = process.env.CODING_AGENT_RUN_EVIDENCE_DIR;
+    const rootDir = await mkdtemp(join(tmpdir(), "dashboard-reconcile-evidence-"));
+    process.env.CODING_AGENT_RUN_EVIDENCE_DIR = join(rootDir, "runs");
     const apiServer = createApiServer({ apiToken: "dashboard-token" });
     const apiPort = await listen(apiServer);
 
     try {
+      await appendRunEvidenceEvent(".", runId, {
+        event: "run.output",
+        data: { text: "old evidence" }
+      });
       for (const payload of [
         {
           id: orphanId,
@@ -3946,6 +3978,19 @@ describe("contracts", () => {
           title: "API stale task",
           status: "running",
           latestHermesRunId: "run_api_stale"
+        },
+        {
+          id: evidenceId,
+          repo: "personal-dashboard",
+          title: "API evidence retention task",
+          status: "queued",
+          evidencePacks: [
+            {
+              runId,
+              status: "completed",
+              completedAt: "2026-05-01T00:00:00.000Z"
+            }
+          ]
         }
       ]) {
         const response = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`, {
@@ -3967,7 +4012,9 @@ describe("contracts", () => {
         },
         body: JSON.stringify({
           id: orphanId,
-          staleRunningMinutes: 0
+          staleRunningMinutes: 0,
+          evidenceRetentionDays: 30,
+          now: "2026-07-08T00:00:00.000Z"
         })
       });
       expect(reconcile.status).toBe(202);
@@ -3989,8 +4036,13 @@ describe("contracts", () => {
         audit: {
           requestId: orphanId,
           providerMutationAllowed: false
+        },
+        evidenceRetention: {
+          pruned: expect.any(Number),
+          runIds: expect.arrayContaining([runId])
         }
       });
+      await expect(readRunEvidenceEvents(".", runId)).rejects.toThrow();
 
       const tasks = await fetch(
         `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks?includeArchived=true`
@@ -4028,6 +4080,12 @@ describe("contracts", () => {
       });
     } finally {
       await closeServer(apiServer);
+      if (previousEvidenceDir === undefined) {
+        delete process.env.CODING_AGENT_RUN_EVIDENCE_DIR;
+      } else {
+        process.env.CODING_AGENT_RUN_EVIDENCE_DIR = previousEvidenceDir;
+      }
+      await rm(rootDir, { recursive: true, force: true });
     }
   });
 
@@ -6118,6 +6176,46 @@ describe("contracts", () => {
 
       await deleteRunEvidence(rootDir, "run/evidence:1");
       await expect(readRunEvidenceEvents(rootDir, "run/evidence:1")).rejects.toThrow();
+
+      await appendRunEvidenceEvent(rootDir, "run_old", { event: "run.output" });
+      await appendRunEvidenceEvent(rootDir, "run_new", { event: "run.output" });
+      await appendRunEvidenceEvent(rootDir, "run_keep", { event: "run.output" });
+      const prune = await pruneRunEvidence(
+        rootDir,
+        [
+          {
+            payload: {
+              id: "task_with_expired_evidence",
+              evidencePacks: [
+                { runId: "run_old", completedAt: "2026-05-01T00:00:00.000Z" },
+                { runId: "run_new", completedAt: "2026-07-01T00:00:00.000Z" }
+              ]
+            }
+          },
+          {
+            payload: {
+              id: "task_with_retained_evidence",
+              keepEvidence: true,
+              evidencePacks: [{ runId: "run_keep", completedAt: "2026-05-01T00:00:00.000Z" }]
+            }
+          }
+        ],
+        { now: "2026-07-08T00:00:00.000Z", retentionDays: 30 }
+      );
+      expect(prune).toMatchObject({
+        pruned: 1,
+        runIds: ["run_old"],
+        retentionDays: 30,
+        cutoff: "2026-06-08T00:00:00.000Z"
+      });
+      await expect(readRunEvidenceEvents(rootDir, "run_old")).rejects.toThrow();
+      await expect(readRunEvidenceEvents(rootDir, "run_new")).resolves.toHaveLength(1);
+      await expect(readRunEvidenceEvents(rootDir, "run_keep")).resolves.toHaveLength(1);
+
+      await expect(pruneRunEvidence(rootDir, [], { retentionDays: -1 })).resolves.toMatchObject({
+        skipped: true,
+        reason: "retention_disabled"
+      });
     } finally {
       await rm(rootDir, { recursive: true, force: true });
     }

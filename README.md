@@ -142,7 +142,9 @@ coding-agent items, task anchors, run status, and run events into Postgres; run
 existing JSON records. Hermes run evidence is written under
 `CODING_AGENT_RUN_EVIDENCE_DIR` or `.data/runs` as NDJSON events plus final
 artifacts such as diffs and status output. Archiving a task removes its evidence
-packs unless the task has `keepEvidence=true`.
+packs unless the task has `keepEvidence=true`. Reconciliation also prunes
+evidence packs older than `CODING_AGENT_RUN_EVIDENCE_RETENTION_DAYS`, which
+defaults to 30 days; set it to `-1` to disable age-based pruning.
 
 Set `CODING_AGENT_ALLOWED_REPOS` to a comma-separated repo allowlist when
 enforcing PR-maintenance repo policy. `CODING_AGENT_BRANCH_PREFIX` defaults to

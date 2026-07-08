@@ -1815,6 +1815,15 @@ export function summarizeCodingTaskHandoff(existing, payload = {}, options = {})
     item,
     status: task.mission?.definitionOfDoneStatus?.[item] ?? "unknown"
   }));
+  const evidencePacks = (task.evidencePacks ?? []).map((pack) => ({
+    runId: pack.runId,
+    status: pack.status,
+    completedAt: pack.completedAt,
+    evidenceDir: pack.evidenceDir,
+    eventsPath: pack.eventsPath,
+    diffPath: pack.diff?.path,
+    finalStatusPath: pack.evidenceDir ? `${pack.evidenceDir}/final-status.json` : undefined
+  }));
   const requestId = payload.id ?? payload.requestId ?? payload.request_id;
   const id =
     payload.summaryId ??
@@ -1857,11 +1866,15 @@ export function summarizeCodingTaskHandoff(existing, payload = {}, options = {})
       latestEvents,
       mission: task.mission,
       definitionOfDone,
+      evidencePacks,
       artifacts: [
         task.prUrl,
         task.previewUrl,
         task.worktreeDir,
-        ...(task.handoff?.artifacts ?? [])
+        ...(task.handoff?.artifacts ?? []),
+        ...evidencePacks.flatMap((pack) =>
+          [pack.eventsPath, pack.diffPath, pack.finalStatusPath].filter(Boolean)
+        )
       ].filter(Boolean),
       providerMutationAllowed: false,
       createdAt: now
