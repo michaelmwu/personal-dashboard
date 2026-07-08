@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
@@ -98,6 +99,30 @@ function listen(server) {
 function closeServer(server) {
   return new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
+  });
+}
+
+function waitForOutput(child, pattern) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${pattern}`)), 5000);
+    const chunks = [];
+    child.stdout.on("data", (chunk) => {
+      chunks.push(String(chunk));
+      if (chunks.join("").includes(pattern)) {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      if (!chunks.join("").includes(pattern)) {
+        clearTimeout(timeout);
+        reject(new Error(`Child exited before ${pattern}: code=${code} signal=${signal}`));
+      }
+    });
   });
 }
 
@@ -4704,6 +4729,80 @@ describe("contracts", () => {
     });
     const items = await listAppItems(filePath, { app: "coding-agent", type: "coding-task" });
     expect(items.map((item) => item.id).sort()).toEqual(["task-after-restart", "task-before-kill"]);
+  });
+
+  test("dashboard store survives a killed writer process", async () => {
+    const filePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-kill9-store-${Date.now()}.json`;
+    await upsertAppItem(filePath, {
+      id: "task-before-kill9",
+      app: "coding-agent",
+      type: "coding-task",
+      status: "running",
+      payload: {
+        id: "task-before-kill9",
+        repo: "personal-dashboard"
+      }
+    });
+
+    const child = spawn(
+      process.execPath,
+      [
+        "--eval",
+        `
+          import { upsertAppItem } from "./packages/storage/dashboard-store.mjs";
+          process.stdout.write("writer-started\\n");
+          await upsertAppItem(process.env.STORE_PATH, {
+            id: "task-killed-writer",
+            app: "coding-agent",
+            type: "coding-task",
+            status: "running",
+            payload: {
+              id: "task-killed-writer",
+              repo: "personal-dashboard",
+              blob: "x".repeat(32 * 1024 * 1024)
+            }
+          });
+          process.stdout.write("writer-finished\\n");
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+        `
+      ],
+      {
+        cwd: process.cwd(),
+        env: { ...process.env, STORE_PATH: filePath },
+        stdio: ["ignore", "pipe", "pipe"]
+      }
+    );
+    await waitForOutput(child, "writer-started");
+    child.kill("SIGKILL");
+    await new Promise((resolve) => child.once("exit", resolve));
+
+    const canonical = JSON.parse(await readFile(filePath, "utf8"));
+    expect(canonical.apps.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "task-before-kill9",
+          status: "running"
+        })
+      ])
+    );
+
+    await upsertAppItem(filePath, {
+      id: "task-after-kill9",
+      app: "coding-agent",
+      type: "coding-task",
+      status: "queued",
+      payload: {
+        id: "task-after-kill9",
+        repo: "personal-dashboard"
+      }
+    });
+    const items = await listAppItems(filePath, { app: "coding-agent", type: "coding-task" });
+    expect(items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "task-before-kill9" }),
+        expect.objectContaining({ id: "task-after-kill9" })
+      ])
+    );
   });
 
   test("integration worker records per-source errors without throwing", async () => {
