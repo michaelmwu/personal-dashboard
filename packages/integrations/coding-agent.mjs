@@ -47,6 +47,8 @@ export const CODING_AGENT_CONTROL_ACTIONS = [
   "handoff"
 ];
 
+export const CODING_VALIDATION_STATUSES = ["passed", "failed", "skipped"];
+
 export const CODING_AGENT_GOAL_MUTATION_ACTIONS = [
   "create-github-issue",
   "update-github-issue",
@@ -98,6 +100,7 @@ const LIFECYCLE_TRANSITIONS = {
     "archived"
   ],
   running: [
+    "needs-clarification",
     "paused",
     "pr-open",
     "changes-requested",
@@ -237,6 +240,11 @@ function existingPayload(existing) {
 
 function compactList(values = []) {
   return values.filter((value) => value !== undefined && value !== null && value !== "");
+}
+
+function numberOrZero(value) {
+  const parsed = Number.parseInt(value ?? 0, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
 export function normalizeCodingAgentPriority(priority = "normal") {
@@ -404,6 +412,15 @@ export function codingTaskItem(payload, existing, options = {}) {
         payload.lastCommentCursor ?? payload.last_comment_cursor ?? previous.lastCommentCursor,
       githubCursor: payload.githubCursor ?? payload.github_cursor ?? previous.githubCursor,
       latestPrEvents: payload.latestPrEvents ?? payload.latest_pr_events ?? previous.latestPrEvents,
+      latestValidation:
+        payload.latestValidation ?? payload.latest_validation ?? previous.latestValidation,
+      validationAttempts:
+        payload.validationAttempts ??
+        payload.validation_attempts ??
+        previous.validationAttempts ??
+        0,
+      validationOverride:
+        payload.validationOverride ?? payload.validation_override ?? previous.validationOverride,
       queue: payload.queue ?? previous.queue ?? [],
       history,
       status: requestedStatus,
@@ -431,6 +448,120 @@ export function inferPrStatus(payload, previousStatus = "pr-open") {
     return "changes-requested";
   }
   return normalizeCodingTaskStatus(previousStatus, "pr-open");
+}
+
+export function codingTaskValidationPassed(task = {}) {
+  const validation = task.latestValidation ?? task.latest_validation;
+  return Boolean(validation && validation.status === "passed" && validation.passed !== false);
+}
+
+export function normalizeCodingValidationResult(payload = {}, task = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const commands = Array.isArray(payload.commands) ? payload.commands : [];
+  const status = CODING_VALIDATION_STATUSES.includes(payload.status)
+    ? payload.status
+    : commands.length && commands.every((command) => command.exitCode === 0)
+      ? "passed"
+      : "failed";
+  const attempt =
+    numberOrZero(payload.attempt ?? payload.validationAttempt ?? task.validationAttempts) || 1;
+  const id =
+    payload.id ??
+    payload.validationId ??
+    payload.validation_id ??
+    `validation_${slug(task.id ?? payload.taskId ?? "task")}_${Date.parse(now) || Date.now()}_${attempt}`;
+  return {
+    id,
+    taskId: payload.taskId ?? payload.task_id ?? task.id,
+    runId: payload.runId ?? payload.run_id ?? task.latestHermesRunId ?? task.hermesRunId,
+    worktreeDir: payload.worktreeDir ?? payload.worktree_dir ?? task.worktreeDir,
+    status,
+    passed: status === "passed",
+    attempt,
+    commands: commands.map((command, index) => ({
+      index,
+      command: String(command.command ?? ""),
+      executable: command.executable,
+      args: command.args ?? [],
+      cwd: command.cwd,
+      exitCode: Number.isFinite(command.exitCode) ? command.exitCode : undefined,
+      signal: command.signal,
+      durationMs: Number.isFinite(command.durationMs) ? command.durationMs : undefined,
+      stdoutTail: command.stdoutTail ?? command.stdout_tail ?? "",
+      stderrTail: command.stderrTail ?? command.stderr_tail ?? "",
+      error: command.error
+    })),
+    summary: payload.summary,
+    createdAt: payload.createdAt ?? payload.created_at ?? now,
+    completedAt: payload.completedAt ?? payload.completed_at ?? now
+  };
+}
+
+export function applyCodingTaskValidation(existing, payload = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const previous = existingPayload(existing);
+  const latestValidation = normalizeCodingValidationResult(payload, previous, { now });
+  const validationAttempts =
+    latestValidation.status === "failed"
+      ? Math.max(numberOrZero(previous.validationAttempts), latestValidation.attempt)
+      : numberOrZero(previous.validationAttempts);
+  const requestedMaxRepairAttempts = Number.parseInt(
+    payload.maxRepairAttempts ?? payload.max_repair_attempts ?? 3,
+    10
+  );
+  const maxRepairAttempts =
+    Number.isFinite(requestedMaxRepairAttempts) && requestedMaxRepairAttempts >= 0
+      ? requestedMaxRepairAttempts
+      : 3;
+  const exhausted = latestValidation.status === "failed" && validationAttempts >= maxRepairAttempts;
+  const handoff = exhausted
+    ? {
+        blocker: "validation_failed",
+        attempted: latestValidation.commands.map((command) => command.command),
+        artifacts: [`validation:${latestValidation.id}`],
+        nextAction: "inspect validation failure before continuing",
+        createdAt: now
+      }
+    : previous.handoff;
+  const status =
+    latestValidation.status === "passed"
+      ? previous.status
+      : exhausted && previous.status === "running"
+        ? "needs-clarification"
+        : previous.status;
+
+  return enqueueCodingTaskItems(
+    existing,
+    {
+      status,
+      latestValidation,
+      validationAttempts,
+      handoff,
+      items: [
+        {
+          kind: "coding-validation",
+          status: latestValidation.status,
+          title: `Coding validation ${latestValidation.status}`,
+          approvalRequired: false,
+          payload: latestValidation
+        }
+      ]
+    },
+    { now }
+  );
+}
+
+function validationOverride(payload = {}, now = new Date().toISOString()) {
+  if (payload.overrideValidation !== true && payload.override_validation !== true) {
+    return undefined;
+  }
+  return {
+    overridden: true,
+    reason: payload.reason ?? payload.overrideReason ?? payload.override_reason,
+    approvedBy: payload.approvedBy ?? payload.approved_by ?? payload.requestedBy,
+    approvalId: payload.approvalId ?? payload.approval_id,
+    createdAt: now
+  };
 }
 
 export function codingAgentFixMode(events = []) {
@@ -608,19 +739,64 @@ export function codingAgentExecutorPayload(task, context = {}) {
 }
 
 export function applyPrStatus(existing, payload, options = {}) {
+  const now = options.now ?? new Date().toISOString();
   const previous = existingPayload(existing);
   const incomingEvents = payload.latestPrEvents ?? payload.latest_pr_events;
+  const requestedStatus = inferPrStatus(payload, previous.status ?? "pr-open");
+  const override = validationOverride(payload, now);
+  if (
+    previous.status === "running" &&
+    requestedStatus === "pr-open" &&
+    !codingTaskValidationPassed(previous) &&
+    !override
+  ) {
+    return enqueueCodingTaskItems(
+      existing,
+      {
+        ...payload,
+        latestPrEvents:
+          Array.isArray(incomingEvents) && incomingEvents.length > 0
+            ? incomingEvents
+            : previous.latestPrEvents,
+        status: "waiting-for-approval",
+        handoff: {
+          blocker: "validation_required",
+          attempted: ["sync-pr-status"],
+          artifacts: previous.latestValidation
+            ? [`validation:${previous.latestValidation.id}`]
+            : [],
+          nextAction: "run validate-coding-task or explicitly override validation",
+          createdAt: now
+        },
+        items: [
+          {
+            kind: "coding-validation-required",
+            status: "blocked",
+            title: "Validation required before PR-ready",
+            approvalRequired: true,
+            payload: {
+              requestedStatus,
+              latestValidation: previous.latestValidation,
+              providerMutationAllowed: false
+            }
+          }
+        ]
+      },
+      { now }
+    );
+  }
   return codingTaskItem(
     {
       ...payload,
+      validationOverride: override ?? previous.validationOverride,
       latestPrEvents:
         Array.isArray(incomingEvents) && incomingEvents.length > 0
           ? incomingEvents
           : previous.latestPrEvents,
-      status: inferPrStatus(payload, previous.status ?? "pr-open")
+      status: requestedStatus
     },
     existing,
-    options
+    { ...options, now }
   );
 }
 
@@ -1207,6 +1383,15 @@ export function applyCodingTaskControl(existing, payload = {}, options = {}) {
           createdAt: now
         }
       : previous.handoff;
+  const override = validationOverride(payload, now);
+  if (
+    action === "open-pr" &&
+    previous.status === "running" &&
+    !codingTaskValidationPassed(previous) &&
+    !override
+  ) {
+    return { ok: false, statusCode: 409, reason: "validation_required" };
+  }
   const status =
     action === "pause"
       ? "paused"
@@ -1214,16 +1399,19 @@ export function applyCodingTaskControl(existing, payload = {}, options = {}) {
         ? previous.prNumber
           ? "pr-open"
           : "running"
-        : action === "handoff"
-          ? "waiting-for-approval"
-          : action === "archive"
-            ? "archived"
-            : previous.status;
+        : action === "open-pr"
+          ? "pr-open"
+          : action === "handoff"
+            ? "waiting-for-approval"
+            : action === "archive"
+              ? "archived"
+              : previous.status;
   const item = enqueueCodingTaskItems(
     existing,
     {
       status,
       mission,
+      validationOverride: override ?? previous.validationOverride,
       latestControl: control,
       handoff,
       items: [

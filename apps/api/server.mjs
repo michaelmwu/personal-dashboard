@@ -25,6 +25,7 @@ import {
 } from "../../packages/integrations/hermes-bridge.mjs";
 import {
   applyPrStatus,
+  applyCodingTaskValidation,
   applyCodingTaskControl,
   archiveCodingTask,
   codingTaskMissionApproved,
@@ -329,6 +330,21 @@ async function syncCodingPrStatus(payload) {
   const item = applyPrStatus(existing, payload);
   await persistCodingTaskItem(item);
   return { ok: true, statusCode: 202, task: item.payload, item };
+}
+
+async function validateCodingTask(payload) {
+  const existing = await findCodingTask(payload);
+  if (!existing) {
+    return { ok: false, statusCode: 404, reason: "coding_task_not_found" };
+  }
+  const item = applyCodingTaskValidation(existing, payload);
+  await persistCodingTaskItem(item);
+  return {
+    ok: true,
+    statusCode: 202,
+    task: item.payload,
+    validation: item.payload.latestValidation
+  };
 }
 
 async function enqueueCodingTask(payload) {
@@ -778,6 +794,10 @@ async function dispatchDeterministicCapability(action, capability) {
   }
   if (capability.endpoint === "/api/apps/coding-agent/pr-status") {
     const response = await syncCodingPrStatus(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/validate") {
+    const response = await validateCodingTask(action.payload);
     return { dispatched: response.ok, target: capability.target, response };
   }
   if (capability.endpoint === "/api/apps/coding-agent/queue") {
@@ -1314,6 +1334,23 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         json(response, result.statusCode, {
           accepted: true,
           task: result.task
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/validate") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await validateCodingTask(await readJson(request));
+        if (!result.ok) {
+          error(response, result.statusCode, result.reason, "Registered coding task not found.");
+          return;
+        }
+        json(response, result.statusCode, {
+          accepted: true,
+          task: result.task,
+          validation: result.validation
         });
         return;
       }

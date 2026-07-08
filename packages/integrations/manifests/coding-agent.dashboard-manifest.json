@@ -151,6 +151,20 @@
       }
     },
     {
+      "id": "validate-coding-task",
+      "title": "Validate coding task",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/validate",
+      "description": "Persist deterministic validation command results for a coding task before it can move from running to PR-ready.",
+      "inputSchema": {
+        "taskId": "string",
+        "status": "string",
+        "commands": "array",
+        "maxRepairAttempts": "number?"
+      }
+    },
+    {
       "id": "enqueue-coding-task-item",
       "title": "Enqueue coding task item",
       "kind": "deterministic",
