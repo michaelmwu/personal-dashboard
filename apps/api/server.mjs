@@ -12,6 +12,7 @@ import {
 } from "../../packages/integrations/hermes.mjs";
 import {
   approveHermesBridgeRun,
+  bridgePromptForAction,
   createHermesBridgeRun,
   getHermesBridgeCapabilities,
   getHermesBridgeRun,
@@ -437,7 +438,10 @@ async function recordCodingTaskHermesRunEvent(action, runId, status, lastEventAt
 }
 
 function actionWithMission(action, mission) {
-  const prompt = action.payload?.prompt ?? "";
+  const prompt =
+    typeof action.payload?.prompt === "string" && action.payload.prompt.length > 0
+      ? action.payload.prompt
+      : bridgePromptForAction({ ...action, payload: { ...action.payload, mission: undefined } });
   const missionBlock = `Mission:\n${JSON.stringify(mission, null, 2)}`;
   return {
     ...action,
@@ -477,6 +481,7 @@ async function guardCodingAgentMission(action) {
     return {
       ok: false,
       reason: "mission_approval_required",
+      retryable: true,
       mission
     };
   }
@@ -712,7 +717,8 @@ async function dispatchHermesAction(action, capability) {
         target: "coding-agent",
         reason: missionGuard.reason,
         errors: missionGuard.errors,
-        mission: missionGuard.mission
+        mission: missionGuard.mission,
+        retryable: missionGuard.retryable === true
       };
     }
     action = actionWithMission(action, missionGuard.mission);
@@ -1670,7 +1676,9 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
             dispatch
           };
         }
-        await upsertHermesAction(storePath, action);
+        if (!dispatch.retryable) {
+          await upsertHermesAction(storePath, action);
+        }
         json(response, 202, {
           accepted: true,
           action,

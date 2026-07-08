@@ -1763,6 +1763,43 @@ describe("contracts", () => {
         });
         expect(codingTaskMissionApproved(approvedTask.task.mission)).toBe(true);
 
+        const approvedRetry = await clientFetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json",
+            "Idempotency-Key": `${taskId}_blocked_start`
+          },
+          body: JSON.stringify({
+            capabilityId: "start-coding-task",
+            origin: "dashboard",
+            payload: {
+              taskId,
+              repo: "personal-dashboard",
+              title: "Mission gated task",
+              prompt: "Require mission approval."
+            }
+          })
+        });
+        expect(approvedRetry.status).toBe(202);
+        expect(await approvedRetry.json()).toMatchObject({
+          dispatch: {
+            dispatched: true,
+            runId: "run_mission_001"
+          }
+        });
+        expect(bridgeRequests).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              path: "/v1/runs",
+              method: "POST",
+              body: expect.objectContaining({
+                input: expect.stringContaining("Require mission approval.")
+              })
+            })
+          ])
+        );
+
         const legacyTaskId = `${taskId}_legacy`;
         const legacyRegister = await clientFetch(
           `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`,
@@ -1906,6 +1943,45 @@ describe("contracts", () => {
         expect(bridgeRequests.find((request) => request.path === "/v1/runs").body.input).toContain(
           '"definitionOfDone"'
         );
+
+        bridgeRequests.length = 0;
+        const approvedUpdateWithoutPrompt = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/hermes/actions`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json",
+              "Idempotency-Key": `${taskId}_approved_update_without_prompt`
+            },
+            body: JSON.stringify({
+              capabilityId: "update-coding-task",
+              origin: "dashboard",
+              payload: {
+                taskId,
+                repo: "personal-dashboard",
+                events: [
+                  {
+                    kind: "review_comment",
+                    summary: "Preserve prompt fallback payload events."
+                  }
+                ]
+              }
+            })
+          }
+        );
+        expect(approvedUpdateWithoutPrompt.status).toBe(202);
+        expect(await approvedUpdateWithoutPrompt.json()).toMatchObject({
+          dispatch: {
+            dispatched: true,
+            runId: "run_mission_001"
+          }
+        });
+        const noPromptRun = bridgeRequests.find((request) => request.path === "/v1/runs");
+        expect(noPromptRun.body.input).toContain("Payload:");
+        expect(noPromptRun.body.input).toContain('"events"');
+        expect(noPromptRun.body.input).toContain("Preserve prompt fallback payload events.");
+        expect(noPromptRun.body.input).toContain("Mission:");
       });
     } finally {
       await closeServer(apiServer);
@@ -5451,12 +5527,82 @@ describe("contracts", () => {
     });
   });
 
+  test("integration worker accepts legacy flight-searcher event file env", async () => {
+    const previousFetch = globalThis.fetch;
+    const envKeys = [
+      "ASIA_TRAVEL_DEALS_API_BASE_URL",
+      "HOTEL_RATE_FINDER_EVENTS_FILE",
+      "FLIGHTS_EXTENSION_EVENTS_FILE",
+      "FLIGHT_SEARCHER_EVENTS_FILE",
+      "PLAID_EVENTS_FILE",
+      "GMAIL_INTAKE_EVENTS_FILE",
+      "PLAID_SYNC_ENABLED",
+      "HOTEL_RATE_SYNC_ENABLED",
+      "CODING_AGENT_PR_POLL_ENABLED",
+      "CODING_AGENT_PR_PICKUP_ENABLED",
+      "CODING_AGENT_ISSUE_TRIAGE_ENABLED",
+      "CODING_AGENT_RECONCILE_ENABLED"
+    ];
+    const previousEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+    const dir = await mkdtemp(join(tmpdir(), "dashboard-flight-feed-"));
+    const feedPath = join(dir, "events.json");
+    const requests = [];
+
+    try {
+      for (const key of envKeys) {
+        delete process.env[key];
+      }
+      await writeFile(
+        feedPath,
+        JSON.stringify([{ id: "flight_event_legacy_env", kind: "search_result" }]),
+        "utf8"
+      );
+      process.env.FLIGHT_SEARCHER_EVENTS_FILE = feedPath;
+      globalThis.fetch = async (url, options = {}) => {
+        requests.push({
+          path: new URL(url).pathname,
+          body: options.body ? JSON.parse(options.body) : undefined
+        });
+        return Response.json({ accepted: true }, { status: 202 });
+      };
+
+      const results = await runConfiguredIngestions({ startup: false });
+
+      expect(requests).toEqual([
+        {
+          path: "/api/integrations/flight-searcher/events",
+          body: { id: "flight_event_legacy_env", kind: "search_result" }
+        }
+      ]);
+      expect(results).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: "flight-searcher",
+            fetched: 1,
+            upserts: 1
+          })
+        ])
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
+      for (const key of envKeys) {
+        if (previousEnv[key] === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = previousEnv[key];
+        }
+      }
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("integration worker can dispatch coding-agent reconciliation", async () => {
     const previousFetch = globalThis.fetch;
     const envKeys = [
       "ASIA_TRAVEL_DEALS_API_BASE_URL",
       "HOTEL_RATE_FINDER_EVENTS_FILE",
       "FLIGHTS_EXTENSION_EVENTS_FILE",
+      "FLIGHT_SEARCHER_EVENTS_FILE",
       "PLAID_EVENTS_FILE",
       "GMAIL_INTAKE_EVENTS_FILE",
       "PLAID_SYNC_ENABLED",
