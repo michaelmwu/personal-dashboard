@@ -255,6 +255,36 @@ export async function upsertAppItem(filePath, item) {
   });
 }
 
+export async function patchAppItemPayload(filePath, selector, patcher) {
+  return mutateOverlay(filePath, (overlay) => {
+    const index = (overlay.apps.items ?? []).findIndex(
+      (item) =>
+        (!selector.id || item.id === selector.id) &&
+        (!selector.app || item.app === selector.app) &&
+        (!selector.type || item.type === selector.type)
+    );
+    if (index < 0) {
+      return undefined;
+    }
+    const item = overlay.apps.items[index];
+    const payload = item.payload ?? {};
+    const patch = typeof patcher === "function" ? patcher(payload, item) : patcher;
+    if (!patch) {
+      return item;
+    }
+    const next = {
+      ...item,
+      payload: {
+        ...payload,
+        ...patch
+      },
+      ts: item.ts ?? new Date().toISOString()
+    };
+    overlay.apps.items[index] = next;
+    return next;
+  });
+}
+
 export async function applyPlaidSync(filePath, itemId, sync) {
   return mutateOverlay(filePath, (overlay) => {
     for (const account of sync.accounts ?? []) {

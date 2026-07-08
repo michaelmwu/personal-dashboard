@@ -90,6 +90,7 @@ import {
   listPlaidItems,
   loadDashboard,
   patchHermesAction,
+  patchAppItemPayload,
   patchHotelReservation,
   upsertAppItem,
   upsertPlaidItem,
@@ -393,22 +394,17 @@ async function recordCodingTaskHermesRun(action, dispatch) {
   if (!taskId || !dispatch.runId) {
     return;
   }
-  const existing = await findCodingTask({ taskId });
-  if (!existing) {
-    return;
-  }
   const lastEventAt = new Date().toISOString();
-  await persistCodingTaskItem(
-    codingTaskItem(
-      {
-        hermesRunId: dispatch.runId,
-        latestHermesRunId: dispatch.runId,
-        hermesRunStatus: "running",
-        lastEventAt,
-        hermesLastEventAt: lastEventAt
-      },
-      existing
-    )
+  await patchAppItemPayload(
+    storePath,
+    { app: "coding-agent", type: "coding-task", id: taskId },
+    {
+      hermesRunId: dispatch.runId,
+      latestHermesRunId: dispatch.runId,
+      hermesRunStatus: "running",
+      lastEventAt,
+      hermesLastEventAt: lastEventAt
+    }
   );
 }
 
@@ -421,40 +417,34 @@ async function recordCodingTaskHermesRunEvent(action, runId, status, lastEventAt
   if (!taskId || !runId) {
     return;
   }
-  const existing = await findCodingTask({ taskId });
-  if (!existing) {
-    return;
-  }
-  const task = existing.payload ?? {};
-  if (task.latestHermesRunId && task.latestHermesRunId !== runId) {
-    return;
-  }
-  const hermesRunStatus = typeof status === "string" ? status : (task.hermesRunStatus ?? "running");
-  await persistCodingTaskItem(
-    codingTaskItem(
-      {
+  await patchAppItemPayload(
+    storePath,
+    { app: "coding-agent", type: "coding-task", id: taskId },
+    (task) => {
+      if (task.latestHermesRunId && task.latestHermesRunId !== runId) {
+        return undefined;
+      }
+      return {
         hermesRunId: task.hermesRunId ?? runId,
         latestHermesRunId: runId,
-        hermesRunStatus,
+        hermesRunStatus: typeof status === "string" ? status : (task.hermesRunStatus ?? "running"),
         lastEventAt,
-        hermesLastEventAt: lastEventAt
-      },
-      existing,
-      { now: lastEventAt }
-    )
+        hermesLastEventAt: lastEventAt,
+        updatedAt: lastEventAt
+      };
+    }
   );
 }
 
 function actionWithMission(action, mission) {
   const prompt = action.payload?.prompt ?? "";
   const missionBlock = `Mission:\n${JSON.stringify(mission, null, 2)}`;
-  const promptIncludesMission = String(prompt).includes("Mission:");
   return {
     ...action,
     payload: {
       ...action.payload,
       mission,
-      prompt: promptIncludesMission ? prompt : [prompt, missionBlock].filter(Boolean).join("\n\n")
+      prompt: [prompt, missionBlock].filter(Boolean).join("\n\n")
     }
   };
 }
@@ -466,9 +456,14 @@ async function guardCodingAgentMission(action) {
     action.payload?.metadata?.taskId ??
     action.payload?.metadata?.task_id;
   const existing = taskId ? await findCodingTask({ taskId }) : undefined;
-  const missionResult = existing?.payload?.mission
-    ? { mission: existing.payload.mission, errors: [] }
-    : normalizeCodingTaskMission(action.payload ?? {}, codingAgentPolicy);
+  const missionResult = normalizeCodingTaskMission(
+    {
+      ...(existing?.payload ?? {}),
+      ...(action.payload ?? {}),
+      mission: existing?.payload?.mission ?? action.payload?.mission
+    },
+    codingAgentPolicy
+  );
   const { mission, errors = [] } = missionResult;
   if (errors.length) {
     return {

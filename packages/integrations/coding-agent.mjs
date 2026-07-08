@@ -641,8 +641,7 @@ export function enqueueCodingTaskItems(existing, payload, options = {}) {
 function repoAllowed(repo, policy) {
   return (
     !policy.allowedRepos.length ||
-    policy.allowedRepos.includes(repo) ||
-    policy.allowedRepos.includes(shortRepoName(repo))
+    policy.allowedRepos.some((candidate) => repoMatches(candidate, repo))
   );
 }
 
@@ -670,14 +669,18 @@ function stringList(value) {
 }
 
 function repoMatches(candidate, repo) {
-  return Boolean(
-    candidate &&
-      repo &&
-      (candidate === repo ||
-        candidate === shortRepoName(repo) ||
-        shortRepoName(candidate) === repo ||
-        shortRepoName(candidate) === shortRepoName(repo))
-  );
+  if (!candidate || !repo) {
+    return false;
+  }
+  const candidateHasOwner = String(candidate).includes("/");
+  const repoHasOwner = String(repo).includes("/");
+  if (candidateHasOwner && repoHasOwner) {
+    return candidate === repo;
+  }
+  if (repoHasOwner) {
+    return candidate === shortRepoName(repo);
+  }
+  return candidate === repo || shortRepoName(candidate) === repo;
 }
 
 export function normalizeCodingTaskMission(payload = {}, policy = codingAgentPolicyFromEnv()) {

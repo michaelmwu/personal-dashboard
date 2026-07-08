@@ -77,6 +77,7 @@ import {
   listAppItems,
   listPlaidItems,
   loadDashboard,
+  patchAppItemPayload,
   upsertPlaidItem,
   upsertHotelReservation,
   upsertAppItem,
@@ -1484,6 +1485,36 @@ describe("contracts", () => {
       normalizeCodingTaskMission(
         {
           repo: "personal-dashboard",
+          title: "Short repo mission",
+          request: "Validate short repo against full policy.",
+          allowedRepos: ["personal-dashboard"]
+        },
+        {
+          allowedRepos: ["michaelmwu/personal-dashboard"],
+          branchPrefix: "hermes",
+          defaultBaseBranch: "origin/main"
+        }
+      ).errors
+    ).toEqual([]);
+    expect(
+      normalizeCodingTaskMission(
+        {
+          repo: "other/personal-dashboard",
+          title: "Fork mission",
+          request: "Try a fork with the same short name.",
+          allowedRepos: ["michaelmwu/personal-dashboard"]
+        },
+        {
+          allowedRepos: ["michaelmwu/personal-dashboard"],
+          branchPrefix: "hermes",
+          defaultBaseBranch: "origin/main"
+        }
+      ).errors
+    ).toContain("mission_allowed_repo_not_allowed");
+    expect(
+      normalizeCodingTaskMission(
+        {
+          repo: "personal-dashboard",
           title: "Bad mission",
           request: "Try to run elsewhere.",
           allowedRepos: ["moo-infra"]
@@ -1646,6 +1677,62 @@ describe("contracts", () => {
         });
         expect(bridgeRequests).toEqual([]);
 
+        const invalidStoredTaskId = `${taskId}_invalid_stored`;
+        const invalidStoredRegister = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              id: invalidStoredTaskId,
+              repo: "personal-dashboard",
+              title: "Invalid stored mission",
+              prompt: "This mission was stored before validation.",
+              status: "queued",
+              mission: {
+                goal: "Invalid stored mission",
+                allowedRepos: ["moo-infra"],
+                rollback: "Do not merge.",
+                status: "approved",
+                approvedBy: "michaelmwu",
+                approvalId: "approval-invalid-stored"
+              }
+            })
+          }
+        );
+        expect(invalidStoredRegister.status).toBe(202);
+        const invalidStoredStart = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/hermes/actions`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json",
+              "Idempotency-Key": `${taskId}_invalid_stored_start`
+            },
+            body: JSON.stringify({
+              capabilityId: "start-coding-task",
+              origin: "dashboard",
+              payload: {
+                taskId: invalidStoredTaskId,
+                repo: "personal-dashboard",
+                prompt: "Start invalid stored mission."
+              }
+            })
+          }
+        );
+        expect(invalidStoredStart.status).toBe(202);
+        expect(await invalidStoredStart.json()).toMatchObject({
+          dispatch: {
+            dispatched: false,
+            reason: "mission_allowed_repo_not_allowed"
+          }
+        });
+        expect(bridgeRequests).toEqual([]);
+
         const approval = await clientFetch(
           `http://127.0.0.1:${apiPort}/api/apps/coding-agent/control`,
           {
@@ -1791,7 +1878,7 @@ describe("contracts", () => {
               taskId,
               repo: "personal-dashboard",
               title: "Mission gated task",
-              prompt: "Require mission approval."
+              prompt: "Mission: user shorthand should not suppress the approved mission JSON."
             }
           })
         });
@@ -1815,6 +1902,9 @@ describe("contracts", () => {
         );
         expect(bridgeRequests.find((request) => request.path === "/v1/runs").body.input).toContain(
           "Unapproved starts are blocked"
+        );
+        expect(bridgeRequests.find((request) => request.path === "/v1/runs").body.input).toContain(
+          '"definitionOfDone"'
         );
       });
     } finally {
@@ -5167,6 +5257,51 @@ describe("contracts", () => {
         })
       ])
     );
+  });
+
+  test("dashboard store patches app item payloads without replacing concurrent fields", async () => {
+    const filePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-app-item-patch-${Date.now()}.json`;
+    await upsertAppItem(filePath, {
+      id: "coding_patch_task",
+      app: "coding-agent",
+      type: "coding-task",
+      status: "running",
+      payload: {
+        id: "coding_patch_task",
+        repo: "personal-dashboard",
+        status: "running",
+        mission: {
+          goal: "Preserve mission",
+          status: "approved",
+          approvedBy: "michaelmwu",
+          approvalId: "approval-patch",
+          allowedRepos: ["personal-dashboard"]
+        }
+      }
+    });
+
+    await patchAppItemPayload(
+      filePath,
+      { app: "coding-agent", type: "coding-task", id: "coding_patch_task" },
+      {
+        latestHermesRunId: "run_patch",
+        hermesRunStatus: "running"
+      }
+    );
+
+    const [item] = await listAppItems(filePath, {
+      app: "coding-agent",
+      type: "coding-task"
+    });
+    expect(item.payload).toMatchObject({
+      id: "coding_patch_task",
+      mission: {
+        goal: "Preserve mission",
+        approvedBy: "michaelmwu"
+      },
+      latestHermesRunId: "run_patch",
+      hermesRunStatus: "running"
+    });
   });
 
   test("dashboard store serializes concurrent file mutations", async () => {
