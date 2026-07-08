@@ -92,7 +92,6 @@ import {
   listPlaidItems,
   loadDashboard,
   patchHermesAction,
-  patchAppItemPayload,
   patchHotelReservation,
   upsertAppItem,
   upsertPlaidItem,
@@ -101,6 +100,14 @@ import {
   upsertHermesEvent,
   upsertNormalizedEvent
 } from "../../packages/storage/dashboard-store.mjs";
+import { createCodingAgentStore } from "../../packages/storage/coding-agent-store.mjs";
+import {
+  appendRunEvidenceEvent,
+  captureRunGitDiff,
+  deleteRunEvidence,
+  runEvidenceDir,
+  writeRunEvidenceArtifact
+} from "../../packages/storage/run-evidence.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "../..");
@@ -108,6 +115,7 @@ const port = Number.parseInt(process.env.API_PORT ?? "8810", 10);
 const webPort = Number.parseInt(process.env.WEB_PORT ?? "8811", 10);
 const hermesApiToken = process.env.PERSONAL_DASHBOARD_API_TOKEN ?? "";
 const storePath = dashboardStorePath(root);
+const codingAgentStore = createCodingAgentStore({ filePath: storePath });
 const asiaTravelDealsApiBaseUrl = process.env.ASIA_TRAVEL_DEALS_API_BASE_URL ?? "";
 const asiaTravelDealsApiToken = process.env.ASIA_TRAVEL_DEALS_API_TOKEN ?? "";
 const hotelRateFinderConfig = hotelRatesConfig();
@@ -147,16 +155,19 @@ async function enabledHermesCapabilities() {
 async function appItems(appId, { type } = {}) {
   const dashboard = await dashboardSnapshot();
   const projectedItems = genericAppItemsFromDashboard(dashboard, appId);
-  const overlayItems = await listAppItems(storePath, { app: appId, type });
+  const overlayItems =
+    appId === "coding-agent"
+      ? await codingAgentStore.listItems({ type })
+      : await listAppItems(storePath, { app: appId, type });
   return [...projectedItems, ...overlayItems].filter((item) => !type || item.type === type);
 }
 
 async function codingTaskItems() {
-  return listAppItems(storePath, { app: "coding-agent", type: "coding-task" });
+  return codingAgentStore.listItems({ type: "coding-task" });
 }
 
 async function codingFindingItems() {
-  return listAppItems(storePath, { app: "coding-agent", type: "coding-improvement-finding" });
+  return codingAgentStore.listItems({ type: "coding-improvement-finding" });
 }
 
 async function findCodingTask(payload) {
@@ -188,7 +199,12 @@ async function findCodingFinding(payload) {
 }
 
 async function persistCodingTaskItem(item) {
-  await upsertAppItem(storePath, item);
+  await codingAgentStore.upsertItem(item);
+  return item;
+}
+
+async function persistCodingAgentItem(item) {
+  await codingAgentStore.upsertItem(item);
   return item;
 }
 
@@ -197,7 +213,7 @@ async function registerCodingTask(payload) {
     return { ok: false, statusCode: 400, reason: "missing_repo" };
   }
   const item = codingTaskItem(payload);
-  await upsertAppItem(storePath, item);
+  await persistCodingTaskItem(item);
   return { ok: true, statusCode: 202, task: item.payload, item };
 }
 
@@ -217,7 +233,7 @@ async function pickupCodingPr(payload) {
   const existing = await findCodingTask(payload);
   const result = pickupExistingPrTask(existing, payload, codingAgentPolicy);
   if (result.pickupAttemptItem) {
-    await upsertAppItem(storePath, result.pickupAttemptItem);
+    await persistCodingAgentItem(result.pickupAttemptItem);
   }
   if (!result.ok) {
     return result;
@@ -228,13 +244,13 @@ async function pickupCodingPr(payload) {
 
 async function triageCodingIssue(payload) {
   const result = triageCodingAgentIssue(payload, codingAgentPolicy);
-  await upsertAppItem(storePath, result.item);
+  await persistCodingAgentItem(result.item);
   return result;
 }
 
 async function reviewCodingRisk(payload) {
   const item = reviewCodingAgentRisk(payload);
-  await upsertAppItem(storePath, item);
+  await persistCodingAgentItem(item);
   return {
     ok: item.status === "approved",
     statusCode: item.status === "approved" ? 202 : 409,
@@ -245,32 +261,29 @@ async function reviewCodingRisk(payload) {
 
 async function recordCodingSignal(payload) {
   const item = normalizeCodingAgentSignal(payload);
-  await upsertAppItem(storePath, item);
+  await persistCodingAgentItem(item);
   return { ok: true, statusCode: 202, signal: item.payload, item };
 }
 
 async function recordCodingFinding(payload) {
   const item = normalizeCodingAgentFinding(payload);
-  await upsertAppItem(storePath, item);
+  await persistCodingAgentItem(item);
   return { ok: true, statusCode: 202, finding: item.payload, item };
 }
 
 async function recordCodingRegressionMemory(payload) {
   const item = normalizeCodingAgentRegressionMemory(payload);
-  await upsertAppItem(storePath, item);
+  await persistCodingAgentItem(item);
   return { ok: true, statusCode: 202, memory: item.payload, item };
 }
 
 async function synthesizeCodingFindings(payload = {}) {
-  const signals = await listAppItems(storePath, {
-    app: "coding-agent",
-    type: "coding-improvement-signal"
-  });
+  const signals = await codingAgentStore.listItems({ type: "coding-improvement-signal" });
   const findings = synthesizeCodingAgentFindings(signals, {
     minimumSignals: payload.minimumSignals ?? payload.minimum_signals
   });
   for (const finding of findings) {
-    await upsertAppItem(storePath, finding);
+    await persistCodingAgentItem(finding);
   }
   return { ok: true, statusCode: 202, findings: findings.map((item) => item.payload) };
 }
@@ -284,7 +297,7 @@ async function planCodingGoalMutation(payload = {}) {
       : [planCodingAgentGoalMutation(input)];
   for (const result of results) {
     if (result.mutationItem) {
-      await upsertAppItem(storePath, result.mutationItem);
+      await persistCodingAgentItem(result.mutationItem);
     }
   }
   const blocked = results.some((result) => result.blocked);
@@ -362,7 +375,7 @@ async function reconcileCodingTasks(payload = {}) {
   for (const item of result.taskItems) {
     await persistCodingTaskItem(item);
   }
-  await upsertAppItem(storePath, result.auditItem);
+  await persistCodingAgentItem(result.auditItem);
   return result;
 }
 
@@ -372,7 +385,7 @@ async function summarizeCodingHandoff(payload = {}) {
   if (!result.ok) {
     return result;
   }
-  await upsertAppItem(storePath, result.item);
+  await persistCodingAgentItem(result.item);
   return result;
 }
 
@@ -403,7 +416,39 @@ async function archiveCodingTaskByPayload(payload) {
   }
   const item = archiveCodingTask(existing, payload);
   await persistCodingTaskItem(item);
+  const keepEvidence =
+    payload.keepEvidence === true ||
+    payload.keep_evidence === true ||
+    existing.payload?.keepEvidence === true;
+  if (!keepEvidence) {
+    const runIds = new Set([
+      existing.payload?.hermesRunId,
+      existing.payload?.latestHermesRunId,
+      ...(existing.payload?.evidencePacks ?? []).map((pack) => pack.runId)
+    ]);
+    for (const runId of [...runIds].filter(Boolean)) {
+      await deleteRunEvidence(root, runId);
+    }
+  }
   return { ok: true, statusCode: 202, task: item.payload, item };
+}
+
+function codingTaskIdFromAction(action) {
+  return (
+    action.payload?.taskId ??
+    action.payload?.task_id ??
+    action.payload?.metadata?.taskId ??
+    action.payload?.metadata?.task_id
+  );
+}
+
+function codingTaskWorktreeFromAction(action) {
+  return (
+    action.payload?.worktreeDir ??
+    action.payload?.worktree_dir ??
+    action.payload?.metadata?.worktreeDir ??
+    action.payload?.metadata?.worktree_dir
+  );
 }
 
 async function recordCodingTaskHermesRun(action, dispatch) {
@@ -412,9 +457,8 @@ async function recordCodingTaskHermesRun(action, dispatch) {
     return;
   }
   const lastEventAt = new Date().toISOString();
-  await patchAppItemPayload(
-    storePath,
-    { app: "coding-agent", type: "coding-task", id: taskId },
+  await codingAgentStore.patchItemPayload(
+    { type: "coding-task", id: taskId },
     {
       hermesRunId: dispatch.runId,
       latestHermesRunId: dispatch.runId,
@@ -426,31 +470,65 @@ async function recordCodingTaskHermesRun(action, dispatch) {
 }
 
 async function recordCodingTaskHermesRunEvent(action, runId, status, lastEventAt) {
-  const taskId =
-    action.payload?.taskId ??
-    action.payload?.task_id ??
-    action.payload?.metadata?.taskId ??
-    action.payload?.metadata?.task_id;
+  const taskId = codingTaskIdFromAction(action);
   if (!taskId || !runId) {
     return;
   }
-  await patchAppItemPayload(
-    storePath,
-    { app: "coding-agent", type: "coding-task", id: taskId },
-    (task) => {
-      if (task.latestHermesRunId && task.latestHermesRunId !== runId) {
-        return undefined;
-      }
-      return {
-        hermesRunId: task.hermesRunId ?? runId,
-        latestHermesRunId: runId,
-        hermesRunStatus: typeof status === "string" ? status : (task.hermesRunStatus ?? "running"),
-        lastEventAt,
-        hermesLastEventAt: lastEventAt,
-        updatedAt: lastEventAt
-      };
+  await codingAgentStore.patchItemPayload({ type: "coding-task", id: taskId }, (task) => {
+    if (task.latestHermesRunId && task.latestHermesRunId !== runId) {
+      return undefined;
     }
+    return {
+      hermesRunId: task.hermesRunId ?? runId,
+      latestHermesRunId: runId,
+      hermesRunStatus: typeof status === "string" ? status : (task.hermesRunStatus ?? "running"),
+      lastEventAt,
+      hermesLastEventAt: lastEventAt,
+      updatedAt: lastEventAt
+    };
+  });
+}
+
+async function recordCodingTaskEvidencePack(action, runId, result) {
+  const taskId = codingTaskIdFromAction(action);
+  if (!taskId || !runId) {
+    return;
+  }
+  const completedAt = new Date().toISOString();
+  const evidenceDir = runEvidenceDir(root, runId);
+  const diff = await captureRunGitDiff(root, runId, codingTaskWorktreeFromAction(action));
+  const pack = {
+    runId,
+    taskId,
+    status: result?.status ?? "completed",
+    evidenceDir,
+    eventsPath: `${evidenceDir}/events.ndjson`,
+    diff,
+    completedAt
+  };
+  await writeRunEvidenceArtifact(
+    root,
+    runId,
+    "final-status.json",
+    `${JSON.stringify(pack, null, 2)}\n`
   );
+  await codingAgentStore.patchItemPayload({ type: "coding-task", id: taskId }, (task) => ({
+    evidencePacks: [...(task.evidencePacks ?? []), pack],
+    queue: [
+      ...(task.queue ?? []),
+      {
+        id: `evidence_${runId}_${Date.parse(completedAt) || Date.now()}`,
+        kind: "coding-evidence-pack",
+        status: "completed",
+        title: "Coding run evidence pack",
+        approvalRequired: false,
+        createdAt: completedAt,
+        updatedAt: completedAt,
+        payload: pack
+      }
+    ],
+    updatedAt: completedAt
+  }));
 }
 
 function actionWithMission(action, mission) {
@@ -685,9 +763,12 @@ async function syncPlaidItems({ itemId } = {}) {
 
 async function streamBridgeRunOntoAction(action, runId) {
   try {
-    await streamHermesBridgeRunEvents(runId, async (event) => {
+    const streamResult = await streamHermesBridgeRunEvents(runId, async (event) => {
       const status = event.data?.status;
       const lastEventAt = new Date().toISOString();
+      const taskId = codingTaskIdFromAction(action);
+      await appendRunEvidenceEvent(root, runId, event, { taskId, ts: lastEventAt });
+      await codingAgentStore.appendRunEvent(runId, event, { taskId, eventType: event.event });
       await patchHermesAction(storePath, action.id, {
         status: typeof status === "string" ? status : "running",
         bridgeRunId: runId,
@@ -701,8 +782,13 @@ async function streamBridgeRunOntoAction(action, runId) {
       });
       await recordCodingTaskHermesRunEvent(action, runId, status, lastEventAt);
     });
+    await recordCodingTaskEvidencePack(action, runId, streamResult);
   } catch (error) {
     const lastEventAt = new Date().toISOString();
+    await appendRunEvidenceEvent(root, runId, {
+      event: "stream.error",
+      data: { error: error instanceof Error ? error.message : String(error) }
+    });
     await patchHermesAction(storePath, action.id, {
       status: "dispatch_error",
       lastEventAt,
@@ -1105,7 +1191,11 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
           detail: payload.detail,
           payload: payload.payload ?? payload
         };
-        await upsertAppItem(storePath, item);
+        if (item.app === "coding-agent") {
+          await persistCodingAgentItem(item);
+        } else {
+          await upsertAppItem(storePath, item);
+        }
         json(response, 202, {
           accepted: true,
           item
