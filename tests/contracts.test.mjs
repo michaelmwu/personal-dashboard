@@ -4723,7 +4723,7 @@ describe("contracts", () => {
     const envKeys = [
       "ASIA_TRAVEL_DEALS_API_BASE_URL",
       "HOTEL_RATE_FINDER_EVENTS_FILE",
-      "FLIGHT_SEARCHER_EVENTS_FILE",
+      "FLIGHTS_EXTENSION_EVENTS_FILE",
       "PLAID_EVENTS_FILE",
       "GMAIL_INTAKE_EVENTS_FILE",
       "PLAID_SYNC_ENABLED",
