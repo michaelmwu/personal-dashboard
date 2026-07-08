@@ -22,33 +22,76 @@ export function dashboardFixture() {
       id: "txn_001",
       merchant: "Costco",
       amount: 83.21,
-      category: "Wholesale",
+      category: "GENERAL_MERCHANDISE",
+      categoryDetailed: "GENERAL_MERCHANDISE_SUPERSTORES",
       card: "Chase Freedom",
-      status: "pending"
+      accountId: "acct_003",
+      status: "pending",
+      pending: true,
+      paymentChannel: "in store",
+      isoCurrencyCode: "USD",
+      date: "2026-06-29",
+      source: "fixture"
     }),
     transaction({
       id: "txn_002",
       merchant: "Momoshop",
       amount: 126.4,
-      category: "Retail",
+      category: "GENERAL_MERCHANDISE",
+      categoryDetailed: "GENERAL_MERCHANDISE_ONLINE_MARKETPLACES",
       card: "Amex Gold",
-      status: "pending"
+      accountId: "acct_001",
+      status: "pending",
+      pending: true,
+      paymentChannel: "online",
+      isoCurrencyCode: "USD",
+      date: "2026-06-30",
+      source: "fixture"
     }),
     transaction({
       id: "txn_003",
       merchant: "Din Tai Fung",
       amount: 97.8,
-      category: "Dining",
+      category: "FOOD_AND_DRINK",
+      categoryDetailed: "FOOD_AND_DRINK_RESTAURANT",
       card: "Amex Gold",
-      status: "posted"
+      accountId: "acct_001",
+      status: "posted",
+      pending: false,
+      paymentChannel: "in store",
+      isoCurrencyCode: "USD",
+      date: "2026-06-28",
+      source: "fixture"
     }),
     transaction({
       id: "txn_004",
       merchant: "United Airlines",
       amount: 812.12,
-      category: "Travel",
+      category: "TRAVEL",
+      categoryDetailed: "TRAVEL_FLIGHTS",
       card: "Amex Platinum",
-      status: "posted"
+      accountId: "acct_002",
+      status: "posted",
+      pending: false,
+      paymentChannel: "online",
+      isoCurrencyCode: "USD",
+      date: "2026-06-22",
+      source: "fixture"
+    }),
+    transaction({
+      id: "txn_005",
+      merchant: "United Airlines",
+      amount: -50,
+      category: "TRAVEL",
+      categoryDetailed: "TRAVEL_FLIGHTS",
+      card: "Amex Platinum",
+      accountId: "acct_002",
+      status: "posted",
+      pending: false,
+      paymentChannel: "online",
+      isoCurrencyCode: "USD",
+      date: "2026-06-25",
+      source: "fixture"
     })
   ];
 
@@ -58,10 +101,10 @@ export function dashboardFixture() {
       summary: "Hermes online, Plaid pending, OpenClaw synced 12m ago"
     },
     metrics: [
-      metric("Monthly spend", "$6,832", "+8% vs May"),
-      metric("Estimated points", "42,000", "+13,422 this month"),
-      metric("Missed points", "2,100", "3 card-choice misses"),
-      metric("Alerts", "3", "1 high priority")
+      metric("Tracked spend", "$1,120", "Fixture ledger"),
+      metric("Transactions", "5", "2 pending"),
+      metric("Credits", "1", "$50 matched later"),
+      metric("Alerts", "2", "1 high priority")
     ],
     alerts: [
       alert({
@@ -75,12 +118,6 @@ export function dashboardFixture() {
         title: "Foreign transaction detected",
         detail: "United Airlines posted in a travel category. Confirm itinerary ownership.",
         severity: "medium"
-      }),
-      alert({
-        id: "alert_003",
-        title: "Reward mismatch",
-        detail: "Costco coded as wholesale. Expected Freedom quarterly bonus should be checked.",
-        severity: "low"
       })
     ],
     transactions,
@@ -207,6 +244,13 @@ export function dashboardFixture() {
           name: "Chase Sapphire Reserve",
           kind: "credit",
           last4: "4242",
+          syncStatus: "placeholder"
+        }),
+        financeAccount({
+          id: "acct_003",
+          name: "Chase Freedom",
+          kind: "credit",
+          last4: "9009",
           syncStatus: "placeholder"
         })
       ]

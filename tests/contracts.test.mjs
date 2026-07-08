@@ -114,6 +114,12 @@ import {
   splitValidationCommand,
   validateCodingAgentTasks
 } from "../scripts/integration-worker.mjs";
+import {
+  aggregateTransactions,
+  queryTransactions,
+  transactionQueryFromSearchParams,
+  transactionSummary
+} from "../packages/transactions/index.mjs";
 
 function listen(server) {
   return new Promise((resolve) => {
@@ -236,7 +242,7 @@ describe("contracts", () => {
     expect(dashboard.travel.flightWatches).toHaveLength(2);
     expect(dashboard.travel.dealFeed).toHaveLength(2);
     expect(dashboard.travel.reservations).toHaveLength(2);
-    expect(dashboard.finance.accounts).toHaveLength(2);
+    expect(dashboard.finance.accounts).toHaveLength(3);
     expect(dashboard.intake.items).toHaveLength(2);
     expect(dashboard.hermes.capabilities.map((capability) => capability.id)).toContain(
       "gmail_intake_scan"
@@ -5123,6 +5129,7 @@ describe("contracts", () => {
       id: "plaid_txn_001",
       merchant: "Hyatt",
       category: "TRAVEL",
+      pending: true,
       status: "pending",
       source: "plaid"
     });
@@ -5198,6 +5205,74 @@ describe("contracts", () => {
       }
     });
     expect(sync.requestIds).toEqual(["request_page_1"]);
+  });
+
+  test("transaction queries filter, sort, paginate, and aggregate ledger rows", () => {
+    const dashboard = dashboardFixture();
+    const dining = queryTransactions(
+      dashboard.transactions,
+      {
+        q: "din",
+        sort: "amount",
+        direction: "asc",
+        limit: 10
+      },
+      dashboard.finance.accounts
+    );
+
+    expect(dining).toMatchObject({
+      total: 1,
+      limit: 10,
+      offset: 0
+    });
+    expect(dining.items[0]).toMatchObject({
+      id: "txn_003",
+      merchant: "Din Tai Fung",
+      category: "FOOD_AND_DRINK"
+    });
+    expect(dining.facets.accounts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "acct_001",
+          label: "Amex Gold"
+        })
+      ])
+    );
+
+    const aggregate = aggregateTransactions(
+      dashboard.transactions,
+      {
+        groupBy: "category",
+        category: "TRAVEL"
+      },
+      dashboard.finance.accounts
+    );
+    expect(aggregate.groups).toEqual([
+      expect.objectContaining({
+        key: "TRAVEL",
+        count: 2,
+        spend: 812.12,
+        credits: 50
+      })
+    ]);
+    expect(transactionSummary(dashboard.transactions, dashboard.finance.accounts)).toMatchObject({
+      transactionCount: 5,
+      accountCount: 3,
+      pendingCount: 2,
+      creditCount: 1,
+      latestDate: "2026-06-30"
+    });
+
+    const apiStyleQuery = transactionQueryFromSearchParams(new URLSearchParams("q=United&limit=5"));
+    expect(
+      queryTransactions(dashboard.transactions, apiStyleQuery, dashboard.finance.accounts)
+    ).toMatchObject({
+      total: 2,
+      items: [
+        expect.objectContaining({ merchant: "United Airlines" }),
+        expect.objectContaining({ merchant: "United Airlines" })
+      ]
+    });
   });
 
   test("Hotel Rate Finder client creates saved searches, runs jobs, and polls status", async () => {
