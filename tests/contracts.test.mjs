@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -4643,6 +4643,67 @@ describe("contracts", () => {
         })
       ])
     );
+  });
+
+  test("dashboard store serializes concurrent file mutations", async () => {
+    const filePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-concurrent-store-${Date.now()}.json`;
+
+    await Promise.all(
+      Array.from({ length: 20 }, (_, index) =>
+        upsertAppItem(filePath, {
+          id: `task-${index}`,
+          app: "coding-agent",
+          type: "coding-task",
+          status: "queued",
+          payload: {
+            id: `task-${index}`,
+            repo: "personal-dashboard"
+          }
+        })
+      )
+    );
+
+    const items = await listAppItems(filePath, { app: "coding-agent", type: "coding-task" });
+    expect(items).toHaveLength(20);
+    expect(new Set(items.map((item) => item.id)).size).toBe(20);
+  });
+
+  test("dashboard store ignores incomplete temp writes and keeps canonical JSON parseable", async () => {
+    const filePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-kill-write-${Date.now()}.json`;
+    await upsertAppItem(filePath, {
+      id: "task-before-kill",
+      app: "coding-agent",
+      type: "coding-task",
+      status: "running",
+      payload: {
+        id: "task-before-kill",
+        repo: "personal-dashboard"
+      }
+    });
+    await writeFile(`${filePath}.999999.tmp`, '{"apps":{"items":[', "utf8");
+
+    const canonical = JSON.parse(await readFile(filePath, "utf8"));
+    expect(canonical.apps.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "task-before-kill",
+          status: "running"
+        })
+      ])
+    );
+
+    await upsertAppItem(filePath, {
+      id: "task-after-restart",
+      app: "coding-agent",
+      type: "coding-task",
+      status: "queued",
+      payload: {
+        id: "task-after-restart",
+        repo: "personal-dashboard"
+      }
+    });
+    const items = await listAppItems(filePath, { app: "coding-agent", type: "coding-task" });
+    expect(items.map((item) => item.id).sort()).toEqual(["task-after-restart", "task-before-kill"]);
   });
 
   test("integration worker records per-source errors without throwing", async () => {
