@@ -135,6 +135,17 @@ Coding Agent endpoints:
 - `POST /api/apps/coding-agent/archive`: archive a completed or abandoned task
   and its remaining queue items.
 
+Coding-agent state uses the JSON dashboard store by default for local
+development. Set `CODING_AGENT_STATE_STORE=postgres` with `DATABASE_URL` to move
+coding-agent items, task anchors, run status, and run events into Postgres; run
+`bun run migrate:coding-agent` once after configuring the database to backfill
+existing JSON records. Hermes run evidence is written under
+`CODING_AGENT_RUN_EVIDENCE_DIR` or `.data/runs` as NDJSON events plus final
+artifacts such as diffs and status output. Archiving a task removes its evidence
+packs unless the task has `keepEvidence=true`. Reconciliation also prunes
+evidence packs older than `CODING_AGENT_RUN_EVIDENCE_RETENTION_DAYS`, which
+defaults to 30 days; set it to `-1` to disable age-based pruning.
+
 Set `CODING_AGENT_ALLOWED_REPOS` to a comma-separated repo allowlist when
 enforcing PR-maintenance repo policy. `CODING_AGENT_BRANCH_PREFIX` defaults to
 `hermes`, and side-effecting maintenance actions such as push, PR creation,
@@ -171,6 +182,13 @@ to scan open GitHub issues with `gh api`; use `CODING_AGENT_ISSUE_TRIAGE_REPOS`
 to narrow the scan list, otherwise it reuses pickup/allowed repos. The scanner
 skips PRs and already-triaged issues before posting to the dashboard triage
 endpoint.
+
+Coding tasks reserve a 10-port local block for their thread. The task payload
+stores `portRange` plus `conductorPort`, and executor payloads include
+`CONDUCTOR_PORT=<base>` so repo worktree port scripts can use `<base>-<base+9>`
+without colliding with other active coding-agent tasks. Defaults are
+`CODING_AGENT_PORT_BASE=12000` and `CODING_AGENT_PORT_SLOTS=400`; explicit
+`conductorPort` values are rounded down to the nearest `...0` block base.
 
 Set `CODING_AGENT_RECONCILE_ENABLED=true` on the integration worker to run
 dashboard-side reconciliation. It posts to

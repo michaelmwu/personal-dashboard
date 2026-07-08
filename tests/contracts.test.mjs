@@ -29,6 +29,7 @@ import {
   duplicateCodingTaskCandidates,
   evaluateCodingAgentPrPickup,
   normalizeCodingTaskMission,
+  normalizeCodingTaskPortRange,
   applyCodingTaskValidation,
   normalizeCodingAgentSignal,
   normalizeCodingAgentRegressionMemory,
@@ -88,6 +89,20 @@ import {
   upsertHermesAction,
   upsertNormalizedEvent
 } from "../packages/storage/dashboard-store.mjs";
+import {
+  codingAgentStateStoreMode,
+  createCodingAgentJsonStore,
+  migrateCodingAgentJsonToStore
+} from "../packages/storage/coding-agent-store.mjs";
+import {
+  appendRunEvidenceEvent,
+  captureRunGitDiff,
+  deleteRunEvidence,
+  pruneRunEvidence,
+  readRunEvidenceEvents,
+  runEvidenceRoot,
+  writeRunEvidenceArtifact
+} from "../packages/storage/run-evidence.mjs";
 import {
   discoverCodingAgentIssueTriage,
   discoverCodingAgentPrPickups,
@@ -976,6 +991,59 @@ describe("contracts", () => {
     }
   });
 
+  test("mutating API endpoints require bearer auth before side effects", async () => {
+    const mutatingEndpoints = [
+      "/api/apps/test-app/events",
+      "/api/apps/coding-agent/tasks",
+      "/api/apps/coding-agent/intake-plan",
+      "/api/apps/coding-agent/queue-plan",
+      "/api/apps/coding-agent/pr-pickup",
+      "/api/apps/coding-agent/issue-triage",
+      "/api/apps/coding-agent/coordination",
+      "/api/apps/coding-agent/control",
+      "/api/apps/coding-agent/risk-review",
+      "/api/apps/coding-agent/signals",
+      "/api/apps/coding-agent/findings",
+      "/api/apps/coding-agent/regression-memory",
+      "/api/apps/coding-agent/goal-mutations",
+      "/api/apps/coding-agent/queue",
+      "/api/apps/coding-agent/pr-status",
+      "/api/apps/coding-agent/validate",
+      "/api/apps/coding-agent/reconcile",
+      "/api/apps/coding-agent/handoff-summary",
+      "/api/apps/coding-agent/pr-maintenance",
+      "/api/apps/coding-agent/archive",
+      "/api/travel/reservations",
+      "/api/integrations/plaid/link-token",
+      "/api/integrations/plaid/exchange-public-token",
+      "/api/integrations/plaid/sync",
+      "/api/integrations/plaid/webhook",
+      "/api/integrations/hotel-rate-finder/sync",
+      "/api/hermes/bridge/runs",
+      "/api/hermes/bridge/runs/run_auth/approval",
+      "/api/hermes/bridge/runs/run_auth/stop",
+      "/api/hermes/actions",
+      "/api/integrations/hermes/actions",
+      "/api/integrations/hermes/events",
+      "/api/integrations/asia-travel-deals/events"
+    ];
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      for (const endpoint of mutatingEndpoints) {
+        const response = await fetch(`http://127.0.0.1:${apiPort}${endpoint}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}"
+        });
+        expect(response.status).toBe(401);
+      }
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
   test("coding agent registry persists task anchors through deterministic Hermes actions", async () => {
     const taskId = `coding_test_${Date.now()}`;
     const apiServer = createApiServer({ apiToken: "dashboard-token" });
@@ -1399,8 +1467,85 @@ describe("contracts", () => {
         priority: "urgent",
         duplicateOf: "coding_existing_duplicate",
         workspacePolicy: {
-          mode: "one-task-one-worktree"
+          mode: "one-task-one-worktree",
+          portRangeSize: 10
+        },
+        portRange: {
+          size: 10,
+          env: {
+            CONDUCTOR_PORT: expect.any(String)
+          }
         }
+      }
+    });
+
+    const explicit = codingTaskItem(
+      {
+        id: "coding_explicit_port",
+        repo: "personal-dashboard",
+        title: "Run dev server",
+        conductorPort: 13004
+      },
+      undefined,
+      { now: "2026-07-08T12:00:00.000Z" }
+    );
+    expect(explicit.payload).toMatchObject({
+      conductorPort: 13000,
+      portRange: {
+        base: 13000,
+        start: 13000,
+        end: 13009,
+        size: 10,
+        env: {
+          CONDUCTOR_PORT: "13000"
+        }
+      }
+    });
+
+    const preferred = normalizeCodingTaskPortRange(
+      {
+        id: "coding_same_slot",
+        repo: "personal-dashboard",
+        threadId: "telegram-thread-ports"
+      },
+      [],
+      { portBase: 14000, portSlots: 1 }
+    );
+    const collision = planCodingTaskQueue(
+      {
+        id: "coding_same_slot",
+        repo: "personal-dashboard",
+        title: "Run another dev server",
+        request: "Use a separate dev port block.",
+        threadId: "telegram-thread-ports"
+      },
+      [
+        {
+          payload: {
+            id: "active_same_slot",
+            status: "running",
+            portRange: preferred
+          }
+        }
+      ],
+      {
+        policy: {
+          allowedRepos: ["personal-dashboard"],
+          branchPrefix: "hermes",
+          defaultBaseBranch: "origin/main",
+          portBase: 14000,
+          portSlots: 2
+        },
+        now: "2026-07-08T12:01:00.000Z"
+      }
+    );
+    expect(collision.task.portRange.start % 10).toBe(0);
+    expect(collision.task.portRange.base).not.toBe(preferred.base);
+    expect(collision.task.portRange).toMatchObject({
+      size: 10,
+      end: collision.task.portRange.start + 9,
+      env: {
+        CONDUCTOR_PORT: String(collision.task.portRange.base)
       }
     });
 
@@ -2327,6 +2472,16 @@ describe("contracts", () => {
           artifacts: ["artifact://logs/unit"],
           nextAction: "Approve deployment secret and continue"
         },
+        evidencePacks: [
+          {
+            runId: "run_handoff_001",
+            status: "completed",
+            completedAt: "2026-07-06T17:03:00.000Z",
+            evidenceDir: "/tmp/runs/run_handoff_001",
+            eventsPath: "/tmp/runs/run_handoff_001/events.ndjson",
+            diff: { path: "/tmp/runs/run_handoff_001/final.diff" }
+          }
+        ],
         checks: {
           checkRuns: [
             {
@@ -2395,11 +2550,23 @@ describe("contracts", () => {
             summary: "Needs secret refresh."
           }
         ],
+        evidencePacks: [
+          {
+            runId: "run_handoff_001",
+            status: "completed",
+            eventsPath: "/tmp/runs/run_handoff_001/events.ndjson",
+            diffPath: "/tmp/runs/run_handoff_001/final.diff",
+            finalStatusPath: "/tmp/runs/run_handoff_001/final-status.json"
+          }
+        ],
         artifacts: [
           "https://github.com/michaelmwu/personal-dashboard/pull/88",
           "https://preview.example.test",
           "/tmp/coding-handoff-source",
-          "artifact://logs/unit"
+          "artifact://logs/unit",
+          "/tmp/runs/run_handoff_001/events.ndjson",
+          "/tmp/runs/run_handoff_001/final.diff",
+          "/tmp/runs/run_handoff_001/final-status.json"
         ]
       }
     });
@@ -3145,6 +3312,114 @@ describe("contracts", () => {
     }
   });
 
+  test("coding agent executor records failed evidence when Bridge event streaming fails", async () => {
+    const taskId = `coding_stream_failed_${Date.now()}`;
+    const bridgeFetch = async (url, options = {}) => {
+      const path = new URL(url).pathname;
+      if (path === "/v1/runs" && options.method === "POST") {
+        return Response.json({ run_id: "run_stream_failed", status: "running" }, { status: 202 });
+      }
+      if (path === "/v1/runs/run_stream_failed/events") {
+        return Response.json({ error: "stream failed" }, { status: 500 });
+      }
+      return Response.json({ error: "not_found" }, { status: 404 });
+    };
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      await withMockBridge(bridgeFetch, async (clientFetch) => {
+        const register = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              id: taskId,
+              repo: "personal-dashboard",
+              githubRepo: "michaelmwu/personal-dashboard",
+              title: "Stream failed task",
+              status: "pr-open",
+              mission: {
+                goal: "Stream failed task",
+                context: "Verify failed Bridge events do not look completed.",
+                constraints: [],
+                allowedRepos: ["personal-dashboard"],
+                definitionOfDone: ["Evidence pack is failed."],
+                validationCommands: ["bun test tests/contracts.test.mjs"],
+                rollback: "Revert the stream-failure task changes.",
+                status: "approved",
+                approvedBy: "michaelmwu",
+                approvalId: "approval-stream-failed"
+              }
+            })
+          }
+        );
+        expect(register.status).toBe(202);
+
+        const action = await clientFetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json",
+            "Idempotency-Key": `${taskId}_update`
+          },
+          body: JSON.stringify({
+            capabilityId: "update-coding-task",
+            origin: "dashboard",
+            payload: codingAgentExecutorPayload(
+              {
+                id: taskId,
+                repo: "personal-dashboard",
+                githubRepo: "michaelmwu/personal-dashboard",
+                title: "Stream failed task"
+              },
+              {
+                events: [{ kind: "review", state: "CHANGES_REQUESTED" }]
+              }
+            )
+          })
+        });
+        expect(action.status).toBe(202);
+
+        const tasksJson = await waitFor(async () => {
+          const tasks = await clientFetch(
+            `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`
+          );
+          const json = await tasks.json();
+          const task = json.tasks.find((candidate) => candidate.id === taskId);
+          return task?.queue?.some(
+            (item) => item.kind === "coding-evidence-pack" && item.status === "failed"
+          )
+            ? json
+            : false;
+        });
+        expect(tasksJson.tasks).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: taskId,
+              evidencePacks: expect.arrayContaining([
+                expect.objectContaining({
+                  runId: "run_stream_failed",
+                  status: "failed",
+                  stream: expect.objectContaining({
+                    streamed: false,
+                    statusCode: 500
+                  })
+                })
+              ])
+            })
+          ])
+        );
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
   test("coding agent validation gates PR-ready transitions", () => {
     const runningTask = codingTaskItem(
       {
@@ -3683,10 +3958,19 @@ describe("contracts", () => {
   test("coding agent reconciliation API persists task transitions and audit records", async () => {
     const orphanId = `coding_reconcile_orphan_${Date.now()}`;
     const staleId = `coding_reconcile_stale_${Date.now()}`;
+    const evidenceId = `coding_reconcile_evidence_${Date.now()}`;
+    const runId = `run_reconcile_evidence_${Date.now()}`;
+    const previousEvidenceDir = process.env.CODING_AGENT_RUN_EVIDENCE_DIR;
+    const rootDir = await mkdtemp(join(tmpdir(), "dashboard-reconcile-evidence-"));
+    process.env.CODING_AGENT_RUN_EVIDENCE_DIR = join(rootDir, "runs");
     const apiServer = createApiServer({ apiToken: "dashboard-token" });
     const apiPort = await listen(apiServer);
 
     try {
+      await appendRunEvidenceEvent(".", runId, {
+        event: "run.output",
+        data: { text: "old evidence" }
+      });
       for (const payload of [
         {
           id: orphanId,
@@ -3700,6 +3984,19 @@ describe("contracts", () => {
           title: "API stale task",
           status: "running",
           latestHermesRunId: "run_api_stale"
+        },
+        {
+          id: evidenceId,
+          repo: "personal-dashboard",
+          title: "API evidence retention task",
+          status: "queued",
+          evidencePacks: [
+            {
+              runId,
+              status: "completed",
+              completedAt: "2026-05-01T00:00:00.000Z"
+            }
+          ]
         }
       ]) {
         const response = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`, {
@@ -3721,7 +4018,9 @@ describe("contracts", () => {
         },
         body: JSON.stringify({
           id: orphanId,
-          staleRunningMinutes: 0
+          staleRunningMinutes: 0,
+          evidenceRetentionDays: 30,
+          now: "2026-07-08T00:00:00.000Z"
         })
       });
       expect(reconcile.status).toBe(202);
@@ -3743,8 +4042,13 @@ describe("contracts", () => {
         audit: {
           requestId: orphanId,
           providerMutationAllowed: false
+        },
+        evidenceRetention: {
+          pruned: expect.any(Number),
+          runIds: expect.arrayContaining([runId])
         }
       });
+      await expect(readRunEvidenceEvents(".", runId)).rejects.toThrow();
 
       const tasks = await fetch(
         `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks?includeArchived=true`
@@ -3782,6 +4086,12 @@ describe("contracts", () => {
       });
     } finally {
       await closeServer(apiServer);
+      if (previousEvidenceDir === undefined) {
+        delete process.env.CODING_AGENT_RUN_EVIDENCE_DIR;
+      } else {
+        process.env.CODING_AGENT_RUN_EVIDENCE_DIR = previousEvidenceDir;
+      }
+      await rm(rootDir, { recursive: true, force: true });
     }
   });
 
@@ -4032,6 +4342,15 @@ describe("contracts", () => {
       prompt: "Implement the coding agent loop.",
       branch: "hermes/executor",
       worktreeDir: "/Users/michaelwu/agents/work/personal-dashboard/executor",
+      portRange: {
+        base: 15000,
+        start: 15000,
+        end: 15009,
+        size: 10,
+        env: {
+          CONDUCTOR_PORT: "15000"
+        }
+      },
       hermesSessionKey: "coding-agent:executor",
       prNumber: 42
     };
@@ -4054,17 +4373,29 @@ describe("contracts", () => {
     expect(testFix).toMatchObject({
       mode: "test-fix",
       sessionId: "coding-agent:executor",
+      conductorPort: 15000,
+      env: {
+        CONDUCTOR_PORT: "15000"
+      },
       metadata: {
         runtimeOwner: "personal-dashboard.integration-worker",
         actionId: "update-coding-task",
         taskId: "coding_executor_001",
         mode: "test-fix",
-        worktreeDir: "/Users/michaelwu/agents/work/personal-dashboard/executor"
+        worktreeDir: "/Users/michaelwu/agents/work/personal-dashboard/executor",
+        conductorPort: 15000,
+        portRange: {
+          base: 15000,
+          start: 15000,
+          end: 15009
+        }
       }
     });
     expect(testFix.instructions).toContain("change into this task worktree");
+    expect(testFix.instructions).toContain("export CONDUCTOR_PORT=15000");
     expect(testFix.instructions).toContain("Do not push, create PRs, merge, or clean up worktrees");
     expect(testFix.prompt).toContain("Mode: test-fix");
+    expect(testFix.prompt).toContain("Port block: 15000-15009");
     expect(testFix.prompt).toContain("unit-contract-tests");
 
     expect(
@@ -5748,6 +6079,304 @@ describe("contracts", () => {
         })
       ])
     );
+  });
+
+  test("coding agent store migrates JSON overlay items through the storage facade", async () => {
+    expect(codingAgentStateStoreMode({ DATABASE_URL: "postgres://example" })).toBe("postgres");
+    expect(
+      codingAgentStateStoreMode({
+        DATABASE_URL: "postgres://example",
+        DASHBOARD_DATA_FILE: "/tmp/dashboard-store.json"
+      })
+    ).toBe("json");
+    expect(codingAgentStateStoreMode({ CODING_AGENT_STATE_STORE: "postgres" })).toBe("postgres");
+
+    const sourcePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-coding-source-${Date.now()}.json`;
+    const targetPath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-coding-target-${Date.now()}.json`;
+    await upsertAppItem(sourcePath, {
+      id: "coding_migrate_task",
+      app: "coding-agent",
+      type: "coding-task",
+      externalId: "coding_migrate_task",
+      status: "running",
+      title: "Migrate coding task",
+      payload: {
+        id: "coding_migrate_task",
+        repo: "personal-dashboard",
+        status: "running",
+        queue: [{ id: "queue_1", kind: "user-request" }]
+      }
+    });
+    await upsertAppItem(sourcePath, {
+      id: "coding_migrate_memory",
+      app: "coding-agent",
+      type: "coding-regression-memory",
+      externalId: "coding_migrate_memory",
+      status: "active",
+      payload: {
+        id: "coding_migrate_memory",
+        repo: "personal-dashboard",
+        rootCause: "Remember this failure."
+      }
+    });
+
+    const targetStore = createCodingAgentJsonStore(targetPath);
+    expect(
+      await migrateCodingAgentJsonToStore({ filePath: sourcePath, store: targetStore })
+    ).toEqual({
+      migrated: 2,
+      mode: "json"
+    });
+    await expect(targetStore.listItems({ type: "coding-task" })).resolves.toEqual([
+      expect.objectContaining({
+        id: "coding_migrate_task",
+        payload: expect.objectContaining({
+          queue: [{ id: "queue_1", kind: "user-request" }]
+        })
+      })
+    ]);
+    await expect(targetStore.listItems({ type: "coding-regression-memory" })).resolves.toEqual([
+      expect.objectContaining({
+        id: "coding_migrate_memory"
+      })
+    ]);
+  });
+
+  test("dashboard snapshots include persisted coding-agent items", async () => {
+    const taskId = `coding_dashboard_snapshot_${Date.now()}`;
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      const register = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          id: taskId,
+          repo: "personal-dashboard",
+          title: "Snapshot coding task",
+          status: "queued"
+        })
+      });
+      expect(register.status).toBe(202);
+
+      const dashboard = await fetch(`http://127.0.0.1:${apiPort}/api/dashboard`, {
+        headers: { Authorization: "Bearer dashboard-token" }
+      });
+      expect(dashboard.status).toBe(200);
+      const json = await dashboard.json();
+      expect(json.apps.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            app: "coding-agent",
+            type: "coding-task",
+            id: taskId
+          })
+        ])
+      );
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("coding run evidence writes event logs, diff artifacts, and retention cleanup", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "dashboard-run-evidence-"));
+    try {
+      expect(runEvidenceRoot(rootDir, { CODING_AGENT_RUN_EVIDENCE_DIR: "" })).toBe(
+        join(rootDir, ".data", "runs")
+      );
+      await appendRunEvidenceEvent(rootDir, "run/evidence:1", {
+        event: "run.output",
+        data: { text: "hello" }
+      });
+      await writeRunEvidenceArtifact(rootDir, "run/evidence:1", "validation.json", "{}\n");
+      const gitCalls = [];
+      const diff = await captureRunGitDiff(rootDir, "run/evidence:1", "/tmp/worktree", {
+        command: async (executable, args, options) => {
+          expect(executable).toBe("git");
+          expect(options.cwd).toBe("/tmp/worktree");
+          gitCalls.push(args);
+          if (args[0] === "diff" && args.at(-1) === "origin/main...HEAD") {
+            return { stdout: "diff --git a/committed.js b/committed.js\n" };
+          }
+          if (args[0] === "diff" && args.at(-1) === "HEAD") {
+            return { stdout: "diff --git a/app.js b/app.js\n" };
+          }
+          if (args[0] === "ls-files") {
+            return { stdout: "new-file.js\n" };
+          }
+          if (args[0] === "diff" && args.includes("--no-index")) {
+            const error = new Error("files differ");
+            error.code = 1;
+            error.stdout = "diff --git a/dev/null b/new-file.js\n";
+            throw error;
+          }
+          return { stdout: "" };
+        }
+      });
+
+      expect(diff).toMatchObject({ captured: true, bytes: expect.any(Number) });
+      expect(gitCalls).toEqual([
+        ["diff", "--no-ext-diff", "--binary", "HEAD"],
+        ["ls-files", "--others", "--exclude-standard"],
+        ["diff", "--no-index", "--binary", "--", "/dev/null", "new-file.js"]
+      ]);
+      const baseDiff = await captureRunGitDiff(rootDir, "run/evidence:base", "/tmp/worktree", {
+        baseRef: "origin/main",
+        command: async (executable, args, options) => {
+          expect(executable).toBe("git");
+          expect(options.cwd).toBe("/tmp/worktree");
+          if (args.at(-1) === "origin/main...HEAD") {
+            return { stdout: "diff --git a/committed.js b/committed.js\n" };
+          }
+          if (args[0] === "ls-files") {
+            return { stdout: "" };
+          }
+          return { stdout: "" };
+        }
+      });
+      expect(baseDiff).toMatchObject({ captured: true });
+      expect(await readRunEvidenceEvents(rootDir, "run/evidence:1")).toEqual([
+        expect.objectContaining({
+          runId: "run/evidence:1",
+          event: {
+            event: "run.output",
+            data: { text: "hello" }
+          }
+        })
+      ]);
+
+      await deleteRunEvidence(rootDir, "run/evidence:1");
+      await expect(readRunEvidenceEvents(rootDir, "run/evidence:1")).rejects.toThrow();
+
+      await appendRunEvidenceEvent(rootDir, "run_old", { event: "run.output" });
+      await appendRunEvidenceEvent(rootDir, "run_new", { event: "run.output" });
+      await appendRunEvidenceEvent(rootDir, "run_keep", { event: "run.output" });
+      const prune = await pruneRunEvidence(
+        rootDir,
+        [
+          {
+            payload: {
+              id: "task_with_expired_evidence",
+              evidencePacks: [
+                { runId: "run_old", completedAt: "2026-05-01T00:00:00.000Z" },
+                { runId: "run_new", completedAt: "2026-07-01T00:00:00.000Z" }
+              ]
+            }
+          },
+          {
+            payload: {
+              id: "task_with_retained_evidence",
+              keepEvidence: true,
+              evidencePacks: [{ runId: "run_keep", completedAt: "2026-05-01T00:00:00.000Z" }]
+            }
+          }
+        ],
+        { now: "2026-07-08T00:00:00.000Z", retentionDays: 30 }
+      );
+      expect(prune).toMatchObject({
+        pruned: 1,
+        runIds: ["run_old"],
+        retentionDays: 30,
+        cutoff: "2026-06-08T00:00:00.000Z"
+      });
+      await expect(readRunEvidenceEvents(rootDir, "run_old")).rejects.toThrow();
+      await expect(readRunEvidenceEvents(rootDir, "run_new")).resolves.toHaveLength(1);
+      await expect(readRunEvidenceEvents(rootDir, "run_keep")).resolves.toHaveLength(1);
+
+      await expect(pruneRunEvidence(rootDir, [], { retentionDays: -1 })).resolves.toMatchObject({
+        skipped: true,
+        reason: "retention_disabled"
+      });
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  test("coding task archive removes run evidence unless retention is requested", async () => {
+    const previousEvidenceDir = process.env.CODING_AGENT_RUN_EVIDENCE_DIR;
+    const rootDir = await mkdtemp(join(tmpdir(), "dashboard-archive-evidence-"));
+    process.env.CODING_AGENT_RUN_EVIDENCE_DIR = join(rootDir, "runs");
+    const taskId = `coding_archive_evidence_${Date.now()}`;
+    const runId = `run_archive_${Date.now()}`;
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      await appendRunEvidenceEvent(".", runId, { event: "run.output", data: { text: "done" } });
+      const register = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          id: taskId,
+          repo: "personal-dashboard",
+          title: "Archive evidence task",
+          status: "running",
+          latestHermesRunId: runId,
+          evidencePacks: [{ runId }]
+        })
+      });
+      expect(register.status).toBe(202);
+
+      const archive = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/archive`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ taskId, reason: "done" })
+      });
+      expect(archive.status).toBe(202);
+      await expect(readRunEvidenceEvents(".", runId)).rejects.toThrow();
+
+      const keepRunId = `${runId}_keep`;
+      await appendRunEvidenceEvent(".", keepRunId, {
+        event: "run.output",
+        data: { text: "keep" }
+      });
+      const keepTask = `${taskId}_keep`;
+      const keepRegister = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          id: keepTask,
+          repo: "personal-dashboard",
+          title: "Keep evidence task",
+          status: "running",
+          latestHermesRunId: keepRunId,
+          keepEvidence: true,
+          evidencePacks: [{ runId: keepRunId }]
+        })
+      });
+      expect(keepRegister.status).toBe(202);
+      const keepArchive = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/archive`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ taskId: keepTask, reason: "done" })
+      });
+      expect(keepArchive.status).toBe(202);
+      await expect(readRunEvidenceEvents(".", keepRunId)).resolves.toHaveLength(1);
+    } finally {
+      await closeServer(apiServer);
+      if (previousEvidenceDir === undefined) {
+        delete process.env.CODING_AGENT_RUN_EVIDENCE_DIR;
+      } else {
+        process.env.CODING_AGENT_RUN_EVIDENCE_DIR = previousEvidenceDir;
+      }
+      await rm(rootDir, { recursive: true, force: true });
+    }
   });
 
   test("dashboard store patches app item payloads without replacing concurrent fields", async () => {

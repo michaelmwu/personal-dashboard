@@ -11,6 +11,7 @@
   "scripts": {
     "dev": "scripts/dev.sh",
     "worker": "bun scripts/integration-worker.mjs",
+    "migrate:coding-agent": "bun scripts/migrate-coding-agent-state.mjs",
     "check": "scripts/check-all.sh",
     "format": "biome format --write .",
     "format:check": "biome format .",
@@ -31,6 +32,7 @@
   "trustedDependencies": [],
   "dependencies": {
     "plaid": "^42.2.0",
+    "postgres": "^3.4.9",
     "yaml": "^2.9.0"
   }
 }
