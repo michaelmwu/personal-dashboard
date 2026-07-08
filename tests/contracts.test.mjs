@@ -19,10 +19,12 @@ import {
   assertTaskTransition,
   classifyCodingAgentRisk,
   codingAgentExecutorPayload,
+  codingTaskMissionApproved,
   codingTaskItem,
   commentRequestsCodingAgentPickup,
   duplicateCodingTaskCandidates,
   evaluateCodingAgentPrPickup,
+  normalizeCodingTaskMission,
   normalizeCodingAgentSignal,
   normalizeCodingAgentRegressionMemory,
   planCodingAgentGoalMutation,
@@ -1387,6 +1389,235 @@ describe("contracts", () => {
       expect(queuePayload.task).toMatchObject({
         id: "coding_queue_api",
         duplicateOf: "coding_existing_duplicate"
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("coding agent mission specs gate task execution", async () => {
+    const taskId = `coding_mission_${Date.now()}`;
+    const missionResult = normalizeCodingTaskMission(
+      {
+        repo: "personal-dashboard",
+        title: "Add mission gate",
+        request: "Require approved mission specs before starting coding-agent runs.",
+        definitionOfDone: ["Unapproved starts are blocked", "Approved starts dispatch"],
+        validationCommands: ["bun test tests/contracts.test.mjs"],
+        rollback: "Revert the mission-gate PR."
+      },
+      {
+        allowedRepos: ["personal-dashboard"],
+        branchPrefix: "hermes",
+        defaultBaseBranch: "origin/main"
+      }
+    );
+    expect(missionResult).toMatchObject({
+      errors: [],
+      mission: {
+        goal: "Add mission gate",
+        status: "draft",
+        allowedRepos: ["personal-dashboard"],
+        definitionOfDone: ["Unapproved starts are blocked", "Approved starts dispatch"],
+        validationCommands: ["bun test tests/contracts.test.mjs"],
+        rollback: "Revert the mission-gate PR."
+      }
+    });
+    expect(codingTaskMissionApproved(missionResult.mission)).toBe(false);
+    expect(
+      normalizeCodingTaskMission(
+        {
+          repo: "personal-dashboard",
+          title: "Bad mission",
+          request: "Try to run elsewhere.",
+          allowedRepos: ["moo-infra"]
+        },
+        {
+          allowedRepos: ["personal-dashboard"],
+          branchPrefix: "hermes",
+          defaultBaseBranch: "origin/main"
+        }
+      ).errors
+    ).toContain("mission_allowed_repo_not_allowed");
+
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+    const bridgeRequests = [];
+    const bridgeFetch = async (url, options = {}) => {
+      const path = new URL(url).pathname;
+      bridgeRequests.push({ path, method: options.method ?? "GET" });
+      if (path === "/v1/runs" && options.method === "POST") {
+        return Response.json({ run_id: "run_mission_001", status: "running" }, { status: 202 });
+      }
+      if (path === "/v1/runs/run_mission_001/events") {
+        return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+      }
+      return Response.json({ error: "not_found" }, { status: 404 });
+    };
+
+    try {
+      await withMockBridge(bridgeFetch, async (clientFetch) => {
+        const register = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              id: taskId,
+              repo: "personal-dashboard",
+              title: "Mission gated task",
+              prompt: "Require mission approval.",
+              status: "queued",
+              mission: missionResult.mission
+            })
+          }
+        );
+        expect(register.status).toBe(202);
+
+        const blockedContinue = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/control`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              taskId,
+              action: "continue",
+              requestedBy: "michaelmwu"
+            })
+          }
+        );
+        expect(blockedContinue.status).toBe(409);
+        expect(await blockedContinue.json()).toMatchObject({
+          error: "mission_approval_required"
+        });
+
+        const blockedStart = await clientFetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json",
+            "Idempotency-Key": `${taskId}_blocked_start`
+          },
+          body: JSON.stringify({
+            capabilityId: "start-coding-task",
+            origin: "dashboard",
+            payload: {
+              taskId,
+              repo: "personal-dashboard",
+              title: "Mission gated task",
+              prompt: "Require mission approval."
+            }
+          })
+        });
+        expect(blockedStart.status).toBe(202);
+        expect(await blockedStart.json()).toMatchObject({
+          dispatch: {
+            dispatched: false,
+            reason: "mission_approval_required"
+          }
+        });
+        expect(bridgeRequests).toEqual([]);
+
+        const approval = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/control`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              taskId,
+              action: "approve-mission",
+              approvedBy: "michaelmwu",
+              approvalId: "approval-mission-1"
+            })
+          }
+        );
+        expect(approval.status).toBe(202);
+        const approvedTask = await approval.json();
+        expect(approvedTask).toMatchObject({
+          task: {
+            id: taskId,
+            mission: {
+              status: "approved",
+              approvedBy: "michaelmwu",
+              approvalId: "approval-mission-1"
+            }
+          }
+        });
+        expect(codingTaskMissionApproved(approvedTask.task.mission)).toBe(true);
+
+        const executorPayload = codingAgentExecutorPayload(approvedTask.task, { events: [] });
+        expect(executorPayload.prompt).toContain("Mission:");
+        expect(executorPayload.prompt).toContain("Unapproved starts are blocked");
+
+        const summary = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/handoff-summary`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              taskId,
+              summaryId: "handoff_summary_mission"
+            })
+          }
+        );
+        expect(summary.status).toBe(202);
+        expect(await summary.json()).toMatchObject({
+          summary: {
+            mission: {
+              status: "approved"
+            },
+            definitionOfDone: [
+              { item: "Unapproved starts are blocked", status: "unknown" },
+              { item: "Approved starts dispatch", status: "unknown" }
+            ]
+          }
+        });
+
+        const approvedStart = await clientFetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json",
+            "Idempotency-Key": `${taskId}_approved_start`
+          },
+          body: JSON.stringify({
+            capabilityId: "start-coding-task",
+            origin: "dashboard",
+            payload: {
+              taskId,
+              repo: "personal-dashboard",
+              title: "Mission gated task",
+              prompt: "Require mission approval."
+            }
+          })
+        });
+        expect(approvedStart.status).toBe(202);
+        expect(await approvedStart.json()).toMatchObject({
+          dispatch: {
+            dispatched: true,
+            runId: "run_mission_001"
+          }
+        });
+        expect(bridgeRequests).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              path: "/v1/runs",
+              method: "POST"
+            })
+          ])
+        );
       });
     } finally {
       await closeServer(apiServer);

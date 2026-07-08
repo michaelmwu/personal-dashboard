@@ -26,11 +26,13 @@ import {
   applyPrStatus,
   applyCodingTaskControl,
   archiveCodingTask,
+  codingTaskMissionApproved,
   codingAgentPolicyFromEnv,
   codingTaskItem,
   enqueueCodingTaskItems,
   normalizeCodingAgentSignal,
   normalizeCodingAgentFinding,
+  normalizeCodingTaskMission,
   normalizeCodingAgentRegressionMemory,
   pickupExistingPrTask,
   planCodingAgentGoalMutation,
@@ -407,6 +409,22 @@ async function recordCodingTaskHermesRun(action, dispatch) {
   );
 }
 
+async function guardCodingTaskStartMission(action) {
+  const taskId = action.payload?.taskId ?? action.payload?.task_id;
+  const existing = taskId ? await findCodingTask({ taskId }) : undefined;
+  const mission =
+    existing?.payload?.mission ??
+    normalizeCodingTaskMission(action.payload ?? {}, codingAgentPolicy).mission;
+  if (!codingTaskMissionApproved(mission)) {
+    return {
+      ok: false,
+      reason: "mission_approval_required",
+      mission
+    };
+  }
+  return { ok: true, mission };
+}
+
 function activeHotelRateReservations(dashboard, { reservationId } = {}) {
   return dashboard.travel.reservations.filter(
     (reservation) =>
@@ -619,6 +637,18 @@ async function dispatchHermesAction(action, capability) {
 
   if (action.origin === "hermes") {
     return { dispatched: false, reason: "hermes_origin_loop_guard" };
+  }
+
+  if (action.capabilityId === "start-coding-task") {
+    const missionGuard = await guardCodingTaskStartMission(action);
+    if (!missionGuard.ok) {
+      return {
+        dispatched: false,
+        target: "coding-agent",
+        reason: missionGuard.reason,
+        mission: missionGuard.mission
+      };
+    }
   }
 
   const dispatch = await createHermesBridgeRun(action);

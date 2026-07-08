@@ -30,6 +30,7 @@
         "repo": "string",
         "title": "string",
         "prompt": "string",
+        "mission": "object",
         "baseBranch": "string?",
         "approvalRequired": "boolean?"
       }
@@ -60,6 +61,7 @@
         "repo": "string",
         "title": "string",
         "branch": "string?",
+        "mission": "object?",
         "worktreeDir": "string?",
         "hermesSessionKey": "string?",
         "prNumber": "number?",
@@ -301,8 +303,10 @@
       "description": "Apply typed operator controls such as pause, continue, tests, preview, open-pr, archive, or handoff.",
       "inputSchema": {
         "taskId": "string",
-        "action": "string",
+        "action": "pause|continue|approve-mission|handoff|archive|...",
         "requestedBy": "string?",
+        "approvedBy": "string?",
+        "approvalId": "string?",
         "reason": "string?",
         "blocker": "string?",
         "nextAction": "string?"
