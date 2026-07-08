@@ -10,8 +10,8 @@
     <main class="shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">Hermes / OpenClaw</p>
-          <h1>Personal Dashboard</h1>
+          <p class="eyebrow">Plaid Ledger / Hermes Oracle</p>
+          <h1>Transaction Dashboard</h1>
         </div>
         <div class="status-strip" id="status-strip">
           <span class="status-dot"></span>
@@ -25,16 +25,50 @@
         <div class="primary-column">
           <section class="panel alert-panel">
             <div class="panel-header">
-              <h2>Fast Path Alerts</h2>
+              <h2>Audit Findings</h2>
               <span id="alert-count"></span>
             </div>
             <div class="alert-list" id="alerts"></div>
           </section>
 
-          <section class="panel">
-            <div class="panel-header">
-              <h2>Recent Transactions</h2>
-              <span>Pending + posted</span>
+          <section class="panel transaction-panel">
+            <div class="panel-header transaction-header">
+              <div>
+                <h2>Transactions</h2>
+                <span id="transaction-count">Loading</span>
+              </div>
+              <div class="sort-toolbar" aria-label="Sort transactions">
+                <button type="button" data-sort="date">Date</button>
+                <button type="button" data-sort="merchant">Merchant</button>
+                <button type="button" data-sort="amount">Amount</button>
+                <button type="button" data-sort="category">Category</button>
+              </div>
+            </div>
+            <div class="filter-bar" aria-label="Transaction filters">
+              <label>
+                <span>Search</span>
+                <input id="transaction-search" type="search" placeholder="Merchant, category, card">
+              </label>
+              <label>
+                <span>Account</span>
+                <select id="transaction-account"></select>
+              </label>
+              <label>
+                <span>Category</span>
+                <select id="transaction-category"></select>
+              </label>
+              <label>
+                <span>Status</span>
+                <select id="transaction-status"></select>
+              </label>
+              <label>
+                <span>From</span>
+                <input id="transaction-start" type="date">
+              </label>
+              <label>
+                <span>To</span>
+                <input id="transaction-end" type="date">
+              </label>
             </div>
             <div class="transaction-table" id="transactions"></div>
           </section>
@@ -43,18 +77,26 @@
         <aside class="side-column">
           <section class="panel">
             <div class="panel-header">
-              <h2>Reward Engine</h2>
-              <span id="reward-period"></span>
+              <h2>Category Spend</h2>
+              <span>Posted + pending</span>
             </div>
-            <div class="reward-list" id="rewards"></div>
+            <div class="compact-list" id="aggregate-categories"></div>
           </section>
 
           <section class="panel">
             <div class="panel-header">
-              <h2>OpenClaw</h2>
-              <span id="openclaw-status"></span>
+              <h2>Monthly Ledger</h2>
+              <span>Net movement</span>
             </div>
-            <div class="task-list" id="tasks"></div>
+            <div class="compact-list" id="aggregate-months"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Accounts</h2>
+              <span id="finance-sync"></span>
+            </div>
+            <div class="compact-list" id="finance"></div>
           </section>
         </aside>
       </section>
@@ -82,14 +124,6 @@
             <span>Gmail parsed</span>
           </div>
           <div class="compact-list" id="reservations"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Plaid Sync</h2>
-            <span id="finance-sync"></span>
-          </div>
-          <div class="compact-list" id="finance"></div>
         </section>
 
         <section class="panel">
@@ -202,6 +236,14 @@
             <span id="integration-count"></span>
           </div>
           <div class="compact-list" id="integrations"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>OpenClaw</h2>
+            <span id="openclaw-status"></span>
+          </div>
+          <div class="task-list" id="tasks"></div>
         </section>
 
         <section class="panel">

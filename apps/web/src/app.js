@@ -8,6 +8,18 @@ const bridgeTokenStorageKey = "personal-dashboard:bridge-token";
 const bridgeRunStorageKey = "personal-dashboard:bridge-run-id";
 let appConfig = { apiBaseUrl: "" };
 let bridgeEventStream = null;
+let transactionState = {
+  q: "",
+  accountId: "",
+  category: "",
+  status: "",
+  startDate: "",
+  endDate: "",
+  sort: "date",
+  direction: "desc",
+  limit: 75,
+  offset: 0
+};
 
 async function loadConfig() {
   const response = await fetch("/config.json");
@@ -21,6 +33,35 @@ async function loadDashboard(apiBaseUrl) {
   const response = await fetch(`${apiBaseUrl}/api/dashboard`);
   if (!response.ok) {
     throw new Error(`Dashboard API returned ${response.status}`);
+  }
+  return response.json();
+}
+
+async function loadTransactions(apiBaseUrl, query = transactionState) {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, value);
+    }
+  }
+  const response = await fetch(`${apiBaseUrl}/api/transactions?${params}`);
+  if (!response.ok) {
+    throw new Error(`Transactions API returned ${response.status}`);
+  }
+  return response.json();
+}
+
+async function loadTransactionAggregate(apiBaseUrl, groupBy, query = transactionState) {
+  const params = new URLSearchParams({ groupBy });
+  for (const key of ["q", "accountId", "category", "status", "startDate", "endDate"]) {
+    const value = query[key];
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, value);
+    }
+  }
+  const response = await fetch(`${apiBaseUrl}/api/transactions/aggregate?${params}`);
+  if (!response.ok) {
+    throw new Error(`Transaction aggregate API returned ${response.status}`);
   }
   return response.json();
 }
@@ -77,6 +118,35 @@ function renderMetrics(metrics) {
     .join("");
 }
 
+function financeMetrics(dashboard) {
+  const transactions = dashboard.finance?.transactions;
+  if (!transactions) {
+    return dashboard.metrics;
+  }
+  return [
+    {
+      label: "Tracked spend",
+      value: money.format(transactions.totalSpend ?? 0),
+      delta: `${number.format(transactions.transactionCount ?? 0)} transactions`
+    },
+    {
+      label: "Accounts",
+      value: number.format(transactions.accountCount ?? dashboard.finance?.accounts?.length ?? 0),
+      delta: dashboard.finance?.sync?.state ?? "not-connected"
+    },
+    {
+      label: "Pending",
+      value: number.format(transactions.pendingCount ?? 0),
+      delta: "Not final yet"
+    },
+    {
+      label: "Credits",
+      value: number.format(transactions.creditCount ?? 0),
+      delta: "Refunds and statement credits"
+    }
+  ];
+}
+
 function renderAlerts(alerts) {
   byId("alert-count").textContent = `${alerts.length} active`;
   byId("alerts").innerHTML = alerts
@@ -94,25 +164,135 @@ function renderAlerts(alerts) {
     .join("");
 }
 
-function renderTransactions(transactions) {
+function signedMoney(amount, currency = "USD") {
+  const formatter =
+    currency === "USD"
+      ? money
+      : new Intl.NumberFormat("en-US", {
+          style: "currency",
+          currency
+        });
+  return formatter.format(amount);
+}
+
+function compactDate(value) {
+  if (!value) {
+    return "No date";
+  }
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function categoryLabel(transaction) {
+  return [transaction.category, transaction.categoryDetailed].filter(Boolean).join(" / ");
+}
+
+function localTransactionResult(dashboard) {
+  const transactions = [...(dashboard.transactions ?? [])].sort((left, right) =>
+    String(right.date ?? "").localeCompare(String(left.date ?? ""))
+  );
+  const countBy = (items, valueFor) => {
+    const counts = new Map();
+    for (const item of items) {
+      const id = valueFor(item) ?? "";
+      if (!id) {
+        continue;
+      }
+      const existing = counts.get(id) ?? { id, label: id, count: 0 };
+      existing.count += 1;
+      counts.set(id, existing);
+    }
+    return [...counts.values()];
+  };
+  return {
+    items: transactions.slice(0, transactionState.limit),
+    total: transactions.length,
+    limit: transactionState.limit,
+    offset: 0,
+    facets: {
+      accounts: countBy(transactions, (transaction) => transaction.accountId).map((facet) => ({
+        ...facet,
+        label:
+          dashboard.finance?.accounts?.find((account) => account.id === facet.id)?.name ?? facet.id
+      })),
+      categories: countBy(transactions, (transaction) => transaction.category),
+      statuses: countBy(transactions, (transaction) => transaction.status)
+    }
+  };
+}
+
+function localAggregate(dashboard, groupBy) {
+  const groups = new Map();
+  for (const transaction of dashboard.transactions ?? []) {
+    const key =
+      groupBy === "month"
+        ? String(transaction.date ?? "").slice(0, 7) || "Unknown month"
+        : transaction.category || "Unclassified";
+    const existing = groups.get(key) ?? { key, count: 0, spend: 0, credits: 0, net: 0 };
+    const amount = Number(transaction.amount ?? 0);
+    existing.count += 1;
+    existing.net += amount;
+    if (amount >= 0) {
+      existing.spend += amount;
+    } else {
+      existing.credits += Math.abs(amount);
+    }
+    groups.set(key, existing);
+  }
+  return { groupBy, total: dashboard.transactions?.length ?? 0, groups: [...groups.values()] };
+}
+
+function renderSelectOptions(select, options, placeholder) {
+  const currentValue = select.value;
+  select.innerHTML = [
+    `<option value="">${escapeHtml(placeholder)}</option>`,
+    ...options.map(
+      (option) =>
+        `<option value="${escapeHtml(option.id)}">${escapeHtml(option.label)} (${number.format(option.count)})</option>`
+    )
+  ].join("");
+  select.value = [...select.options].some((option) => option.value === currentValue)
+    ? currentValue
+    : "";
+}
+
+function renderTransactionFilters(facets) {
+  renderSelectOptions(byId("transaction-account"), facets.accounts ?? [], "All accounts");
+  renderSelectOptions(byId("transaction-category"), facets.categories ?? [], "All categories");
+  renderSelectOptions(byId("transaction-status"), facets.statuses ?? [], "Any status");
+}
+
+function renderTransactions(result) {
+  const transactions = result.items ?? [];
+  byId("transaction-count").textContent =
+    `${number.format(result.total ?? transactions.length)} matching`;
+  renderTransactionFilters(result.facets ?? {});
   byId("transactions").innerHTML = `
     <div class="table-row table-head">
+      <span>Date</span>
       <span>Merchant</span>
       <span>Card</span>
-      <span>Status</span>
+      <span>Category</span>
       <span>Amount</span>
     </div>
     ${transactions
       .map(
         (transaction) => `
-          <div class="table-row">
+          <div class="table-row ${transaction.amount < 0 ? "credit-row" : ""}">
+            <span>
+              <strong>${escapeHtml(compactDate(transaction.date))}</strong>
+              <small>${escapeHtml(transaction.status ?? "posted")}</small>
+            </span>
             <span>
               <strong>${escapeHtml(transaction.merchant)}</strong>
-              <small>${escapeHtml(transaction.category)}</small>
+              <small>${escapeHtml(transaction.paymentChannel ?? transaction.source ?? "")}</small>
             </span>
             <span>${escapeHtml(transaction.card)}</span>
-            <span><mark>${escapeHtml(transaction.status)}</mark></span>
-            <span>${money.format(transaction.amount)}</span>
+            <span>${escapeHtml(categoryLabel(transaction))}</span>
+            <span>${signedMoney(transaction.amount, transaction.isoCurrencyCode ?? "USD")}</span>
           </div>
         `
       )
@@ -120,25 +300,23 @@ function renderTransactions(transactions) {
   `;
 }
 
-function renderRewards(summary) {
-  byId("reward-period").textContent = summary.period;
-  byId("rewards").innerHTML = `
-    <div class="reward-total">
-      <span>Estimated points</span>
-      <strong>${number.format(summary.estimatedPoints)}</strong>
-    </div>
-    ${summary.insights
+function renderAggregate(targetId, aggregate) {
+  const rows = (aggregate.groups ?? []).slice(0, 8);
+  byId(targetId).innerHTML =
+    rows
       .map(
-        (insight) => `
-          <article class="reward-card">
-            <strong>${escapeHtml(insight.title)}</strong>
-            <p>${escapeHtml(insight.detail)}</p>
-            <span>${number.format(insight.pointsImpact)} point impact</span>
+        (group) => `
+          <article class="compact-card aggregate-card">
+            <span class="pill">${number.format(group.count)}</span>
+            <div>
+              <strong>${escapeHtml(group.key)}</strong>
+              <p>${signedMoney(group.spend)} spend · ${signedMoney(group.credits)} credits</p>
+            </div>
+            <small>${signedMoney(group.net)}</small>
           </article>
         `
       )
-      .join("")}
-  `;
+      .join("") || `<p class="empty-state">No matching transactions.</p>`;
 }
 
 function renderTasks(openclaw) {
@@ -236,7 +414,7 @@ function renderTravel(travel) {
 }
 
 function renderFinance(finance) {
-  byId("finance-sync").textContent = finance.sync.state;
+  byId("finance-sync").textContent = finance.sync?.state ?? "not-connected";
   byId("finance").innerHTML = finance.accounts
     .map(
       (account) => `
@@ -553,6 +731,81 @@ async function submitIssueTriage() {
   renderOperatorResult(payload);
 }
 
+function updateTransactionStateFromControls() {
+  transactionState = {
+    ...transactionState,
+    q: byId("transaction-search").value.trim(),
+    accountId: byId("transaction-account").value,
+    category: byId("transaction-category").value,
+    status: byId("transaction-status").value,
+    startDate: byId("transaction-start").value,
+    endDate: byId("transaction-end").value,
+    offset: 0
+  };
+}
+
+function sortButtonLabel(sort, active) {
+  const label = `${sort[0].toUpperCase()}${sort.slice(1)}`;
+  if (!active) {
+    return label;
+  }
+  return `${label} ${transactionState.direction === "asc" ? "up" : "down"}`;
+}
+
+function markActiveSortButton() {
+  for (const button of document.querySelectorAll("[data-sort]")) {
+    const active = button.dataset.sort === transactionState.sort;
+    button.classList.toggle("active", active);
+    button.textContent = sortButtonLabel(button.dataset.sort, active);
+  }
+}
+
+async function refreshTransactionView() {
+  const [transactions, categoryAggregate, monthAggregate] = await Promise.all([
+    loadTransactions(appConfig.apiBaseUrl),
+    loadTransactionAggregate(appConfig.apiBaseUrl, "category"),
+    loadTransactionAggregate(appConfig.apiBaseUrl, "month")
+  ]);
+  renderTransactions(transactions);
+  renderAggregate("aggregate-categories", categoryAggregate);
+  renderAggregate("aggregate-months", monthAggregate);
+  markActiveSortButton();
+}
+
+function reportTransactionError(error) {
+  byId("transaction-count").textContent = error instanceof Error ? error.message : String(error);
+}
+
+function setupTransactionControls() {
+  const filterIds = [
+    "transaction-search",
+    "transaction-account",
+    "transaction-category",
+    "transaction-status",
+    "transaction-start",
+    "transaction-end"
+  ];
+  for (const id of filterIds) {
+    byId(id).addEventListener("input", () => {
+      updateTransactionStateFromControls();
+      refreshTransactionView().catch(reportTransactionError);
+    });
+  }
+  for (const button of document.querySelectorAll("[data-sort]")) {
+    button.addEventListener("click", () => {
+      const sort = button.dataset.sort;
+      transactionState = {
+        ...transactionState,
+        sort,
+        direction:
+          transactionState.sort === sort && transactionState.direction === "desc" ? "asc" : "desc"
+      };
+      refreshTransactionView().catch(reportTransactionError);
+    });
+  }
+  markActiveSortButton();
+}
+
 function setupHermesBridgeControls() {
   byId("bridge-token").value = sessionStorage.getItem(bridgeTokenStorageKey) ?? "";
   byId("bridge-run-id").value = sessionStorage.getItem(bridgeRunStorageKey) ?? "";
@@ -601,11 +854,21 @@ async function main() {
     const config = await loadConfig();
     appConfig = config;
     const dashboard = await loadDashboard(config.apiBaseUrl);
+    const [transactions, categoryAggregate, monthAggregate] = await Promise.all([
+      loadTransactions(config.apiBaseUrl).catch(() => localTransactionResult(dashboard)),
+      loadTransactionAggregate(config.apiBaseUrl, "category").catch(() =>
+        localAggregate(dashboard, "category")
+      ),
+      loadTransactionAggregate(config.apiBaseUrl, "month").catch(() =>
+        localAggregate(dashboard, "month")
+      )
+    ]);
     renderStatus(dashboard);
-    renderMetrics(dashboard.metrics);
+    renderMetrics(financeMetrics(dashboard));
     renderAlerts(dashboard.alerts);
-    renderTransactions(dashboard.transactions);
-    renderRewards(dashboard.rewards);
+    renderTransactions(transactions);
+    renderAggregate("aggregate-categories", categoryAggregate);
+    renderAggregate("aggregate-months", monthAggregate);
     renderTasks(dashboard.openclaw);
     renderTravel(dashboard.travel);
     renderFinance(dashboard.finance);
@@ -613,6 +876,7 @@ async function main() {
     renderHermes(dashboard.hermes);
     renderIntegrations(dashboard.integrations);
     renderPluginPanels(dashboard.apps);
+    setupTransactionControls();
     setupHermesBridgeControls();
   } catch (error) {
     byId("status-strip").textContent = error instanceof Error ? error.message : String(error);

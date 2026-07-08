@@ -101,6 +101,13 @@ import {
   upsertHermesEvent,
   upsertNormalizedEvent
 } from "../../packages/storage/dashboard-store.mjs";
+import {
+  aggregateTransactions,
+  queryTransactions,
+  transactionAggregateQueryFromSearchParams,
+  transactionQueryFromSearchParams,
+  transactionSummary
+} from "../../packages/transactions/index.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "../..");
@@ -115,12 +122,17 @@ const codingAgentPolicy = codingAgentPolicyFromEnv();
 
 async function dashboardSnapshot() {
   const dashboard = await loadDashboard(dashboardFixture(), storePath);
+  const transactionStats = transactionSummary(dashboard.transactions, dashboard.finance.accounts);
   const registry = await pluginRegistry();
   const registryItems = registry.apps.flatMap((app) =>
     genericAppItemsFromDashboard(dashboard, app.id)
   );
   return {
     ...dashboard,
+    finance: {
+      ...dashboard.finance,
+      transactions: transactionStats
+    },
     apps: {
       manifests: registry.apps,
       panels: registry.panels,
@@ -650,11 +662,14 @@ async function syncPlaidItem(item) {
     accessToken: item.accessToken,
     cursor: item.cursor
   });
+  const accountById = new Map(sync.accounts.map((account) => [account.account_id, account]));
   const normalizedSync = {
     ...sync,
     accounts: sync.accounts.map(normalizePlaidAccount),
-    added: sync.added.map(normalizePlaidTransaction),
-    modified: sync.modified.map(normalizePlaidTransaction),
+    added: sync.added.map((transaction) => normalizePlaidTransaction(transaction, { accountById })),
+    modified: sync.modified.map((transaction) =>
+      normalizePlaidTransaction(transaction, { accountById })
+    ),
     removed: sync.removed.map(normalizeRemovedPlaidTransaction)
   };
   await applyPlaidSync(storePath, item.id, normalizedSync);
@@ -1063,6 +1078,34 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
 
       if (request.method === "GET" && url.pathname === "/api/dashboard") {
         json(response, 200, await dashboardSnapshot());
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/transactions") {
+        const dashboard = await dashboardSnapshot();
+        json(
+          response,
+          200,
+          queryTransactions(
+            dashboard.transactions,
+            transactionQueryFromSearchParams(url.searchParams),
+            dashboard.finance.accounts
+          )
+        );
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/transactions/aggregate") {
+        const dashboard = await dashboardSnapshot();
+        json(
+          response,
+          200,
+          aggregateTransactions(
+            dashboard.transactions,
+            transactionAggregateQueryFromSearchParams(url.searchParams),
+            dashboard.finance.accounts
+          )
+        );
         return;
       }
 

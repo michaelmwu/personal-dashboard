@@ -329,19 +329,37 @@ export function normalizePlaidAccount(account) {
   };
 }
 
-export function normalizePlaidTransaction(transaction) {
+export function normalizePlaidTransaction(transaction, { accountById = new Map() } = {}) {
+  const account = accountById.get(transaction.account_id);
+  const personalFinanceCategory = transaction.personal_finance_category ?? {};
   return {
     id: transaction.transaction_id,
     accountId: transaction.account_id,
     merchant: transaction.merchant_name ?? transaction.name ?? "Unknown merchant",
     amount: Number(transaction.amount ?? 0),
-    category:
-      transaction.personal_finance_category?.primary ?? transaction.category?.[0] ?? "Unclassified",
-    card: transaction.account_owner ?? transaction.accountName ?? "Unknown account",
+    category: personalFinanceCategory.primary ?? transaction.category?.[0] ?? "Unclassified",
+    categoryDetailed: personalFinanceCategory.detailed ?? transaction.category?.[1],
+    categoryConfidence: personalFinanceCategory.confidence_level,
+    card:
+      transaction.account_owner ??
+      transaction.accountName ??
+      account?.name ??
+      account?.official_name ??
+      "Unknown account",
     status: transaction.pending ? "pending" : "posted",
+    pending: Boolean(transaction.pending),
     date: transaction.date,
     authorizedDate: transaction.authorized_date,
     pendingTransactionId: transaction.pending_transaction_id,
+    paymentChannel: transaction.payment_channel,
+    isoCurrencyCode: transaction.iso_currency_code,
+    unofficialCurrencyCode: transaction.unofficial_currency_code,
+    merchantEntityId: transaction.merchant_entity_id,
+    name: transaction.name,
+    logoUrl: transaction.logo_url,
+    website: transaction.website,
+    location: transaction.location,
+    sourceTransactionId: transaction.transaction_id,
     source: "plaid"
   };
 }
