@@ -181,6 +181,13 @@ to narrow the scan list, otherwise it reuses pickup/allowed repos. The scanner
 skips PRs and already-triaged issues before posting to the dashboard triage
 endpoint.
 
+Coding tasks reserve a 10-port local block for their thread. The task payload
+stores `portRange` plus `conductorPort`, and executor payloads include
+`CONDUCTOR_PORT=<base>` so repo worktree port scripts can use `<base>-<base+9>`
+without colliding with other active coding-agent tasks. Defaults are
+`CODING_AGENT_PORT_BASE=12000` and `CODING_AGENT_PORT_SLOTS=400`; explicit
+`conductorPort` values are rounded down to the nearest `...0` block base.
+
 Set `CODING_AGENT_RECONCILE_ENABLED=true` on the integration worker to run
 dashboard-side reconciliation. It posts to
 `/api/apps/coding-agent/reconcile`, does not contact providers, and records

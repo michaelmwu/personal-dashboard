@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export const CODING_AGENT_APP_ID = "coding-agent";
 export const CODING_AGENT_PICKUP_MARKERS = [
   "@coding-agent pickup",
@@ -10,6 +12,9 @@ export const CODING_AGENT_PICKUP_MARKERS = [
 
 const TRUSTED_GITHUB_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const TERMINAL_CODING_TASK_STATUSES = new Set(["merged", "abandoned", "failed", "archived"]);
+const CODING_AGENT_PORT_RANGE_SIZE = 10;
+const DEFAULT_CODING_AGENT_PORT_BASE = 12000;
+const DEFAULT_CODING_AGENT_PORT_SLOTS = 400;
 
 export const CODING_TASK_STATUSES = [
   "queued",
@@ -157,6 +162,14 @@ export function codingAgentPolicyFromEnv(env = process.env) {
       .filter(Boolean),
     branchPrefix: env.CODING_AGENT_BRANCH_PREFIX ?? "hermes",
     defaultBaseBranch: env.CODING_AGENT_DEFAULT_BASE_BRANCH ?? "origin/main",
+    portBase: Number.parseInt(
+      env.CODING_AGENT_PORT_BASE ?? String(DEFAULT_CODING_AGENT_PORT_BASE),
+      10
+    ),
+    portSlots: Number.parseInt(
+      env.CODING_AGENT_PORT_SLOTS ?? String(DEFAULT_CODING_AGENT_PORT_SLOTS),
+      10
+    ),
     pickupTrustedActors,
     denyBotPickup: env.CODING_AGENT_PICKUP_ALLOW_BOTS !== "true"
   };
@@ -173,6 +186,115 @@ export function slug(value) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 48);
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== "");
+}
+
+function alignPortBase(value) {
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed)) {
+    return undefined;
+  }
+  return Math.floor(parsed / CODING_AGENT_PORT_RANGE_SIZE) * CODING_AGENT_PORT_RANGE_SIZE;
+}
+
+function portRangeForBase(base) {
+  return {
+    base,
+    start: base,
+    end: base + CODING_AGENT_PORT_RANGE_SIZE - 1,
+    size: CODING_AGENT_PORT_RANGE_SIZE,
+    env: {
+      CONDUCTOR_PORT: String(base)
+    }
+  };
+}
+
+function stablePortSlot(seed, slots) {
+  const digest = createHash("sha256").update(String(seed)).digest("hex");
+  return Number.parseInt(digest.slice(0, 8), 16) % slots;
+}
+
+function taskPayload(item) {
+  return item?.payload ?? item ?? {};
+}
+
+function assignedPortBase(task) {
+  return firstDefined(
+    task.portRange?.base,
+    task.port_range?.base,
+    task.conductorPort,
+    task.conductor_port
+  );
+}
+
+function reservedPortBases(existingTasks = [], currentTaskId) {
+  return new Set(
+    existingTasks
+      .map(taskPayload)
+      .filter((task) => task.id !== currentTaskId)
+      .filter((task) => !TERMINAL_CODING_TASK_STATUSES.has(task.status))
+      .map(assignedPortBase)
+      .map(alignPortBase)
+      .filter((base) => base !== undefined)
+  );
+}
+
+export function normalizeCodingTaskPortRange(payload = {}, existingTasks = [], options = {}) {
+  const explicitBase = alignPortBase(
+    firstDefined(
+      payload.portRange?.base,
+      payload.port_range?.base,
+      payload.portRange?.start,
+      payload.port_range?.start,
+      payload.conductorPort,
+      payload.conductor_port
+    )
+  );
+  if (explicitBase !== undefined) {
+    return portRangeForBase(explicitBase);
+  }
+
+  const currentTaskId = payload.id ?? payload.taskId ?? payload.task_id;
+  const baseStart =
+    alignPortBase(options.portBase ?? DEFAULT_CODING_AGENT_PORT_BASE) ??
+    DEFAULT_CODING_AGENT_PORT_BASE;
+  const parsedSlots = Number.parseInt(
+    String(options.portSlots ?? DEFAULT_CODING_AGENT_PORT_SLOTS),
+    10
+  );
+  const slots = Number.isFinite(parsedSlots)
+    ? Math.max(1, parsedSlots)
+    : DEFAULT_CODING_AGENT_PORT_SLOTS;
+  const seed =
+    firstDefined(
+      payload.threadId,
+      payload.thread_id,
+      payload.coordination?.threadId,
+      payload.coordination?.thread_id,
+      currentTaskId,
+      payload.repo,
+      payload.githubRepo,
+      payload.title,
+      payload.prompt,
+      payload.request
+    ) ?? "coding-agent";
+  const reserved = reservedPortBases(existingTasks, currentTaskId);
+  const preferredSlot = stablePortSlot(seed, slots);
+
+  for (let offset = 0; offset < slots; offset += 1) {
+    const base = baseStart + ((preferredSlot + offset) % slots) * CODING_AGENT_PORT_RANGE_SIZE;
+    if (base + CODING_AGENT_PORT_RANGE_SIZE - 1 > 65535) {
+      continue;
+    }
+    if (!reserved.has(base)) {
+      return portRangeForBase(base);
+    }
+  }
+
+  throw new Error("No coding-agent port range available.");
 }
 
 export function codingTaskId(payload) {
@@ -338,6 +460,18 @@ export function codingTaskItem(payload, existing, options = {}) {
   assertTaskTransition(currentStatus, requestedStatus);
 
   const title = payload.title ?? previous.title ?? `${repo ?? "Coding"} task`;
+  const portRange = normalizeCodingTaskPortRange(
+    {
+      ...previous,
+      ...payload,
+      id
+    },
+    options.existingTasks ?? [],
+    {
+      portBase: options.portBase,
+      portSlots: options.portSlots
+    }
+  );
   const previewUrl = payload.previewUrl ?? payload.preview_url ?? previous.previewUrl;
   const detail = [repo, branch, prNumber ? `PR #${prNumber}` : undefined, previewUrl]
     .filter(Boolean)
@@ -384,6 +518,8 @@ export function codingTaskItem(payload, existing, options = {}) {
       baseBranch: payload.baseBranch ?? payload.base_branch ?? previous.baseBranch,
       branch,
       worktreeDir: payload.worktreeDir ?? payload.worktree_dir ?? previous.worktreeDir,
+      conductorPort: portRange.base,
+      portRange,
       hermesSessionKey:
         payload.hermesSessionKey ?? payload.hermes_session_key ?? previous.hermesSessionKey,
       hermesRunId: payload.hermesRunId ?? payload.hermes_run_id ?? previous.hermesRunId,
@@ -680,6 +816,8 @@ export function codingAgentExecutorPayload(task, context = {}) {
     ? `Before inspecting or editing files, change into this task worktree: ${task.worktreeDir}`
     : "Resolve the task worktree from the coding task registry before inspecting or editing files.";
   const mission = task.mission;
+  const portRange = task.portRange ?? normalizeCodingTaskPortRange(task);
+  const portInstruction = `Use this task's local port block when running dev servers: export CONDUCTOR_PORT=${portRange.base}. The repo worktree port script may use ports ${portRange.start}-${portRange.end}.`;
 
   return {
     taskId: task.id,
@@ -687,6 +825,11 @@ export function codingAgentExecutorPayload(task, context = {}) {
     githubRepo,
     prNumber,
     worktreeDir: task.worktreeDir,
+    conductorPort: portRange.base,
+    portRange,
+    env: {
+      CONDUCTOR_PORT: String(portRange.base)
+    },
     hermesSessionKey: task.hermesSessionKey,
     sessionId,
     mode,
@@ -694,6 +837,7 @@ export function codingAgentExecutorPayload(task, context = {}) {
       "You are the coding-agent executor for a Personal Dashboard coding task.",
       "Use structured task fields as the source of truth; do not infer state from transcript prose.",
       worktreeInstruction,
+      portInstruction,
       "Address only the supplied PR feedback, failed checks, or update request.",
       "Use regression memory as evidence about prior failed fixes; do not blindly retry known-bad approaches.",
       "Run the narrowest relevant tests or checks you can identify from the repository.",
@@ -708,6 +852,7 @@ export function codingAgentExecutorPayload(task, context = {}) {
       prNumber ? `PR: #${prNumber}` : undefined,
       task.branch ? `Branch: ${task.branch}` : undefined,
       task.worktreeDir ? `Worktree: ${task.worktreeDir}` : undefined,
+      `Port block: ${portRange.start}-${portRange.end} (CONDUCTOR_PORT=${portRange.base})`,
       "",
       mission ? "Mission:" : undefined,
       mission ? JSON.stringify(mission, null, 2) : undefined,
@@ -733,6 +878,8 @@ export function codingAgentExecutorPayload(task, context = {}) {
       githubRepo,
       prNumber,
       worktreeDir: task.worktreeDir,
+      conductorPort: portRange.base,
+      portRange,
       branch: task.branch,
       cursor: context.cursor,
       regressionMemoryCount: regressionMemory.length
@@ -1154,8 +1301,14 @@ export function planCodingTaskQueue(payload = {}, existingTasks = [], options = 
     mode: "one-task-one-worktree",
     workRoot: payload.workRoot ?? payload.work_root,
     branchPrefix: payload.branchPrefix ?? payload.branch_prefix ?? "hermes",
+    portRangeSize: CODING_AGENT_PORT_RANGE_SIZE,
+    portBase: options.policy?.portBase ?? DEFAULT_CODING_AGENT_PORT_BASE,
     retention: payload.retention ?? "archive-before-cleanup"
   };
+  const portRange = normalizeCodingTaskPortRange(payload, existingTasks, {
+    portBase: options.policy?.portBase,
+    portSlots: options.policy?.portSlots
+  });
   const item = codingTaskItem(
     {
       id: payload.taskId ?? payload.task_id ?? payload.id,
@@ -1166,6 +1319,7 @@ export function planCodingTaskQueue(payload = {}, existingTasks = [], options = 
       mission: intakePlan.mission,
       branch: payload.branch,
       baseBranch: payload.baseBranch ?? payload.base_branch,
+      portRange,
       priority,
       status: blocked ? "needs-clarification" : "queued",
       duplicateCandidates,
@@ -1201,7 +1355,12 @@ export function planCodingTaskQueue(payload = {}, existingTasks = [], options = 
       ]
     },
     undefined,
-    { now }
+    {
+      now,
+      existingTasks,
+      portBase: options.policy?.portBase,
+      portSlots: options.policy?.portSlots
+    }
   );
   return {
     ok: true,
