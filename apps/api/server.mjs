@@ -400,9 +400,38 @@ async function recordCodingTaskHermesRun(action, dispatch) {
       {
         hermesRunId: dispatch.runId,
         latestHermesRunId: dispatch.runId,
-        hermesRunStatus: "running"
+        hermesRunStatus: "running",
+        hermesLastEventAt: new Date().toISOString()
       },
       existing
+    )
+  );
+}
+
+async function recordCodingTaskHermesRunEvent(action, runId, status, lastEventAt) {
+  const taskId =
+    action.payload?.taskId ??
+    action.payload?.task_id ??
+    action.payload?.metadata?.taskId ??
+    action.payload?.metadata?.task_id;
+  if (!taskId || !runId) {
+    return;
+  }
+  const existing = await findCodingTask({ taskId });
+  if (!existing) {
+    return;
+  }
+  await persistCodingTaskItem(
+    codingTaskItem(
+      {
+        hermesRunId: existing.payload?.hermesRunId ?? runId,
+        latestHermesRunId: runId,
+        hermesRunStatus: typeof status === "string" ? status : "running",
+        lastEventAt,
+        hermesLastEventAt: lastEventAt
+      },
+      existing,
+      { now: lastEventAt }
     )
   );
 }
@@ -590,22 +619,29 @@ async function streamBridgeRunOntoAction(action, runId) {
   try {
     await streamHermesBridgeRunEvents(runId, async (event) => {
       const status = event.data?.status;
+      const lastEventAt = new Date().toISOString();
       await patchHermesAction(storePath, action.id, {
         status: typeof status === "string" ? status : "running",
         bridgeRunId: runId,
+        lastEventAt,
         dispatch: {
           target: "hermes-bridge",
           runId,
+          lastEventAt,
           lastEvent: event
         }
       });
+      await recordCodingTaskHermesRunEvent(action, runId, status, lastEventAt);
     });
   } catch (error) {
+    const lastEventAt = new Date().toISOString();
     await patchHermesAction(storePath, action.id, {
       status: "dispatch_error",
+      lastEventAt,
       dispatch: {
         target: "hermes-bridge",
         runId,
+        lastEventAt,
         error: error instanceof Error ? error.message : String(error)
       }
     });
