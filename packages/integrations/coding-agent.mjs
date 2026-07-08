@@ -380,6 +380,9 @@ export function codingTaskItem(payload, existing, options = {}) {
         payload.latestHermesRunId ?? payload.latest_hermes_run_id ?? previous.latestHermesRunId,
       hermesRunStatus:
         payload.hermesRunStatus ?? payload.hermes_run_status ?? previous.hermesRunStatus,
+      lastEventAt: payload.lastEventAt ?? payload.last_event_at ?? previous.lastEventAt,
+      hermesLastEventAt:
+        payload.hermesLastEventAt ?? payload.hermes_last_event_at ?? previous.hermesLastEventAt,
       prNumber,
       prUrl: payload.prUrl ?? payload.pr_url ?? previous.prUrl,
       headSha: payload.headSha ?? payload.head_sha ?? previous.headSha,
@@ -1097,6 +1100,14 @@ export function reconcileCodingAgentTasks(items = [], payload = {}, options = {}
     Number.isFinite(requestedStaleRunningMinutes) && requestedStaleRunningMinutes >= 0
       ? requestedStaleRunningMinutes
       : 90;
+  const requestedRunQuietMinutes = Number.parseInt(
+    payload.runQuietMinutes ?? payload.run_quiet_minutes ?? 10,
+    10
+  );
+  const runQuietMinutes =
+    Number.isFinite(requestedRunQuietMinutes) && requestedRunQuietMinutes >= 0
+      ? requestedRunQuietMinutes
+      : 10;
   const results = [];
   const taskItems = [];
 
@@ -1106,6 +1117,10 @@ export function reconcileCodingAgentTasks(items = [], payload = {}, options = {}
       continue;
     }
     const ageMinutes = minutesBetween(task.updatedAt ?? task.createdAt ?? item.ts, now);
+    const quietAgeMinutes = minutesBetween(
+      task.lastEventAt ?? task.hermesLastEventAt ?? task.updatedAt ?? task.createdAt ?? item.ts,
+      now
+    );
     const hasRunAnchor = Boolean(task.latestHermesRunId ?? task.hermesRunId);
     let reason;
     let status;
@@ -1117,6 +1132,11 @@ export function reconcileCodingAgentTasks(items = [], payload = {}, options = {}
       hasRunAnchor &&
       ageMinutes >= staleRunningMinutes &&
       task.status !== "running";
+    const stalledActiveRun =
+      task.hermesRunStatus === "running" &&
+      hasRunAnchor &&
+      quietAgeMinutes >= runQuietMinutes &&
+      ageMinutes < staleRunningMinutes;
 
     if (task.status === "running" && !hasRunAnchor) {
       reason = "missing_hermes_run_anchor";
@@ -1138,6 +1158,17 @@ export function reconcileCodingAgentTasks(items = [], payload = {}, options = {}
         attempted: ["startup-reconciliation"],
         artifacts: task.latestHermesRunId ? [`hermes:${task.latestHermesRunId}`] : [],
         nextAction: "inspect logs and resume explicitly",
+        createdAt: now
+      };
+    } else if (stalledActiveRun) {
+      reason = "stalled_hermes_run";
+      status = "waiting-for-approval";
+      hermesRunStatus = "stalled";
+      handoff = {
+        blocker: "stalled_hermes_run",
+        attempted: ["watchdog-reconciliation"],
+        artifacts: task.latestHermesRunId ? [`hermes:${task.latestHermesRunId}`] : [],
+        nextAction: "inspect Bridge stream and resume explicitly",
         createdAt: now
       };
     } else if (staleActiveRun) {
@@ -1174,6 +1205,7 @@ export function reconcileCodingAgentTasks(items = [], payload = {}, options = {}
               previousStatus: task.status,
               nextStatus: status,
               ageMinutes,
+              quietAgeMinutes,
               providerMutationAllowed: false
             }
           }
@@ -1189,6 +1221,7 @@ export function reconcileCodingAgentTasks(items = [], payload = {}, options = {}
       nextStatus: status,
       reason,
       ageMinutes,
+      quietAgeMinutes,
       providerMutationAllowed: false
     });
   }
@@ -1212,6 +1245,7 @@ export function reconcileCodingAgentTasks(items = [], payload = {}, options = {}
       checked: items.length,
       reconciled: results.length,
       staleRunningMinutes,
+      runQuietMinutes,
       results,
       providerMutationAllowed: false,
       reconciledAt: now

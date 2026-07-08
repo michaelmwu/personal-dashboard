@@ -126,6 +126,17 @@ function waitForOutput(child, pattern) {
   });
 }
 
+async function waitFor(condition, { attempts = 20, intervalMs = 25 } = {}) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const result = await condition();
+    if (result) {
+      return result;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
 async function withMockBridge(fetchImpl, fn) {
   const previousFetch = globalThis.fetch;
   const previousUrl = process.env.HERMES_BRIDGE_URL;
@@ -2433,7 +2444,9 @@ describe("contracts", () => {
         return Response.json({ run_id: "run_coding_001", status: "running" }, { status: 202 });
       }
       if (path === "/v1/runs/run_coding_001/events") {
-        return new Response("", { headers: { "Content-Type": "text/event-stream" } });
+        return new Response('event: run.status\ndata: {"status":"running"}\n\n', {
+          headers: { "Content-Type": "text/event-stream" }
+        });
       }
       return Response.json({ error: "not_found" }, { status: 404 });
     };
@@ -2513,14 +2526,22 @@ describe("contracts", () => {
           }
         });
 
-        const tasks = await clientFetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`);
-        expect(await tasks.json()).toEqual({
+        const tasksJson = await waitFor(async () => {
+          const tasks = await clientFetch(
+            `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`
+          );
+          const json = await tasks.json();
+          return json.tasks.some((task) => task.id === taskId && task.lastEventAt) ? json : false;
+        });
+        expect(tasksJson).toEqual({
           tasks: expect.arrayContaining([
             expect.objectContaining({
               id: taskId,
               hermesRunId: "run_coding_001",
               latestHermesRunId: "run_coding_001",
-              hermesRunStatus: "running"
+              hermesRunStatus: "running",
+              lastEventAt: expect.any(String),
+              hermesLastEventAt: expect.any(String)
             })
           ])
         });
@@ -2563,6 +2584,19 @@ describe("contracts", () => {
       undefined,
       { now: "2026-07-06T11:50:00.000Z" }
     );
+    const stalled = codingTaskItem(
+      {
+        id: "coding_reconcile_stalled",
+        repo: "personal-dashboard",
+        title: "Stalled task",
+        status: "running",
+        latestHermesRunId: "run_stalled",
+        hermesRunStatus: "running",
+        lastEventAt: "2026-07-06T11:40:00.000Z"
+      },
+      undefined,
+      { now: "2026-07-06T11:40:00.000Z" }
+    );
     const stalePrUpdate = codingTaskItem(
       {
         id: "coding_reconcile_pr_update",
@@ -2578,9 +2612,10 @@ describe("contracts", () => {
     );
 
     const result = reconcileCodingAgentTasks(
-      [orphan, stale, healthy, stalePrUpdate],
+      [orphan, stale, healthy, stalled, stalePrUpdate],
       {
         staleRunningMinutes: 60,
+        runQuietMinutes: 10,
         id: "coding_reconciliation_request",
         auditId: "coding_reconciliation_test"
       },
@@ -2591,7 +2626,7 @@ describe("contracts", () => {
 
     expect(result).toMatchObject({
       ok: true,
-      reconciled: 3,
+      reconciled: 4,
       results: [
         {
           taskId: "coding_reconcile_orphan",
@@ -2608,6 +2643,13 @@ describe("contracts", () => {
           providerMutationAllowed: false
         },
         {
+          taskId: "coding_reconcile_stalled",
+          previousStatus: "running",
+          nextStatus: "waiting-for-approval",
+          reason: "stalled_hermes_run",
+          providerMutationAllowed: false
+        },
+        {
           taskId: "coding_reconcile_pr_update",
           previousStatus: "pr-open",
           nextStatus: "waiting-for-approval",
@@ -2621,8 +2663,9 @@ describe("contracts", () => {
         status: "completed",
         payload: {
           requestId: "coding_reconciliation_request",
-          checked: 4,
-          reconciled: 3,
+          checked: 5,
+          reconciled: 4,
+          runQuietMinutes: 10,
           providerMutationAllowed: false
         }
       }
@@ -2653,6 +2696,16 @@ describe("contracts", () => {
           hermesRunStatus: "stale",
           handoff: expect.objectContaining({
             blocker: "stale_running_task"
+          })
+        })
+      }),
+      expect.objectContaining({
+        id: "coding_reconcile_stalled",
+        payload: expect.objectContaining({
+          status: "waiting-for-approval",
+          hermesRunStatus: "stalled",
+          handoff: expect.objectContaining({
+            blocker: "stalled_hermes_run"
           })
         })
       }),
@@ -4832,7 +4885,8 @@ describe("contracts", () => {
       "CODING_AGENT_ISSUE_TRIAGE_ENABLED",
       "CODING_AGENT_RECONCILE_ENABLED",
       "CODING_AGENT_RECONCILE_WATCHDOG_ENABLED",
-      "CODING_AGENT_STALE_RUNNING_MINUTES"
+      "CODING_AGENT_STALE_RUNNING_MINUTES",
+      "CODING_AGENT_RUN_QUIET_MINUTES"
     ];
     const previousEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
     const requests = [];
@@ -4843,6 +4897,7 @@ describe("contracts", () => {
       }
       process.env.CODING_AGENT_RECONCILE_ENABLED = "true";
       process.env.CODING_AGENT_STALE_RUNNING_MINUTES = "7";
+      process.env.CODING_AGENT_RUN_QUIET_MINUTES = "3";
       globalThis.fetch = async (url, options = {}) => {
         requests.push({
           path: new URL(url).pathname,
@@ -4857,7 +4912,8 @@ describe("contracts", () => {
         {
           path: "/api/apps/coding-agent/reconcile",
           body: {
-            staleRunningMinutes: 7
+            staleRunningMinutes: 7,
+            runQuietMinutes: 3
           }
         }
       ]);
@@ -4873,20 +4929,45 @@ describe("contracts", () => {
 
       requests.length = 0;
       const loopResults = await runConfiguredIngestions({ startup: false });
-      expect(requests).toEqual([]);
-      expect(loopResults.some((result) => result.source === "coding-agent-reconcile")).toBe(false);
-
-      process.env.CODING_AGENT_RECONCILE_WATCHDOG_ENABLED = "true";
-      const watchdogResults = await runConfiguredIngestions({ startup: false });
       expect(requests).toEqual([
         {
           path: "/api/apps/coding-agent/reconcile",
           body: {
-            staleRunningMinutes: 7
+            staleRunningMinutes: 7,
+            runQuietMinutes: 3
           }
         }
       ]);
-      expect(watchdogResults).toEqual(
+      expect(loopResults).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: "coding-agent-reconcile",
+            accepted: true,
+            reconciled: 2
+          })
+        ])
+      );
+
+      requests.length = 0;
+      process.env.CODING_AGENT_RECONCILE_WATCHDOG_ENABLED = "false";
+      const watchdogDisabledResults = await runConfiguredIngestions({ startup: false });
+      expect(requests).toEqual([]);
+      expect(
+        watchdogDisabledResults.some((result) => result.source === "coding-agent-reconcile")
+      ).toBe(false);
+
+      process.env.CODING_AGENT_RECONCILE_WATCHDOG_ENABLED = "true";
+      const watchdogEnabledResults = await runConfiguredIngestions({ startup: false });
+      expect(requests).toEqual([
+        {
+          path: "/api/apps/coding-agent/reconcile",
+          body: {
+            staleRunningMinutes: 7,
+            runQuietMinutes: 3
+          }
+        }
+      ]);
+      expect(watchdogEnabledResults).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             source: "coding-agent-reconcile",

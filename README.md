@@ -173,12 +173,14 @@ skips PRs and already-triaged issues before posting to the dashboard triage
 endpoint.
 
 Set `CODING_AGENT_RECONCILE_ENABLED=true` on the integration worker to run
-dashboard-side startup reconciliation. It posts to
+dashboard-side reconciliation. It posts to
 `/api/apps/coding-agent/reconcile`, does not contact providers, and records
 `coding-reconciliation` audit items. Use `CODING_AGENT_STALE_RUNNING_MINUTES`
-to override the default 90-minute stale running threshold. Reconciliation runs
-only on worker startup by default; set `CODING_AGENT_RECONCILE_WATCHDOG_ENABLED`
-to run it on every polling interval.
+to override the default 90-minute stale running threshold, and
+`CODING_AGENT_RUN_QUIET_MINUTES` to override the default 10-minute Bridge event
+quiet window that marks active Hermes runs as stalled. Reconciliation runs on
+startup and every worker polling interval by default; set
+`CODING_AGENT_RECONCILE_WATCHDOG_ENABLED=false` to keep it startup-only.
 
 Plaid-facing endpoints:
 

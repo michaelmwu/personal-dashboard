@@ -19,6 +19,14 @@ function envNumber(name, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function envBoolean(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined || value === "") {
+    return fallback;
+  }
+  return !["0", "false", "no", "off"].includes(value.toLowerCase());
+}
+
 function authHeaders(token) {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
@@ -702,12 +710,13 @@ export async function runConfiguredIngestions(options = {}) {
   }
   if (
     process.env.CODING_AGENT_RECONCILE_ENABLED === "true" &&
-    (options.startup || process.env.CODING_AGENT_RECONCILE_WATCHDOG_ENABLED === "true")
+    (options.startup || envBoolean("CODING_AGENT_RECONCILE_WATCHDOG_ENABLED", true))
   ) {
     results.push(
       await runIngestion("coding-agent-reconcile", () =>
         postDashboardAction("/api/apps/coding-agent/reconcile", {
-          staleRunningMinutes: envNumber("CODING_AGENT_STALE_RUNNING_MINUTES", 90)
+          staleRunningMinutes: envNumber("CODING_AGENT_STALE_RUNNING_MINUTES", 90),
+          runQuietMinutes: envNumber("CODING_AGENT_RUN_QUIET_MINUTES", 10)
         })
       )
     );
