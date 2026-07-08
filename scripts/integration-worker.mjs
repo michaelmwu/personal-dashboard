@@ -13,6 +13,74 @@ import {
 } from "../packages/integrations/coding-agent.mjs";
 
 const execFileAsync = promisify(execFile);
+const VALIDATION_OUTPUT_TAIL_CHARS = 6000;
+
+function outputTail(value, maxChars = VALIDATION_OUTPUT_TAIL_CHARS) {
+  const text = String(value ?? "");
+  return text.length <= maxChars ? text : text.slice(text.length - maxChars);
+}
+
+export function splitValidationCommand(command) {
+  const text = String(command ?? "").trim();
+  const tokens = [];
+  let current = "";
+  let quote;
+  let escaping = false;
+  for (const char of text) {
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaping = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (quote) {
+    throw new Error("validation_command_unclosed_quote");
+  }
+  if (escaping) {
+    current += "\\";
+  }
+  if (current) {
+    tokens.push(current);
+  }
+  if (!tokens.length) {
+    throw new Error("validation_command_empty");
+  }
+  if (
+    tokens.some(
+      (token) =>
+        ["&&", "||", "|", ";", ">", ">>", "<"].includes(token) ||
+        token.includes("$(") ||
+        token.includes("`")
+    )
+  ) {
+    throw new Error("validation_command_shell_operator_rejected");
+  }
+  return { executable: tokens[0], args: tokens.slice(1) };
+}
 
 function envNumber(name, fallback) {
   const value = Number.parseInt(process.env[name] ?? "", 10);
@@ -110,6 +178,107 @@ async function getDashboardJson(path) {
     throw new Error(`Dashboard GET ${path} failed with HTTP ${response.status}`);
   }
   return response.json();
+}
+
+function validationCommandsForTask(task) {
+  return Array.isArray(task.mission?.validationCommands) ? task.mission.validationCommands : [];
+}
+
+async function runValidationCommand(command, task, options = {}) {
+  const startedAt = Date.now();
+  let parsed;
+  try {
+    parsed = splitValidationCommand(command);
+  } catch (error) {
+    return {
+      command,
+      cwd: task.worktreeDir,
+      exitCode: 127,
+      durationMs: Date.now() - startedAt,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+
+  try {
+    const result = await (options.command ?? execFileAsync)(parsed.executable, parsed.args, {
+      cwd: task.worktreeDir,
+      timeout: options.timeoutMs ?? envNumber("CODING_AGENT_VALIDATION_TIMEOUT_MS", 120000),
+      maxBuffer: options.maxBuffer ?? 1024 * 1024
+    });
+    return {
+      command,
+      executable: parsed.executable,
+      args: parsed.args,
+      cwd: task.worktreeDir,
+      exitCode: 0,
+      durationMs: Date.now() - startedAt,
+      stdoutTail: outputTail(result.stdout),
+      stderrTail: outputTail(result.stderr)
+    };
+  } catch (error) {
+    return {
+      command,
+      executable: parsed.executable,
+      args: parsed.args,
+      cwd: task.worktreeDir,
+      exitCode: Number.isFinite(error?.code) ? error.code : 1,
+      signal: error?.signal,
+      durationMs: Date.now() - startedAt,
+      stdoutTail: outputTail(error?.stdout),
+      stderrTail: outputTail(error?.stderr),
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+export async function runCodingTaskValidation(task, options = {}) {
+  const commands = validationCommandsForTask(task);
+  const attempt = (Number.parseInt(task.validationAttempts ?? 0, 10) || 0) + 1;
+  if (!task.worktreeDir) {
+    return {
+      taskId: task.id,
+      status: "failed",
+      attempt,
+      runId: task.latestHermesRunId ?? task.hermesRunId,
+      commands: [
+        {
+          command: "(resolve task worktree)",
+          exitCode: 1,
+          error: "missing_worktree_dir"
+        }
+      ],
+      summary: "Validation failed because the task has no worktreeDir."
+    };
+  }
+  if (!commands.length) {
+    return {
+      taskId: task.id,
+      status: "skipped",
+      attempt,
+      runId: task.latestHermesRunId ?? task.hermesRunId,
+      commands: [],
+      summary: "No mission.validationCommands were approved for this task."
+    };
+  }
+
+  const results = [];
+  for (const command of commands) {
+    const result = await runValidationCommand(command, task, options);
+    results.push(result);
+    if (result.exitCode !== 0) {
+      break;
+    }
+  }
+  const passed =
+    results.length === commands.length && results.every((result) => result.exitCode === 0);
+  return {
+    taskId: task.id,
+    status: passed ? "passed" : "failed",
+    attempt,
+    runId: task.latestHermesRunId ?? task.hermesRunId,
+    commands: results,
+    summary: passed ? "All validation commands passed." : "One or more validation commands failed."
+  };
 }
 
 async function readJsonFeed(filePath) {
@@ -628,6 +797,83 @@ async function dispatchCodingTaskUpdate(task, snapshot) {
   });
 }
 
+async function dispatchCodingTaskValidationRepair(task, validation, options = {}) {
+  const maxRepairAttempts =
+    options.maxRepairAttempts ?? envNumber("CODING_AGENT_MAX_REPAIR_ATTEMPTS", 3);
+  if (validation.status !== "failed" || validation.attempt >= maxRepairAttempts) {
+    return { dispatched: false, reason: "repair_not_allowed" };
+  }
+  const executorPayload = codingAgentExecutorPayload(task, {
+    mode: "validation-repair",
+    events: [
+      {
+        kind: "validation",
+        status: validation.status,
+        attempt: validation.attempt,
+        commands: validation.commands
+      }
+    ],
+    checks: {
+      failed: validation.commands
+        .filter((command) => command.exitCode !== 0)
+        .map((command) => ({
+          name: command.command,
+          conclusion: "failure",
+          summary: command.stderrTail || command.stdoutTail || command.error
+        }))
+    }
+  });
+  return postDashboardAction("/api/hermes/actions", {
+    capabilityId: "update-coding-task",
+    origin: "dashboard",
+    idempotencyKey: `coding-agent:${task.id}:validation-repair:${validation.id}`,
+    payload: executorPayload
+  });
+}
+
+export async function validateCodingAgentTasks(options = {}) {
+  const tasksResponse =
+    options.tasksResponse ??
+    (await getDashboardJson("/api/apps/coding-agent/tasks?includeArchived=false"));
+  const maxRepairAttempts =
+    options.maxRepairAttempts ?? envNumber("CODING_AGENT_MAX_REPAIR_ATTEMPTS", 3);
+  const tasks = (tasksResponse.tasks ?? []).filter((task) => {
+    if (task.status !== "running") {
+      return false;
+    }
+    if (!validationCommandsForTask(task).length) {
+      return false;
+    }
+    const runId = task.latestHermesRunId ?? task.hermesRunId;
+    return !task.latestValidation || task.latestValidation.runId !== runId;
+  });
+  const results = [];
+  for (const task of tasks) {
+    const validation = await runCodingTaskValidation(task, options);
+    const persisted = await (
+      options.persistValidation ??
+      ((payload) => postDashboardAction("/api/apps/coding-agent/validate", payload))
+    )({
+      ...validation,
+      maxRepairAttempts
+    });
+    const repair =
+      validation.status === "failed"
+        ? await (options.dispatchRepair ?? dispatchCodingTaskValidationRepair)(task, validation, {
+            maxRepairAttempts
+          })
+        : { dispatched: false, reason: "validation_passed" };
+    results.push({
+      taskId: task.id,
+      status: validation.status,
+      attempt: validation.attempt,
+      persisted,
+      repair
+    });
+  }
+  return { taskCount: tasks.length, results };
+}
+
 async function syncTaskPrSnapshot(task, snapshot) {
   return postDashboardAction("/api/apps/coding-agent/pr-status", {
     taskId: task.id,
@@ -713,6 +959,9 @@ export async function runConfiguredIngestions(options = {}) {
   }
   if (process.env.CODING_AGENT_ISSUE_TRIAGE_ENABLED === "true") {
     results.push(await runIngestion("coding-agent-issue-triage", discoverCodingAgentIssueTriage));
+  }
+  if (process.env.CODING_AGENT_VALIDATION_ENABLED === "true") {
+    results.push(await runIngestion("coding-agent-validation", validateCodingAgentTasks));
   }
   if (
     process.env.CODING_AGENT_RECONCILE_ENABLED === "true" &&

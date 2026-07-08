@@ -19,13 +19,17 @@ import {
   archiveCodingTask,
   assertTaskTransition,
   classifyCodingAgentRisk,
+  applyPrStatus,
+  applyCodingTaskControl,
   codingAgentExecutorPayload,
   codingTaskMissionApproved,
+  codingTaskValidationPassed,
   codingTaskItem,
   commentRequestsCodingAgentPickup,
   duplicateCodingTaskCandidates,
   evaluateCodingAgentPrPickup,
   normalizeCodingTaskMission,
+  applyCodingTaskValidation,
   normalizeCodingAgentSignal,
   normalizeCodingAgentRegressionMemory,
   planCodingAgentGoalMutation,
@@ -89,8 +93,11 @@ import {
   discoverCodingAgentPrPickups,
   fetchCodingTaskPrSnapshot,
   pollCodingAgentPrs,
+  runCodingTaskValidation,
   runConfiguredIngestions,
-  runIngestion
+  runIngestion,
+  splitValidationCommand,
+  validateCodingAgentTasks
 } from "../scripts/integration-worker.mjs";
 
 function listen(server) {
@@ -3130,6 +3137,339 @@ describe("contracts", () => {
     } finally {
       await closeServer(apiServer);
     }
+  });
+
+  test("coding agent validation gates PR-ready transitions", () => {
+    const runningTask = codingTaskItem(
+      {
+        id: "coding_validation_gate",
+        repo: "personal-dashboard",
+        title: "Validate before PR",
+        status: "running",
+        worktreeDir: "/tmp/coding-validation",
+        latestHermesRunId: "run_validation_gate",
+        mission: {
+          goal: "Validate before PR",
+          context: "PR-ready state must be system validated.",
+          constraints: [],
+          allowedRepos: ["personal-dashboard"],
+          definitionOfDone: ["Validation gate blocks unvalidated PRs."],
+          validationCommands: ["bun test tests/contracts.test.mjs"],
+          rollback: "Revert the validation gate change.",
+          status: "approved",
+          approvedBy: "michaelmwu",
+          approvalId: "approval-validation-gate"
+        }
+      },
+      undefined,
+      { now: "2026-07-07T10:00:00.000Z" }
+    );
+
+    const blocked = applyPrStatus(
+      runningTask,
+      {
+        taskId: "coding_validation_gate",
+        status: "pr-open",
+        prNumber: 37
+      },
+      { now: "2026-07-07T10:01:00.000Z" }
+    );
+    expect(blocked.payload).toMatchObject({
+      status: "waiting-for-approval",
+      handoff: {
+        blocker: "validation_required"
+      },
+      queue: expect.arrayContaining([
+        expect.objectContaining({
+          kind: "coding-validation-required",
+          status: "blocked"
+        })
+      ])
+    });
+
+    const failedValidation = applyCodingTaskValidation(
+      runningTask,
+      {
+        taskId: "coding_validation_gate",
+        runId: "run_validation_gate",
+        status: "failed",
+        attempt: 1,
+        maxRepairAttempts: 1,
+        commands: [
+          {
+            command: "bun test",
+            exitCode: 1,
+            stderrTail: "contract failure"
+          }
+        ]
+      },
+      { now: "2026-07-07T10:02:00.000Z" }
+    );
+    expect(failedValidation.payload).toMatchObject({
+      status: "needs-clarification",
+      validationAttempts: 1,
+      latestValidation: {
+        status: "failed",
+        runId: "run_validation_gate"
+      },
+      handoff: {
+        blocker: "validation_failed"
+      }
+    });
+
+    const passedValidation = applyCodingTaskValidation(
+      runningTask,
+      {
+        taskId: "coding_validation_gate",
+        runId: "run_validation_gate",
+        status: "passed",
+        attempt: 1,
+        commands: [
+          {
+            command: "bun test",
+            exitCode: 0,
+            stdoutTail: "pass"
+          }
+        ]
+      },
+      { now: "2026-07-07T10:03:00.000Z" }
+    );
+    expect(codingTaskValidationPassed(passedValidation.payload)).toBe(true);
+    const opened = applyPrStatus(
+      passedValidation,
+      {
+        taskId: "coding_validation_gate",
+        status: "pr-open",
+        prNumber: 37
+      },
+      { now: "2026-07-07T10:04:00.000Z" }
+    );
+    expect(opened.payload.status).toBe("pr-open");
+
+    expect(
+      applyCodingTaskControl(runningTask, {
+        action: "open-pr",
+        requestedBy: "michaelmwu"
+      })
+    ).toMatchObject({
+      ok: false,
+      reason: "validation_required"
+    });
+    expect(
+      applyCodingTaskControl(runningTask, {
+        action: "open-pr",
+        requestedBy: "michaelmwu",
+        approvedBy: "michaelmwu",
+        approvalId: "validation-override-1",
+        overrideValidation: true,
+        reason: "Emergency operator override."
+      })
+    ).toMatchObject({
+      ok: true,
+      task: {
+        status: "pr-open",
+        validationOverride: {
+          overridden: true,
+          approvalId: "validation-override-1"
+        }
+      }
+    });
+  });
+
+  test("coding agent validation API persists command results", async () => {
+    const taskId = `coding_validation_api_${Date.now()}`;
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      const register = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          id: taskId,
+          repo: "personal-dashboard",
+          title: "Validation API task",
+          status: "running",
+          worktreeDir: "/tmp/coding-validation-api",
+          latestHermesRunId: "run_validation_api",
+          mission: {
+            goal: "Validation API task",
+            context: "Persist validation result.",
+            constraints: [],
+            allowedRepos: ["personal-dashboard"],
+            definitionOfDone: ["Validation is persisted."],
+            validationCommands: ["bun --version"],
+            rollback: "Revert validation API changes.",
+            status: "approved",
+            approvedBy: "michaelmwu",
+            approvalId: "approval-validation-api"
+          }
+        })
+      });
+      expect(register.status).toBe(202);
+
+      const validate = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/validate`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          taskId,
+          runId: "run_validation_api",
+          status: "passed",
+          attempt: 1,
+          commands: [
+            {
+              command: "bun --version",
+              exitCode: 0,
+              stdoutTail: "1.3.14"
+            }
+          ]
+        })
+      });
+      expect(validate.status).toBe(202);
+      expect(await validate.json()).toMatchObject({
+        accepted: true,
+        validation: {
+          status: "passed",
+          passed: true,
+          runId: "run_validation_api"
+        },
+        task: {
+          id: taskId,
+          latestValidation: {
+            status: "passed"
+          },
+          queue: expect.arrayContaining([
+            expect.objectContaining({
+              kind: "coding-validation",
+              status: "passed"
+            })
+          ])
+        }
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("integration worker runs coding task validation without a shell", async () => {
+    expect(splitValidationCommand('bun -e "console.log(42)"')).toEqual({
+      executable: "bun",
+      args: ["-e", "console.log(42)"]
+    });
+    expect(() => splitValidationCommand("bun test && rm -rf /")).toThrow(
+      "validation_command_shell_operator_rejected"
+    );
+
+    const task = {
+      id: "coding_validation_worker",
+      repo: "personal-dashboard",
+      status: "running",
+      worktreeDir: "/tmp/coding-validation-worker",
+      latestHermesRunId: "run_validation_worker",
+      mission: {
+        validationCommands: ["bun --version", "bun test"]
+      }
+    };
+    const validation = await runCodingTaskValidation(task, {
+      command: async (executable, args, options) => {
+        expect(options.cwd).toBe("/tmp/coding-validation-worker");
+        if (args.includes("test")) {
+          const error = new Error("Command failed");
+          error.code = 1;
+          error.stdout = "";
+          error.stderr = "failing test output";
+          throw error;
+        }
+        return { stdout: `${executable} ok`, stderr: "" };
+      }
+    });
+
+    expect(validation).toMatchObject({
+      taskId: "coding_validation_worker",
+      status: "failed",
+      attempt: 1,
+      runId: "run_validation_worker",
+      commands: [
+        {
+          command: "bun --version",
+          exitCode: 0,
+          stdoutTail: "bun ok"
+        },
+        {
+          command: "bun test",
+          exitCode: 1,
+          stderrTail: "failing test output"
+        }
+      ]
+    });
+  });
+
+  test("integration worker dispatches validation repair up to the configured cap", async () => {
+    const task = {
+      id: "coding_validation_repair",
+      repo: "personal-dashboard",
+      title: "Repair validation failure",
+      status: "running",
+      worktreeDir: "/tmp/coding-validation-repair",
+      latestHermesRunId: "run_validation_repair",
+      mission: {
+        validationCommands: ["bun test"],
+        status: "approved",
+        approvedBy: "michaelmwu",
+        approvalId: "approval-validation-repair"
+      }
+    };
+    const persisted = [];
+    const repairs = [];
+    const result = await validateCodingAgentTasks({
+      tasksResponse: { tasks: [task] },
+      maxRepairAttempts: 3,
+      command: async () => {
+        const error = new Error("Command failed");
+        error.code = 1;
+        error.stderr = "validation failed";
+        throw error;
+      },
+      persistValidation: async (payload) => {
+        persisted.push(payload);
+        return { accepted: true, validation: payload };
+      },
+      dispatchRepair: async (repairTask, validation) => {
+        repairs.push({ taskId: repairTask.id, validation });
+        return { dispatched: true, runId: "run_validation_repair_update" };
+      }
+    });
+
+    expect(result).toMatchObject({
+      taskCount: 1,
+      results: [
+        {
+          taskId: "coding_validation_repair",
+          status: "failed",
+          attempt: 1,
+          repair: {
+            dispatched: true,
+            runId: "run_validation_repair_update"
+          }
+        }
+      ]
+    });
+    expect(persisted[0]).toMatchObject({
+      taskId: "coding_validation_repair",
+      status: "failed",
+      maxRepairAttempts: 3
+    });
+    expect(repairs[0].validation.commands[0]).toMatchObject({
+      command: "bun test",
+      exitCode: 1,
+      stderrTail: "validation failed"
+    });
   });
 
   test("coding agent reconciliation marks orphaned and stale running tasks", () => {
