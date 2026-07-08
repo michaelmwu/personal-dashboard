@@ -38,6 +38,7 @@ export const CODING_AGENT_CONTROL_ACTIONS = [
   "pause",
   "explain",
   "continue",
+  "approve-mission",
   "tests",
   "preview",
   "open-pr",
@@ -364,6 +365,7 @@ export function codingTaskItem(payload, existing, options = {}) {
       duplicateCandidates:
         payload.duplicateCandidates ?? payload.duplicate_candidates ?? previous.duplicateCandidates,
       intakePlan: payload.intakePlan ?? payload.intake_plan ?? previous.intakePlan,
+      mission: payload.mission ?? payload.mission_spec ?? previous.mission,
       riskReview: payload.riskReview ?? payload.risk_review ?? previous.riskReview,
       coordination: payload.coordination ?? previous.coordination,
       latestControl: payload.latestControl ?? payload.latest_control ?? previous.latestControl,
@@ -543,6 +545,7 @@ export function codingAgentExecutorPayload(task, context = {}) {
   const worktreeInstruction = task.worktreeDir
     ? `Before inspecting or editing files, change into this task worktree: ${task.worktreeDir}`
     : "Resolve the task worktree from the coding task registry before inspecting or editing files.";
+  const mission = task.mission;
 
   return {
     taskId: task.id,
@@ -572,6 +575,9 @@ export function codingAgentExecutorPayload(task, context = {}) {
       task.branch ? `Branch: ${task.branch}` : undefined,
       task.worktreeDir ? `Worktree: ${task.worktreeDir}` : undefined,
       "",
+      mission ? "Mission:" : undefined,
+      mission ? JSON.stringify(mission, null, 2) : undefined,
+      mission ? "" : undefined,
       "Task prompt:",
       task.prompt ?? "(no original prompt recorded)",
       "",
@@ -655,6 +661,83 @@ function branchAllowed(branch, policy) {
 
 function approvalPresent(payload) {
   return Boolean(payload.approvedBy && payload.approvalId);
+}
+
+function stringList(value) {
+  const items = Array.isArray(value) ? value : value ? [value] : [];
+  return items.map((item) => String(item).trim()).filter(Boolean);
+}
+
+export function normalizeCodingTaskMission(payload = {}, policy = codingAgentPolicyFromEnv()) {
+  const source = payload.mission ?? payload;
+  const repo = payload.repo ?? payload.githubRepo ?? payload.github_repo ?? source.repo;
+  const allowedRepos = stringList(
+    source.allowedRepos ?? source.allowed_repos ?? payload.allowedRepos ?? repo
+  ).map(shortRepoName);
+  const definitionOfDone = stringList(
+    source.definitionOfDone ??
+      source.definition_of_done ??
+      payload.definitionOfDone ??
+      payload.definition_of_done ??
+      payload.acceptanceCriteria ??
+      payload.acceptance_criteria
+  );
+  const validationCommands = stringList(
+    source.validationCommands ??
+      source.validation_commands ??
+      payload.validationCommands ??
+      payload.validation_commands
+  );
+  const approvedBy = source.approvedBy ?? source.approved_by ?? payload.approvedBy;
+  const approvalId = source.approvalId ?? source.approval_id ?? payload.approvalId;
+  const approved = Boolean(source.approved ?? source.operatorApproved ?? source.operator_approved);
+  const mission = {
+    goal: String(source.goal ?? payload.goal ?? payload.title ?? payload.request ?? "").trim(),
+    context: String(
+      source.context ?? payload.context ?? payload.request ?? payload.prompt ?? ""
+    ).trim(),
+    constraints: stringList(source.constraints ?? payload.constraints),
+    allowedRepos,
+    definitionOfDone: definitionOfDone.length
+      ? definitionOfDone
+      : ["Requested change is implemented.", "Relevant checks pass."],
+    validationCommands,
+    rollback: String(
+      source.rollback ??
+        payload.rollback ??
+        "Revert the task branch or PR and redeploy the previous known-good version."
+    ).trim(),
+    status: approved || approvalPresent({ approvedBy, approvalId }) ? "approved" : "draft",
+    approvedBy,
+    approvalId,
+    approvedAt: source.approvedAt ?? source.approved_at
+  };
+  const disallowedRepos = mission.allowedRepos.filter((repo) => !repoAllowed(repo, policy));
+  const errors = [];
+  if (!mission.goal) {
+    errors.push("missing_mission_goal");
+  }
+  if (!mission.allowedRepos.length) {
+    errors.push("missing_mission_allowed_repos");
+  }
+  if (disallowedRepos.length) {
+    errors.push("mission_allowed_repo_not_allowed");
+  }
+  if (!mission.rollback) {
+    errors.push("missing_mission_rollback");
+  }
+  return { mission, errors, disallowedRepos };
+}
+
+export function codingTaskMissionApproved(mission) {
+  return Boolean(
+    mission &&
+      mission.status === "approved" &&
+      mission.approvedBy &&
+      mission.approvalId &&
+      mission.goal &&
+      mission.allowedRepos?.length
+  );
 }
 
 function riskApprovalPresent(payload) {
@@ -772,10 +855,12 @@ export function classifyCodingAgentRisk(payload = {}) {
 
 export function codingAgentIntakePlan(payload = {}, options = {}) {
   const now = options.now ?? new Date().toISOString();
+  const policy = options.policy ?? codingAgentPolicyFromEnv();
   const request = payload.request ?? payload.prompt ?? "";
   const repo = payload.repo;
   const title = payload.title ?? (request ? request.split("\n")[0].slice(0, 80) : "Coding task");
   const risk = classifyCodingAgentRisk(payload);
+  const missionResult = normalizeCodingTaskMission({ ...payload, title, request, repo }, policy);
   const clarifyingQuestions = [];
   if (!repo) {
     clarifyingQuestions.push("Which repository should this task run in?");
@@ -787,6 +872,14 @@ export function codingAgentIntakePlan(payload = {}, options = {}) {
     clarifyingQuestions.push(
       "This touches a high-risk area. What explicit approval should gate execution?"
     );
+  }
+  if (missionResult.errors.includes("mission_allowed_repo_not_allowed")) {
+    clarifyingQuestions.push(
+      "Mission allowedRepos must be a subset of CODING_AGENT_ALLOWED_REPOS."
+    );
+  }
+  if (missionResult.errors.includes("missing_mission_goal")) {
+    clarifyingQuestions.push("Mission goal is required before execution.");
   }
   const status = clarifyingQuestions.length
     ? risk.highRisk
@@ -801,6 +894,8 @@ export function codingAgentIntakePlan(payload = {}, options = {}) {
     repo,
     status,
     risk,
+    mission: missionResult.mission,
+    missionErrors: missionResult.errors,
     clarifyingQuestions,
     proposedTests: payload.proposedTests ?? payload.proposed_tests ?? [],
     affectedSurfaces: payload.affectedSurfaces ?? payload.affected_surfaces ?? risk.categories,
@@ -811,13 +906,14 @@ export function codingAgentIntakePlan(payload = {}, options = {}) {
 
 export function planCodingTaskIntake(payload = {}, options = {}) {
   const now = options.now ?? new Date().toISOString();
-  const intakePlan = codingAgentIntakePlan(payload, { now });
+  const intakePlan = codingAgentIntakePlan(payload, { now, policy: options.policy });
   const item = codingTaskItem(
     {
       id: payload.taskId ?? payload.task_id ?? payload.id,
       repo: intakePlan.repo ?? payload.repo,
       title: intakePlan.title,
       prompt: intakePlan.request,
+      mission: intakePlan.mission,
       branch: payload.branch,
       baseBranch: payload.baseBranch ?? payload.base_branch,
       status: intakePlan.status,
@@ -854,7 +950,7 @@ export function planCodingTaskIntake(payload = {}, options = {}) {
 
 export function planCodingTaskQueue(payload = {}, existingTasks = [], options = {}) {
   const now = options.now ?? new Date().toISOString();
-  const intakePlan = codingAgentIntakePlan(payload, { now });
+  const intakePlan = codingAgentIntakePlan(payload, { now, policy: options.policy });
   const duplicateCandidates = duplicateCodingTaskCandidates(payload, existingTasks);
   const priority = normalizeCodingAgentPriority(payload.priority);
   const blocked = intakePlan.status !== "queued" || duplicateCandidates.length > 0;
@@ -871,6 +967,7 @@ export function planCodingTaskQueue(payload = {}, existingTasks = [], options = 
       githubRepo: payload.githubRepo ?? payload.github_repo,
       title: intakePlan.title,
       prompt: intakePlan.request,
+      mission: intakePlan.mission,
       branch: payload.branch,
       baseBranch: payload.baseBranch ?? payload.base_branch,
       priority,
@@ -1032,12 +1129,36 @@ export function applyCodingTaskControl(existing, payload = {}, options = {}) {
   if (previous.status === "archived" && action !== "archive") {
     return { ok: false, statusCode: 409, reason: "task_archived" };
   }
+  if (action === "approve-mission" && !previous.mission) {
+    return { ok: false, statusCode: 409, reason: "missing_mission" };
+  }
+  const requestedApproval = {
+    approvedBy:
+      payload.approvedBy ?? payload.approved_by ?? payload.requestedBy ?? payload.requested_by,
+    approvalId: payload.approvalId ?? payload.approval_id
+  };
+  if (action === "approve-mission" && !approvalPresent(requestedApproval)) {
+    return { ok: false, statusCode: 409, reason: "mission_approval_required" };
+  }
+  if (action === "continue" && !codingTaskMissionApproved(previous.mission)) {
+    return { ok: false, statusCode: 409, reason: "mission_approval_required" };
+  }
   const control = {
     action,
     requestedBy: payload.requestedBy ?? payload.requested_by,
     reason: payload.reason,
     createdAt: now
   };
+  const mission =
+    action === "approve-mission"
+      ? {
+          ...previous.mission,
+          status: "approved",
+          approvedBy: requestedApproval.approvedBy,
+          approvalId: requestedApproval.approvalId,
+          approvedAt: now
+        }
+      : previous.mission;
   const handoff =
     action === "handoff"
       ? {
@@ -1064,6 +1185,7 @@ export function applyCodingTaskControl(existing, payload = {}, options = {}) {
     existing,
     {
       status,
+      mission,
       latestControl: control,
       handoff,
       items: [
@@ -1302,6 +1424,10 @@ export function summarizeCodingTaskHandoff(existing, payload = {}, options = {})
     ...(task.handoff?.attempted ?? []),
     ...blockedQueue.map((item) => item.kind).filter(Boolean)
   ].filter((item, index, items) => items.indexOf(item) === index);
+  const definitionOfDone = (task.mission?.definitionOfDone ?? []).map((item) => ({
+    item,
+    status: task.mission?.definitionOfDoneStatus?.[item] ?? "unknown"
+  }));
   const requestId = payload.id ?? payload.requestId ?? payload.request_id;
   const id =
     payload.summaryId ??
@@ -1342,6 +1468,8 @@ export function summarizeCodingTaskHandoff(existing, payload = {}, options = {})
         rejectionReason: item.rejectionReason
       })),
       latestEvents,
+      mission: task.mission,
+      definitionOfDone,
       artifacts: [
         task.prUrl,
         task.previewUrl,
