@@ -983,6 +983,59 @@ describe("contracts", () => {
     }
   });
 
+  test("mutating API endpoints require bearer auth before side effects", async () => {
+    const mutatingEndpoints = [
+      "/api/apps/test-app/events",
+      "/api/apps/coding-agent/tasks",
+      "/api/apps/coding-agent/intake-plan",
+      "/api/apps/coding-agent/queue-plan",
+      "/api/apps/coding-agent/pr-pickup",
+      "/api/apps/coding-agent/issue-triage",
+      "/api/apps/coding-agent/coordination",
+      "/api/apps/coding-agent/control",
+      "/api/apps/coding-agent/risk-review",
+      "/api/apps/coding-agent/signals",
+      "/api/apps/coding-agent/findings",
+      "/api/apps/coding-agent/regression-memory",
+      "/api/apps/coding-agent/goal-mutations",
+      "/api/apps/coding-agent/queue",
+      "/api/apps/coding-agent/pr-status",
+      "/api/apps/coding-agent/validate",
+      "/api/apps/coding-agent/reconcile",
+      "/api/apps/coding-agent/handoff-summary",
+      "/api/apps/coding-agent/pr-maintenance",
+      "/api/apps/coding-agent/archive",
+      "/api/travel/reservations",
+      "/api/integrations/plaid/link-token",
+      "/api/integrations/plaid/exchange-public-token",
+      "/api/integrations/plaid/sync",
+      "/api/integrations/plaid/webhook",
+      "/api/integrations/hotel-rate-finder/sync",
+      "/api/hermes/bridge/runs",
+      "/api/hermes/bridge/runs/run_auth/approval",
+      "/api/hermes/bridge/runs/run_auth/stop",
+      "/api/hermes/actions",
+      "/api/integrations/hermes/actions",
+      "/api/integrations/hermes/events",
+      "/api/integrations/asia-travel-deals/events"
+    ];
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      for (const endpoint of mutatingEndpoints) {
+        const response = await fetch(`http://127.0.0.1:${apiPort}${endpoint}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}"
+        });
+        expect(response.status).toBe(401);
+      }
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
   test("coding agent registry persists task anchors through deterministic Hermes actions", async () => {
     const taskId = `coding_test_${Date.now()}`;
     const apiServer = createApiServer({ apiToken: "dashboard-token" });
