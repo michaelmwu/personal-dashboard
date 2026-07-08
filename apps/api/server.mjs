@@ -397,13 +397,15 @@ async function recordCodingTaskHermesRun(action, dispatch) {
   if (!existing) {
     return;
   }
+  const lastEventAt = new Date().toISOString();
   await persistCodingTaskItem(
     codingTaskItem(
       {
         hermesRunId: dispatch.runId,
         latestHermesRunId: dispatch.runId,
         hermesRunStatus: "running",
-        hermesLastEventAt: new Date().toISOString()
+        lastEventAt,
+        hermesLastEventAt: lastEventAt
       },
       existing
     )
@@ -423,12 +425,17 @@ async function recordCodingTaskHermesRunEvent(action, runId, status, lastEventAt
   if (!existing) {
     return;
   }
+  const task = existing.payload ?? {};
+  if (task.latestHermesRunId && task.latestHermesRunId !== runId) {
+    return;
+  }
+  const hermesRunStatus = typeof status === "string" ? status : (task.hermesRunStatus ?? "running");
   await persistCodingTaskItem(
     codingTaskItem(
       {
-        hermesRunId: existing.payload?.hermesRunId ?? runId,
+        hermesRunId: task.hermesRunId ?? runId,
         latestHermesRunId: runId,
-        hermesRunStatus: typeof status === "string" ? status : "running",
+        hermesRunStatus,
         lastEventAt,
         hermesLastEventAt: lastEventAt
       },
@@ -438,12 +445,39 @@ async function recordCodingTaskHermesRunEvent(action, runId, status, lastEventAt
   );
 }
 
-async function guardCodingTaskStartMission(action) {
-  const taskId = action.payload?.taskId ?? action.payload?.task_id;
+function actionWithMission(action, mission) {
+  const prompt = action.payload?.prompt ?? "";
+  const missionBlock = `Mission:\n${JSON.stringify(mission, null, 2)}`;
+  const promptIncludesMission = String(prompt).includes("Mission:");
+  return {
+    ...action,
+    payload: {
+      ...action.payload,
+      mission,
+      prompt: promptIncludesMission ? prompt : [prompt, missionBlock].filter(Boolean).join("\n\n")
+    }
+  };
+}
+
+async function guardCodingAgentMission(action) {
+  const taskId =
+    action.payload?.taskId ??
+    action.payload?.task_id ??
+    action.payload?.metadata?.taskId ??
+    action.payload?.metadata?.task_id;
   const existing = taskId ? await findCodingTask({ taskId }) : undefined;
-  const mission =
-    existing?.payload?.mission ??
-    normalizeCodingTaskMission(action.payload ?? {}, codingAgentPolicy).mission;
+  const missionResult = existing?.payload?.mission
+    ? { mission: existing.payload.mission, errors: [] }
+    : normalizeCodingTaskMission(action.payload ?? {}, codingAgentPolicy);
+  const { mission, errors = [] } = missionResult;
+  if (errors.length) {
+    return {
+      ok: false,
+      reason: errors[0],
+      errors,
+      mission
+    };
+  }
   if (!codingTaskMissionApproved(mission)) {
     return {
       ok: false,
@@ -675,16 +709,18 @@ async function dispatchHermesAction(action, capability) {
     return { dispatched: false, reason: "hermes_origin_loop_guard" };
   }
 
-  if (action.capabilityId === "start-coding-task") {
-    const missionGuard = await guardCodingTaskStartMission(action);
+  if (capability?.kind === "agentic" && capability?.target === "coding-agent") {
+    const missionGuard = await guardCodingAgentMission(action);
     if (!missionGuard.ok) {
       return {
         dispatched: false,
         target: "coding-agent",
         reason: missionGuard.reason,
+        errors: missionGuard.errors,
         mission: missionGuard.mission
       };
     }
+    action = actionWithMission(action, missionGuard.mission);
   }
 
   const dispatch = await createHermesBridgeRun(action);

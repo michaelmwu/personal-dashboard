@@ -1463,6 +1463,26 @@ describe("contracts", () => {
     expect(
       normalizeCodingTaskMission(
         {
+          repo: "michaelmwu/personal-dashboard",
+          title: "Full repo mission",
+          request: "Validate full repo slugs.",
+          allowedRepos: ["michaelmwu/personal-dashboard"]
+        },
+        {
+          allowedRepos: ["michaelmwu/personal-dashboard"],
+          branchPrefix: "hermes",
+          defaultBaseBranch: "origin/main"
+        }
+      )
+    ).toMatchObject({
+      errors: [],
+      mission: {
+        allowedRepos: ["michaelmwu/personal-dashboard"]
+      }
+    });
+    expect(
+      normalizeCodingTaskMission(
+        {
           repo: "personal-dashboard",
           title: "Bad mission",
           request: "Try to run elsewhere.",
@@ -1481,7 +1501,11 @@ describe("contracts", () => {
     const bridgeRequests = [];
     const bridgeFetch = async (url, options = {}) => {
       const path = new URL(url).pathname;
-      bridgeRequests.push({ path, method: options.method ?? "GET" });
+      bridgeRequests.push({
+        path,
+        method: options.method ?? "GET",
+        body: options.body ? JSON.parse(options.body) : undefined
+      });
       if (path === "/v1/runs" && options.method === "POST") {
         return Response.json({ run_id: "run_mission_001", status: "running" }, { status: 202 });
       }
@@ -1560,6 +1584,68 @@ describe("contracts", () => {
         });
         expect(bridgeRequests).toEqual([]);
 
+        const blockedUpdate = await clientFetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json",
+            "Idempotency-Key": `${taskId}_blocked_update`
+          },
+          body: JSON.stringify({
+            capabilityId: "update-coding-task",
+            origin: "dashboard",
+            payload: {
+              taskId,
+              repo: "personal-dashboard",
+              prompt: "Handle PR feedback."
+            }
+          })
+        });
+        expect(blockedUpdate.status).toBe(202);
+        expect(await blockedUpdate.json()).toMatchObject({
+          dispatch: {
+            dispatched: false,
+            reason: "mission_approval_required"
+          }
+        });
+        expect(bridgeRequests).toEqual([]);
+
+        const disallowedStart = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/hermes/actions`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json",
+              "Idempotency-Key": `${taskId}_disallowed_start`
+            },
+            body: JSON.stringify({
+              capabilityId: "start-coding-task",
+              origin: "dashboard",
+              payload: {
+                repo: "personal-dashboard",
+                title: "Disallowed mission",
+                request: "Try to bypass policy.",
+                mission: {
+                  goal: "Try to bypass policy.",
+                  allowedRepos: ["moo-infra"],
+                  rollback: "Do not merge.",
+                  approvedBy: "michaelmwu",
+                  approvalId: "approval-disallowed"
+                }
+              }
+            })
+          }
+        );
+        expect(disallowedStart.status).toBe(202);
+        expect(await disallowedStart.json()).toMatchObject({
+          dispatch: {
+            dispatched: false,
+            reason: "mission_allowed_repo_not_allowed"
+          }
+        });
+        expect(bridgeRequests).toEqual([]);
+
         const approval = await clientFetch(
           `http://127.0.0.1:${apiPort}/api/apps/coding-agent/control`,
           {
@@ -1589,6 +1675,76 @@ describe("contracts", () => {
           }
         });
         expect(codingTaskMissionApproved(approvedTask.task.mission)).toBe(true);
+
+        const legacyTaskId = `${taskId}_legacy`;
+        const legacyRegister = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              id: legacyTaskId,
+              repo: "personal-dashboard",
+              title: "Legacy task",
+              prompt: "Resume a task that predates mission specs.",
+              status: "paused"
+            })
+          }
+        );
+        expect(legacyRegister.status).toBe(202);
+        const legacyApproval = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/control`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              taskId: legacyTaskId,
+              action: "approve-mission",
+              approvedBy: "michaelmwu",
+              approvalId: "approval-legacy-mission",
+              definitionOfDone: ["Legacy task has an approved mission"]
+            })
+          }
+        );
+        expect(legacyApproval.status).toBe(202);
+        expect(await legacyApproval.json()).toMatchObject({
+          task: {
+            id: legacyTaskId,
+            mission: {
+              goal: "Legacy task",
+              status: "approved",
+              definitionOfDone: ["Legacy task has an approved mission"]
+            }
+          }
+        });
+        const legacyContinue = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/control`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              taskId: legacyTaskId,
+              action: "continue",
+              requestedBy: "michaelmwu"
+            })
+          }
+        );
+        expect(legacyContinue.status).toBe(202);
+        expect(await legacyContinue.json()).toMatchObject({
+          task: {
+            id: legacyTaskId,
+            status: "running"
+          }
+        });
 
         const executorPayload = codingAgentExecutorPayload(approvedTask.task, { events: [] });
         expect(executorPayload.prompt).toContain("Mission:");
@@ -1650,9 +1806,15 @@ describe("contracts", () => {
           expect.arrayContaining([
             expect.objectContaining({
               path: "/v1/runs",
-              method: "POST"
+              method: "POST",
+              body: expect.objectContaining({
+                input: expect.stringContaining("Mission:")
+              })
             })
           ])
+        );
+        expect(bridgeRequests.find((request) => request.path === "/v1/runs").body.input).toContain(
+          "Unapproved starts are blocked"
         );
       });
     } finally {
@@ -2675,9 +2837,15 @@ describe("contracts", () => {
         return Response.json({ run_id: "run_coding_001", status: "running" }, { status: 202 });
       }
       if (path === "/v1/runs/run_coding_001/events") {
-        return new Response('event: run.status\ndata: {"status":"running"}\n\n', {
-          headers: { "Content-Type": "text/event-stream" }
-        });
+        return new Response(
+          [
+            'event: run.status\ndata: {"status":"waiting_for_approval"}\n\n',
+            'event: run.output\ndata: {"text":"waiting"}\n\n'
+          ].join(""),
+          {
+            headers: { "Content-Type": "text/event-stream" }
+          }
+        );
       }
       return Response.json({ error: "not_found" }, { status: 404 });
     };
@@ -2703,7 +2871,19 @@ describe("contracts", () => {
               worktreeDir: "/tmp/coding-run-id",
               hermesSessionKey: `coding-agent:${taskId}`,
               prNumber: 42,
-              status: "pr-open"
+              status: "pr-open",
+              mission: {
+                goal: "Run id task",
+                context: "Verify Bridge run id persistence.",
+                constraints: [],
+                allowedRepos: ["personal-dashboard"],
+                definitionOfDone: ["Run id is stored."],
+                validationCommands: ["bun test tests/contracts.test.mjs"],
+                rollback: "Revert the run-id task changes.",
+                status: "approved",
+                approvedBy: "michaelmwu",
+                approvalId: "approval-run-id"
+              }
             })
           }
         );
@@ -2762,7 +2942,11 @@ describe("contracts", () => {
             `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`
           );
           const json = await tasks.json();
-          return json.tasks.some((task) => task.id === taskId && task.lastEventAt) ? json : false;
+          return json.tasks.some(
+            (task) => task.id === taskId && task.hermesRunStatus === "waiting_for_approval"
+          )
+            ? json
+            : false;
         });
         expect(tasksJson).toEqual({
           tasks: expect.arrayContaining([
@@ -2770,7 +2954,7 @@ describe("contracts", () => {
               id: taskId,
               hermesRunId: "run_coding_001",
               latestHermesRunId: "run_coding_001",
-              hermesRunStatus: "running",
+              hermesRunStatus: "waiting_for_approval",
               lastEventAt: expect.any(String),
               hermesLastEventAt: expect.any(String)
             })
@@ -2828,6 +3012,33 @@ describe("contracts", () => {
       undefined,
       { now: "2026-07-06T11:40:00.000Z" }
     );
+    const freshHeartbeat = codingTaskItem(
+      {
+        id: "coding_reconcile_fresh_heartbeat",
+        repo: "personal-dashboard",
+        title: "Fresh heartbeat task",
+        status: "running",
+        latestHermesRunId: "run_fresh",
+        hermesRunStatus: "running",
+        lastEventAt: "2026-07-06T10:00:00.000Z",
+        hermesLastEventAt: "2026-07-06T11:58:00.000Z"
+      },
+      undefined,
+      { now: "2026-07-06T11:58:00.000Z" }
+    );
+    const terminal = codingTaskItem(
+      {
+        id: "coding_reconcile_terminal",
+        repo: "personal-dashboard",
+        title: "Terminal task",
+        status: "merged",
+        latestHermesRunId: "run_terminal",
+        hermesRunStatus: "running",
+        lastEventAt: "2026-07-06T10:00:00.000Z"
+      },
+      undefined,
+      { now: "2026-07-06T10:00:00.000Z" }
+    );
     const stalePrUpdate = codingTaskItem(
       {
         id: "coding_reconcile_pr_update",
@@ -2843,7 +3054,7 @@ describe("contracts", () => {
     );
 
     const result = reconcileCodingAgentTasks(
-      [orphan, stale, healthy, stalled, stalePrUpdate],
+      [orphan, stale, healthy, stalled, freshHeartbeat, terminal, stalePrUpdate],
       {
         staleRunningMinutes: 60,
         runQuietMinutes: 10,
@@ -2894,13 +3105,17 @@ describe("contracts", () => {
         status: "completed",
         payload: {
           requestId: "coding_reconciliation_request",
-          checked: 5,
+          checked: 7,
           reconciled: 4,
           runQuietMinutes: 10,
           providerMutationAllowed: false
         }
       }
     });
+    expect(result.results.map((item) => item.taskId)).not.toContain(
+      "coding_reconcile_fresh_heartbeat"
+    );
+    expect(result.results.map((item) => item.taskId)).not.toContain("coding_reconcile_terminal");
     expect(result.taskItems).toEqual([
       expect.objectContaining({
         id: "coding_reconcile_orphan",

@@ -9,6 +9,7 @@ export const CODING_AGENT_PICKUP_MARKERS = [
 ];
 
 const TRUSTED_GITHUB_AUTHOR_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+const TERMINAL_CODING_TASK_STATUSES = new Set(["merged", "abandoned", "failed", "archived"]);
 
 export const CODING_TASK_STATUSES = [
   "queued",
@@ -668,12 +669,23 @@ function stringList(value) {
   return items.map((item) => String(item).trim()).filter(Boolean);
 }
 
+function repoMatches(candidate, repo) {
+  return Boolean(
+    candidate &&
+      repo &&
+      (candidate === repo ||
+        candidate === shortRepoName(repo) ||
+        shortRepoName(candidate) === repo ||
+        shortRepoName(candidate) === shortRepoName(repo))
+  );
+}
+
 export function normalizeCodingTaskMission(payload = {}, policy = codingAgentPolicyFromEnv()) {
   const source = payload.mission ?? payload;
   const repo = payload.repo ?? payload.githubRepo ?? payload.github_repo ?? source.repo;
   const allowedRepos = stringList(
     source.allowedRepos ?? source.allowed_repos ?? payload.allowedRepos ?? repo
-  ).map(shortRepoName);
+  );
   const definitionOfDone = stringList(
     source.definitionOfDone ??
       source.definition_of_done ??
@@ -720,7 +732,10 @@ export function normalizeCodingTaskMission(payload = {}, policy = codingAgentPol
   if (!mission.allowedRepos.length) {
     errors.push("missing_mission_allowed_repos");
   }
-  if (disallowedRepos.length) {
+  if (
+    (repo && !mission.allowedRepos.some((candidate) => repoMatches(candidate, repo))) ||
+    disallowedRepos.length
+  ) {
     errors.push("mission_allowed_repo_not_allowed");
   }
   if (!mission.rollback) {
@@ -1122,6 +1137,7 @@ export function updateCodingTaskCoordination(existing, payload = {}, options = {
 export function applyCodingTaskControl(existing, payload = {}, options = {}) {
   const now = options.now ?? new Date().toISOString();
   const previous = existingPayload(existing);
+  const policy = options.policy ?? codingAgentPolicyFromEnv();
   const action = payload.action ?? payload.kind;
   if (!CODING_AGENT_CONTROL_ACTIONS.includes(action)) {
     return { ok: false, statusCode: 400, reason: "unsupported_control_action" };
@@ -1129,14 +1145,33 @@ export function applyCodingTaskControl(existing, payload = {}, options = {}) {
   if (previous.status === "archived" && action !== "archive") {
     return { ok: false, statusCode: 409, reason: "task_archived" };
   }
-  if (action === "approve-mission" && !previous.mission) {
-    return { ok: false, statusCode: 409, reason: "missing_mission" };
-  }
   const requestedApproval = {
     approvedBy:
       payload.approvedBy ?? payload.approved_by ?? payload.requestedBy ?? payload.requested_by,
     approvalId: payload.approvalId ?? payload.approval_id
   };
+  const missionDraft =
+    action === "approve-mission"
+      ? normalizeCodingTaskMission(
+          {
+            ...previous,
+            ...payload,
+            mission: payload.mission ?? previous.mission
+          },
+          policy
+        )
+      : { mission: previous.mission, errors: [] };
+  if (action === "approve-mission" && !missionDraft.mission) {
+    return { ok: false, statusCode: 409, reason: "missing_mission" };
+  }
+  if (action === "approve-mission" && missionDraft.errors.length) {
+    return {
+      ok: false,
+      statusCode: 409,
+      reason: missionDraft.errors[0],
+      errors: missionDraft.errors
+    };
+  }
   if (action === "approve-mission" && !approvalPresent(requestedApproval)) {
     return { ok: false, statusCode: 409, reason: "mission_approval_required" };
   }
@@ -1152,7 +1187,7 @@ export function applyCodingTaskControl(existing, payload = {}, options = {}) {
   const mission =
     action === "approve-mission"
       ? {
-          ...previous.mission,
+          ...missionDraft.mission,
           status: "approved",
           approvedBy: requestedApproval.approvedBy,
           approvalId: requestedApproval.approvalId,
@@ -1235,12 +1270,12 @@ export function reconcileCodingAgentTasks(items = [], payload = {}, options = {}
 
   for (const item of items) {
     const task = existingPayload(item);
-    if (task.status === "archived") {
+    if (TERMINAL_CODING_TASK_STATUSES.has(task.status)) {
       continue;
     }
     const ageMinutes = minutesBetween(task.updatedAt ?? task.createdAt ?? item.ts, now);
     const quietAgeMinutes = minutesBetween(
-      task.lastEventAt ?? task.hermesLastEventAt ?? task.updatedAt ?? task.createdAt ?? item.ts,
+      task.hermesLastEventAt ?? task.lastEventAt ?? task.updatedAt ?? task.createdAt ?? item.ts,
       now
     );
     const hasRunAnchor = Boolean(task.latestHermesRunId ?? task.hermesRunId);
