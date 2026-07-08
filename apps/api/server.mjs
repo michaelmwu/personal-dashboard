@@ -105,6 +105,7 @@ import {
   appendRunEvidenceEvent,
   captureRunGitDiff,
   deleteRunEvidence,
+  pruneRunEvidence,
   runEvidenceDir,
   writeRunEvidenceArtifact
 } from "../../packages/storage/run-evidence.mjs";
@@ -381,7 +382,11 @@ async function reconcileCodingTasks(payload = {}) {
     await persistCodingTaskItem(item);
   }
   await persistCodingAgentItem(result.auditItem);
-  return result;
+  const evidenceRetention = await pruneRunEvidence(root, await codingTaskItems(), {
+    now: payload.now,
+    retentionDays: payload.evidenceRetentionDays ?? payload.evidence_retention_days
+  });
+  return { ...result, evidenceRetention };
 }
 
 async function summarizeCodingHandoff(payload = {}) {
@@ -1483,6 +1488,7 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
           accepted: true,
           reconciled: result.reconciled,
           results: result.results,
+          evidenceRetention: result.evidenceRetention,
           audit: result.auditItem.payload
         });
         return;
