@@ -108,6 +108,7 @@ import {
 import {
   discoverCodingAgentIssueTriage,
   discoverCodingAgentPrPickups,
+  dedupePrFeedbackAgainstInternalReview,
   fetchCodingTaskPrSnapshot,
   pollCodingAgentPrs,
   runCodingTaskValidation,
@@ -3785,6 +3786,7 @@ describe("contracts", () => {
       worktreeDir: "/tmp/coding-mission-review",
       latestHermesRunId: "run_mission_review",
       latestValidation: { status: "passed", runId: "run_mission_review" },
+      riskReview: { risk: { level: "high" } },
       modelPolicy: { reviewer: { harness: "claude", model: "reviewer" } },
       mission: {
         goal: "Keep PRs behind mission-aware review.",
@@ -3821,12 +3823,13 @@ describe("contracts", () => {
     });
     expect(review).toMatchObject({
       taskId: "coding_mission_review",
-      riskTier: "medium",
+      riskTier: "high",
       findings: [expect.objectContaining({ severity: "blocker", line: 42 })]
     });
 
     const persisted = [];
     const dispatched = [];
+    const deepReviews = [];
     const result = await reviewCodingAgentTasks({
       tasksResponse: { tasks: [task] },
       command: async () => ({ stdout: "diff --git a/file.mjs b/file.mjs", stderr: "" }),
@@ -3850,11 +3853,35 @@ describe("contracts", () => {
       dispatchRepair: async (reviewTask, reviewPayload) => {
         dispatched.push({ reviewTask, reviewPayload });
         return { dispatched: true };
+      },
+      dispatchDeepReview: async (reviewTask, reviewPayload) => {
+        deepReviews.push({ reviewTask, reviewPayload });
+        return { dispatched: true, runId: "run_deep_review" };
       }
     });
-    expect(result.results[0]).toMatchObject({ status: "blocked", repair: { dispatched: true } });
+    expect(result.results[0]).toMatchObject({
+      status: "blocked",
+      repair: { dispatched: true },
+      deepReview: { dispatched: true, runId: "run_deep_review" }
+    });
     expect(persisted[0].findings[0]).toMatchObject({ severity: "blocker" });
     expect(dispatched[0].reviewPayload.findings).toHaveLength(1);
+    expect(deepReviews[0].reviewPayload.riskTier).toBe("high");
+  });
+
+  test("PR feedback deduplicates an inline comment already covered by internal review", () => {
+    const result = dedupePrFeedbackAgainstInternalReview(
+      [
+        { kind: "comment", id: 1, path: "packages/auth.mjs", line: 42, body: "same finding" },
+        { kind: "comment", id: 2, path: "packages/auth.mjs", line: 43, body: "new finding" },
+        { kind: "check", id: 3, name: "tests", conclusion: "failure" }
+      ],
+      { findings: [{ file: "packages/auth.mjs", line: 42, severity: "blocker" }] }
+    );
+    expect(result.actionable.map((event) => event.id)).toEqual([2, 3]);
+    expect(result.deduplicated).toEqual([
+      expect.objectContaining({ id: 1, duplicateOfInternalFinding: "packages/auth.mjs:42" })
+    ]);
   });
 
   test("coding agent reconciliation marks orphaned and stale running tasks", () => {

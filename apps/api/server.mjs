@@ -391,13 +391,72 @@ async function reviewCodingTask(payload) {
   if (!existing) {
     return { ok: false, statusCode: 404, reason: "coding_task_not_found" };
   }
-  const item = applyCodingTaskReview(existing, payload);
+  const reviewRunId =
+    payload.runId ??
+    payload.run_id ??
+    existing.payload?.latestHermesRunId ??
+    existing.payload?.hermesRunId;
+  const evidencePath = reviewRunId
+    ? await writeRunEvidenceArtifact(
+        root,
+        reviewRunId,
+        `review-${Number.parseInt(payload.attempt ?? 0, 10) || "latest"}.json`,
+        `${JSON.stringify(payload, null, 2)}\n`
+      )
+    : undefined;
+  const item = applyCodingTaskReview(existing, { ...payload, evidencePath });
   await persistCodingTaskItem(item);
+  const review = item.payload.latestReview;
+  for (const finding of review.findings ?? []) {
+    const signature = [finding.file, finding.line, finding.summary].filter(Boolean).join(":");
+    const evidence = [
+      {
+        taskId: item.payload.id,
+        reviewId: review.id,
+        evidencePath,
+        file: finding.file,
+        line: finding.line,
+        summary: finding.summary
+      }
+    ];
+    await persistCodingAgentItem(
+      normalizeCodingAgentSignal({
+        id: `review_signal_${review.id}_${finding.id}`,
+        source: "mission-aware-reviewer",
+        kind: finding.severity === "blocker" ? "review-blocker" : "review-note",
+        severity: finding.severity === "blocker" ? "high" : "low",
+        taskId: item.payload.id,
+        repo: item.payload.repo,
+        prNumber: item.payload.prNumber,
+        summary: finding.summary,
+        evidence,
+        tags: ["coding-review", finding.severity]
+      })
+    );
+    if (finding.severity === "blocker") {
+      await persistCodingAgentItem(
+        normalizeCodingAgentRegressionMemory({
+          id: `review_regression_${review.id}_${finding.id}`,
+          repo: item.payload.repo,
+          checkName: "mission-aware-review",
+          failureSignature: signature,
+          rootCause: finding.summary,
+          avoid: [finding.failureScenario].filter(Boolean),
+          recommendedFix: "Address the reviewer finding and rerun validation plus review.",
+          taskId: item.payload.id,
+          prNumber: item.payload.prNumber,
+          evidence,
+          tags: ["coding-review", "blocker"]
+        })
+      );
+    }
+  }
   return {
     ok: true,
     statusCode: 202,
     task: item.payload,
-    review: item.payload.latestReview
+    review,
+    evidencePath
   };
 }
 

@@ -539,8 +539,33 @@ function normalizeComment(comment) {
     author: comment.user?.login,
     created_at: comment.created_at,
     updated_at: comment.updated_at,
+    path: comment.path,
+    line: comment.line ?? comment.original_line,
     html_url: comment.html_url
   };
+}
+
+export function dedupePrFeedbackAgainstInternalReview(events = [], review = {}) {
+  const findingKeys = new Set(
+    (review.findings ?? [])
+      .filter((finding) => finding.file && Number.isFinite(finding.line))
+      .map((finding) => `${finding.file}:${finding.line}`)
+  );
+  if (!findingKeys.size) {
+    return { actionable: events, deduplicated: [] };
+  }
+  const actionable = [];
+  const deduplicated = [];
+  for (const event of events) {
+    const key =
+      event.path && Number.isFinite(event.line) ? `${event.path}:${event.line}` : undefined;
+    if (key && findingKeys.has(key)) {
+      deduplicated.push({ ...event, duplicateOfInternalFinding: key });
+    } else {
+      actionable.push(event);
+    }
+  }
+  return { actionable, deduplicated };
 }
 
 function normalizeCheckRun(check) {
@@ -987,6 +1012,41 @@ async function dispatchCodingTaskReviewRepair(task, review, options = {}) {
   });
 }
 
+async function dispatchCodingTaskDeepReview(task, review, _options = {}) {
+  if (review.riskTier !== "high") {
+    return { dispatched: false, reason: "standard_review_sufficient" };
+  }
+  const prompt = [
+    "You are the high-risk coding-task reviewer, not an executor.",
+    "Do not edit files, run mutating commands, commit, push, or create a PR.",
+    `Review only the registered worktree: ${task.worktreeDir ?? "(missing)"}.`,
+    "Inspect the approved mission and current diff, then return concise blocker/non-blocker findings with file, line, and failure scenario.",
+    "The deterministic review result remains the PR gate; this session is an adversarial deep-dive evidence source."
+  ].join("\n");
+  return postDashboardAction("/api/hermes/actions", {
+    capabilityId: "deep-review-coding-task",
+    origin: "dashboard",
+    idempotencyKey: `coding-agent:${task.id}:deep-review:${review.runId ?? review.id ?? review.attempt}`,
+    payload: {
+      taskId: task.id,
+      repo: task.repo,
+      githubRepo: task.githubRepo,
+      worktreeDir: task.worktreeDir,
+      mission: task.mission,
+      modelPolicy: task.modelPolicy,
+      riskTier: "high",
+      prompt,
+      metadata: {
+        runtimeOwner: "personal-dashboard.integration-worker",
+        actionId: "deep-review-coding-task",
+        taskId: task.id,
+        reviewer: task.modelPolicy?.reviewer,
+        readOnly: true
+      }
+    }
+  });
+}
+
 export async function validateCodingAgentTasks(options = {}) {
   const tasksResponse =
     options.tasksResponse ??
@@ -1059,12 +1119,18 @@ export async function reviewCodingAgentTasks(options = {}) {
             dispatched: false,
             reason: review.status === "clean" ? "review_clean" : "review_not_repairable"
           };
+    const deepReview = await (options.dispatchDeepReview ?? dispatchCodingTaskDeepReview)(
+      task,
+      review,
+      { maxRepairAttempts }
+    );
     results.push({
       taskId: task.id,
       status: review.status,
       attempt: review.attempt,
       persisted,
-      repair
+      repair,
+      deepReview
     });
   }
   return { taskCount: tasks.length, results };
@@ -1100,9 +1166,11 @@ export async function pollCodingAgentPrs(options = {}) {
       results.push({ taskId: task.id, skipped: true, reason: snapshot.reason });
       continue;
     }
+    const feedback = dedupePrFeedbackAgainstInternalReview(snapshot.actionable, task.latestReview);
+    const dispatchSnapshot = { ...snapshot, actionable: feedback.actionable };
     const sync = await (options.syncTaskPrSnapshot ?? syncTaskPrSnapshot)(task, snapshot);
-    const dispatch = snapshot.actionable.length
-      ? await (options.dispatchCodingTaskUpdate ?? dispatchCodingTaskUpdate)(task, snapshot)
+    const dispatch = dispatchSnapshot.actionable.length
+      ? await (options.dispatchCodingTaskUpdate ?? dispatchCodingTaskUpdate)(task, dispatchSnapshot)
       : { dispatched: false, reason: "no_actionable_pr_events" };
     results.push({
       taskId: task.id,
@@ -1110,6 +1178,7 @@ export async function pollCodingAgentPrs(options = {}) {
       prNumber: snapshot.prNumber,
       events: snapshot.events.length,
       actionable: snapshot.actionable.length,
+      deduplicated: feedback.deduplicated.length,
       synced: true,
       sync,
       dispatch

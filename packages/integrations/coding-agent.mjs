@@ -676,6 +676,7 @@ export function normalizeCodingReviewResult(payload = {}, task = {}, options = {
     definitionOfDone: Array.isArray(payload.definitionOfDone ?? payload.definition_of_done)
       ? (payload.definitionOfDone ?? payload.definition_of_done)
       : [],
+    evidencePath: payload.evidencePath ?? payload.evidence_path,
     summary: payload.summary,
     createdAt: payload.createdAt ?? payload.created_at ?? now,
     completedAt: payload.completedAt ?? payload.completed_at ?? now
