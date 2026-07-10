@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import {
   codingAgentPolicyFromEnv,
   codingAgentExecutorPayload,
+  codingAgentReviewHarness,
   classifyCodingAgentRisk,
   commentRequestsCodingAgentPickup,
   evaluateCodingAgentPrPickup,
@@ -297,7 +298,16 @@ function reviewGatewayConfig(env = process.env, task = {}) {
 async function runHarnessReview(input, config, task, options = {}) {
   const command = options.command ?? execFileAsync;
   const prompt = JSON.stringify(input);
-  if (config.reviewer?.harness === "codex") {
+  const harness = codingAgentReviewHarness(config.reviewer?.harness);
+  if (!harness) {
+    throw new Error(`unsupported_review_harness_${config.reviewer?.harness ?? "unknown"}`);
+  }
+  if (harness.status !== "available") {
+    throw new Error(
+      `review_harness_${harness.id}_requires_isolated_runner: ${harness.unavailableReason ?? "harness_not_available"}`
+    );
+  }
+  if (harness.id === "codex") {
     const result = await command(
       "codex",
       ["exec", "--sandbox", "read-only", "--cd", task.worktreeDir, "--model", config.model, prompt],
@@ -309,7 +319,7 @@ async function runHarnessReview(input, config, task, options = {}) {
     );
     return parseReviewResponse(result.stdout);
   }
-  if (config.reviewer?.harness === "claude") {
+  if (harness.id === "claude") {
     const result = await command(
       "claude",
       ["--print", "--permission-mode", "plan", "--model", config.model, prompt],
@@ -321,7 +331,7 @@ async function runHarnessReview(input, config, task, options = {}) {
     );
     return parseReviewResponse(result.stdout);
   }
-  throw new Error(`unsupported_review_harness_${config.reviewer?.harness ?? "unknown"}`);
+  throw new Error(`unsupported_review_harness_${harness.id}`);
 }
 
 function parseReviewResponse(content) {

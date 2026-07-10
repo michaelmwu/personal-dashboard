@@ -56,6 +56,39 @@ export const CODING_AGENT_CONTROL_ACTIONS = [
 export const CODING_VALIDATION_STATUSES = ["passed", "failed", "skipped"];
 export const CODING_REVIEW_STATUSES = ["clean", "findings", "blocked", "failed", "skipped"];
 
+// This is deliberately a review-only capability catalog. A policy may select a
+// planned harness before it is executable so task state, controls, and model
+// selection do not need a migration when the adapter becomes available.
+export const CODING_AGENT_REVIEW_HARNESSES = Object.freeze([
+  Object.freeze({
+    id: "codex",
+    status: "available",
+    safety: "read-only-sandbox",
+    supportsModelSelection: true
+  }),
+  Object.freeze({
+    id: "claude",
+    status: "available",
+    safety: "plan-mode",
+    supportsModelSelection: true
+  }),
+  Object.freeze({
+    id: "cursor",
+    status: "planned",
+    safety: "requires-isolated-runner",
+    supportsModelSelection: true,
+    unavailableReason:
+      "Cursor CLI review is not enabled because noninteractive runs require an isolated runner before they can be treated as read-only."
+  })
+]);
+
+export function codingAgentReviewHarness(harness) {
+  const id = String(harness ?? "")
+    .trim()
+    .toLowerCase();
+  return CODING_AGENT_REVIEW_HARNESSES.find((candidate) => candidate.id === id);
+}
+
 export const CODING_AGENT_GOAL_MUTATION_ACTIONS = [
   "create-github-issue",
   "update-github-issue",
@@ -610,7 +643,9 @@ export function normalizeCodingTaskModelPolicy(policy = {}) {
     if (!selection || typeof selection !== "object") {
       return undefined;
     }
-    const harness = String(selection.harness ?? "").trim();
+    const harness = String(selection.harness ?? "")
+      .trim()
+      .toLowerCase();
     const model = String(selection.model ?? "").trim();
     return harness && model ? { harness, model } : undefined;
   };

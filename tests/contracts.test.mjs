@@ -33,6 +33,8 @@ import {
   normalizeCodingTaskMission,
   normalizeCodingTaskPortRange,
   applyCodingTaskValidation,
+  codingAgentReviewHarness,
+  normalizeCodingTaskModelPolicy,
   normalizeCodingAgentSignal,
   normalizeCodingAgentRegressionMemory,
   planCodingAgentGoalMutation,
@@ -3867,6 +3869,52 @@ describe("contracts", () => {
     expect(persisted[0].findings[0]).toMatchObject({ severity: "blocker" });
     expect(dispatched[0].reviewPayload.findings).toHaveLength(1);
     expect(deepReviews[0].reviewPayload.riskTier).toBe("high");
+  });
+
+  test("Cursor is a planned review harness that preserves model selection but fails closed", async () => {
+    expect(codingAgentReviewHarness("CURSOR")).toMatchObject({
+      id: "cursor",
+      status: "planned",
+      safety: "requires-isolated-runner",
+      supportsModelSelection: true
+    });
+    expect(
+      normalizeCodingTaskModelPolicy({ reviewer: { harness: "CURSOR", model: "gpt-5" } })
+    ).toMatchObject({ reviewer: { harness: "cursor", model: "gpt-5" } });
+
+    const commands = [];
+    const review = await runCodingTaskReview(
+      {
+        id: "coding_cursor_review",
+        title: "Reserve Cursor review support",
+        status: "running",
+        baseBranch: "origin/main",
+        worktreeDir: "/tmp/coding-cursor-review",
+        latestHermesRunId: "run_cursor_review",
+        riskReview: { risk: { level: "medium" } },
+        modelPolicy: {
+          executor: { harness: "codex", model: "executor" },
+          reviewer: { harness: "cursor", model: "gpt-5" }
+        },
+        mission: { goal: "Keep review execution isolated." }
+      },
+      {
+        env: { CODING_AGENT_REVIEW_USE_HARNESS: "true" },
+        command: async (executable, args) => {
+          commands.push({ executable, args });
+          return { stdout: "diff --git a/file.mjs b/file.mjs", stderr: "" };
+        }
+      }
+    );
+
+    expect(commands).toEqual([
+      { executable: "git", args: ["diff", "--no-ext-diff", "origin/main...HEAD"] }
+    ]);
+    expect(review).toMatchObject({
+      status: "failed",
+      model: { harness: "cursor", model: "gpt-5" },
+      summary: expect.stringContaining("review_harness_cursor_requires_isolated_runner")
+    });
   });
 
   test("PR feedback deduplicates an inline comment already covered by internal review", () => {
