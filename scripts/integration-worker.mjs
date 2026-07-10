@@ -294,6 +294,36 @@ function reviewGatewayConfig(env = process.env, task = {}) {
   };
 }
 
+async function runHarnessReview(input, config, task, options = {}) {
+  const command = options.command ?? execFileAsync;
+  const prompt = JSON.stringify(input);
+  if (config.reviewer?.harness === "codex") {
+    const result = await command(
+      "codex",
+      ["exec", "--sandbox", "read-only", "--cd", task.worktreeDir, "--model", config.model, prompt],
+      {
+        cwd: task.worktreeDir,
+        timeout: options.timeoutMs ?? envNumber("CODING_AGENT_REVIEW_TIMEOUT_MS", 120000),
+        maxBuffer: 2 * 1024 * 1024
+      }
+    );
+    return parseReviewResponse(result.stdout);
+  }
+  if (config.reviewer?.harness === "claude") {
+    const result = await command(
+      "claude",
+      ["--print", "--permission-mode", "plan", "--model", config.model, prompt],
+      {
+        cwd: task.worktreeDir,
+        timeout: options.timeoutMs ?? envNumber("CODING_AGENT_REVIEW_TIMEOUT_MS", 120000),
+        maxBuffer: 2 * 1024 * 1024
+      }
+    );
+    return parseReviewResponse(result.stdout);
+  }
+  throw new Error(`unsupported_review_harness_${config.reviewer?.harness ?? "unknown"}`);
+}
+
 function parseReviewResponse(content) {
   const parsed = typeof content === "string" ? JSON.parse(content) : content;
   return {
@@ -356,12 +386,15 @@ export async function runCodingTaskReview(task, options = {}) {
       mission: task.mission,
       diff: outputTail(diffResult.stdout, options.maxDiffChars ?? 50000),
       riskTier: risk.level,
+      feedback: task.reviewRequest?.feedback,
       instructions:
         "Review against the mission. Return JSON only: {summary, findings:[{severity,file,line,summary,failureScenario}], definitionOfDone:[{item,verdict,rationale}]}. You are a reviewer: never edit code or propose a patch."
     };
     let reviewed;
     if (options.reviewer) {
       reviewed = await options.reviewer(input, reviewBase);
+    } else if ((options.env ?? process.env).CODING_AGENT_REVIEW_USE_HARNESS === "true") {
+      reviewed = await runHarnessReview(input, reviewerConfig, task, options);
     } else {
       if (!reviewerConfig.baseUrl || !reviewerConfig.apiKey || !reviewerConfig.model) {
         throw new Error("missing_coding_agent_review_gateway_configuration");
@@ -1097,11 +1130,18 @@ export async function reviewCodingAgentTasks(options = {}) {
   const maxRepairAttempts =
     options.maxRepairAttempts ?? envNumber("CODING_AGENT_MAX_REPAIR_ATTEMPTS", 3);
   const tasks = (tasksResponse.tasks ?? []).filter((task) => {
-    if (task.status !== "running" || task.latestValidation?.status !== "passed") {
+    if (
+      !["running", "pr-open", "changes-requested"].includes(task.status) ||
+      task.latestValidation?.status !== "passed"
+    ) {
       return false;
     }
     const runId = task.latestHermesRunId ?? task.hermesRunId;
-    return !task.latestReview || task.latestReview.runId !== runId;
+    return (
+      task.reviewRequest?.status === "pending" ||
+      !task.latestReview ||
+      task.latestReview.runId !== runId
+    );
   });
   const results = [];
   for (const task of tasks) {
@@ -1109,7 +1149,7 @@ export async function reviewCodingAgentTasks(options = {}) {
     const persisted = await (
       options.persistReview ??
       ((payload) => postDashboardAction("/api/apps/coding-agent/review", payload))
-    )({ ...review, maxRepairAttempts });
+    )({ ...review, reviewRequestId: task.reviewRequest?.id, maxRepairAttempts });
     const repair =
       review.status === "blocked"
         ? await (options.dispatchRepair ?? dispatchCodingTaskReviewRepair)(task, review, {

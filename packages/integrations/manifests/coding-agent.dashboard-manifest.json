@@ -355,11 +355,12 @@
       "description": "Apply typed operator controls such as pause, continue, tests, preview, open-pr, archive, or handoff.",
       "inputSchema": {
         "taskId": "string",
-        "action": "pause|continue|approve-mission|handoff|archive|...",
+        "action": "pause|continue|approve-mission|re-review|handoff|archive|...",
         "requestedBy": "string?",
         "approvedBy": "string?",
         "approvalId": "string?",
         "reason": "string?",
+        "feedback": "string?",
         "blocker": "string?",
         "nextAction": "string?"
       }

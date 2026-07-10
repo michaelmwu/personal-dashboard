@@ -47,6 +47,7 @@ export const CODING_AGENT_CONTROL_ACTIONS = [
   "approve-mission",
   "tests",
   "preview",
+  "re-review",
   "open-pr",
   "archive",
   "handoff"
@@ -564,6 +565,7 @@ export function codingTaskItem(payload, existing, options = {}) {
       repairAttempts:
         payload.repairAttempts ?? payload.repair_attempts ?? previous.repairAttempts ?? 0,
       latestReview: payload.latestReview ?? payload.latest_review ?? previous.latestReview,
+      reviewRequest: payload.reviewRequest ?? payload.review_request ?? previous.reviewRequest,
       validationOverride:
         payload.validationOverride ?? payload.validation_override ?? previous.validationOverride,
       evidencePacks: payload.evidencePacks ?? payload.evidence_packs ?? previous.evidencePacks,
@@ -698,6 +700,14 @@ export function applyCodingTaskReview(existing, payload = {}, options = {}) {
     {
       status: exhausted && previous.status === "running" ? "needs-clarification" : previous.status,
       latestReview,
+      reviewRequest: payload.reviewRequestId
+        ? {
+            ...previous.reviewRequest,
+            status: "completed",
+            reviewId: latestReview.id,
+            completedAt: now
+          }
+        : previous.reviewRequest,
       reviewAttempts,
       repairAttempts,
       handoff: exhausted
@@ -1666,6 +1676,16 @@ export function applyCodingTaskControl(existing, payload = {}, options = {}) {
     reason: payload.reason,
     createdAt: now
   };
+  const reviewRequest =
+    action === "re-review"
+      ? {
+          id: `review_request_${slug(previous.id)}_${Date.parse(now) || Date.now()}`,
+          feedback: String(payload.feedback ?? payload.reason ?? "").trim(),
+          requestedBy: payload.requestedBy ?? payload.requested_by,
+          createdAt: now,
+          status: "pending"
+        }
+      : previous.reviewRequest;
   const mission =
     action === "approve-mission"
       ? {
@@ -1720,6 +1740,7 @@ export function applyCodingTaskControl(existing, payload = {}, options = {}) {
       mission,
       validationOverride: override ?? previous.validationOverride,
       latestControl: control,
+      reviewRequest,
       handoff,
       items: [
         {
