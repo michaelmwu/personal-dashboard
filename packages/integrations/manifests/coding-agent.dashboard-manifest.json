@@ -188,6 +188,21 @@
       }
     },
     {
+      "id": "deep-review-coding-task",
+      "title": "Deep-review coding task",
+      "kind": "agentic",
+      "target": "coding-agent",
+      "description": "Run a high-risk, read-only adversarial review session against the approved mission and registered worktree. The reviewer returns findings and must never edit code.",
+      "inputSchema": {
+        "taskId": "string",
+        "repo": "string",
+        "worktreeDir": "string",
+        "mission": "object",
+        "modelPolicy": "object",
+        "riskTier": "high"
+      }
+    },
+    {
       "id": "enqueue-coding-task-item",
       "title": "Enqueue coding task item",
       "kind": "deterministic",
