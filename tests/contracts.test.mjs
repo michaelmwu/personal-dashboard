@@ -20,10 +20,12 @@ import {
   assertTaskTransition,
   classifyCodingAgentRisk,
   applyPrStatus,
+  applyCodingTaskReview,
   applyCodingTaskControl,
   codingAgentExecutorPayload,
   codingTaskMissionApproved,
   codingTaskValidationPassed,
+  codingTaskReviewPassed,
   codingTaskItem,
   commentRequestsCodingAgentPickup,
   duplicateCodingTaskCandidates,
@@ -109,10 +111,12 @@ import {
   fetchCodingTaskPrSnapshot,
   pollCodingAgentPrs,
   runCodingTaskValidation,
+  runCodingTaskReview,
   runConfiguredIngestions,
   runIngestion,
   splitValidationCommand,
-  validateCodingAgentTasks
+  validateCodingAgentTasks,
+  reviewCodingAgentTasks
 } from "../scripts/integration-worker.mjs";
 import {
   aggregateTransactions,
@@ -3516,8 +3520,26 @@ describe("contracts", () => {
       { now: "2026-07-07T10:03:00.000Z" }
     );
     expect(codingTaskValidationPassed(passedValidation.payload)).toBe(true);
-    const opened = applyPrStatus(
+    const passedReview = applyCodingTaskReview(
       passedValidation,
+      {
+        taskId: "coding_validation_gate",
+        runId: "run_validation_gate",
+        status: "clean",
+        model: { harness: "claude", model: "reviewer" },
+        definitionOfDone: [
+          {
+            item: "Validation gate blocks unvalidated PRs.",
+            verdict: "pass",
+            rationale: "The deterministic validation gate is persisted."
+          }
+        ]
+      },
+      { now: "2026-07-07T10:03:30.000Z" }
+    );
+    expect(codingTaskReviewPassed(passedReview.payload)).toBe(true);
+    const opened = applyPrStatus(
+      passedReview,
       {
         taskId: "coding_validation_gate",
         status: "pr-open",
@@ -3751,6 +3773,88 @@ describe("contracts", () => {
       exitCode: 1,
       stderrTail: "validation failed"
     });
+  });
+
+  test("integration worker reviews the mission and diff before PR-ready", async () => {
+    const task = {
+      id: "coding_mission_review",
+      repo: "personal-dashboard",
+      title: "Review a mission-aware change",
+      status: "running",
+      baseBranch: "origin/main",
+      worktreeDir: "/tmp/coding-mission-review",
+      latestHermesRunId: "run_mission_review",
+      latestValidation: { status: "passed", runId: "run_mission_review" },
+      modelPolicy: { reviewer: { harness: "claude", model: "reviewer" } },
+      mission: {
+        goal: "Keep PRs behind mission-aware review.",
+        definitionOfDone: ["A blocker prevents PR-ready status."],
+        validationCommands: ["bun test"]
+      }
+    };
+    const review = await runCodingTaskReview(task, {
+      command: async (executable, args, options) => {
+        expect(executable).toBe("git");
+        expect(args).toEqual(["diff", "--no-ext-diff", "origin/main...HEAD"]);
+        expect(options.cwd).toBe("/tmp/coding-mission-review");
+        return { stdout: "diff --git a/file.mjs b/file.mjs", stderr: "" };
+      },
+      reviewer: async (input) => {
+        expect(input.mission.goal).toBe("Keep PRs behind mission-aware review.");
+        expect(input.diff).toContain("diff --git");
+        return {
+          findings: [
+            {
+              severity: "blocker",
+              file: "file.mjs",
+              line: 42,
+              summary: "The review gate is bypassed.",
+              failureScenario: "A task opens a PR without review."
+            }
+          ],
+          definitionOfDone: [
+            { item: "A blocker prevents PR-ready status.", verdict: "fail", rationale: "No gate." }
+          ],
+          summary: "One blocker found."
+        };
+      }
+    });
+    expect(review).toMatchObject({
+      taskId: "coding_mission_review",
+      riskTier: "medium",
+      findings: [expect.objectContaining({ severity: "blocker", line: 42 })]
+    });
+
+    const persisted = [];
+    const dispatched = [];
+    const result = await reviewCodingAgentTasks({
+      tasksResponse: { tasks: [task] },
+      command: async () => ({ stdout: "diff --git a/file.mjs b/file.mjs", stderr: "" }),
+      reviewer: async () => ({
+        findings: [
+          {
+            severity: "blocker",
+            file: "file.mjs",
+            line: 42,
+            summary: "The review gate is bypassed.",
+            failureScenario: "A task opens a PR without review."
+          }
+        ],
+        definitionOfDone: [],
+        summary: "One blocker found."
+      }),
+      persistReview: async (payload) => {
+        persisted.push(payload);
+        return { accepted: true };
+      },
+      dispatchRepair: async (reviewTask, reviewPayload) => {
+        dispatched.push({ reviewTask, reviewPayload });
+        return { dispatched: true };
+      }
+    });
+    expect(result.results[0]).toMatchObject({ status: "blocked", repair: { dispatched: true } });
+    expect(persisted[0].findings[0]).toMatchObject({ severity: "blocker" });
+    expect(dispatched[0].reviewPayload.findings).toHaveLength(1);
   });
 
   test("coding agent reconciliation marks orphaned and stale running tasks", () => {

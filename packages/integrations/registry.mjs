@@ -24,7 +24,8 @@ export async function loadDashboardConfig(root, configPath = DEFAULT_DASHBOARD_C
   return {
     apps: Array.isArray(parsed.apps) ? parsed.apps : [],
     panels: parsed.panels ?? {},
-    alertThresholds: parsed.alertThresholds ?? {}
+    alertThresholds: parsed.alertThresholds ?? {},
+    codingAgent: parsed.codingAgent ?? {}
   };
 }
 
@@ -119,7 +120,8 @@ export async function loadPluginRegistry(root, options = {}) {
     apps,
     panels,
     capabilities: manifestCapabilities(apps),
-    alertThresholds: config.alertThresholds
+    alertThresholds: config.alertThresholds,
+    codingAgent: config.codingAgent
   };
 }
 

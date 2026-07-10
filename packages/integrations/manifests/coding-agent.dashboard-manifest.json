@@ -171,6 +171,23 @@
       }
     },
     {
+      "id": "review-coding-task",
+      "title": "Review coding task",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/review",
+      "description": "Persist the mission-aware structured review verdict and findings required before a task can become PR-ready.",
+      "inputSchema": {
+        "taskId": "string",
+        "status": "clean|findings|blocked|failed",
+        "findings": "array?",
+        "definitionOfDone": "array?",
+        "model": "object?",
+        "riskTier": "string?",
+        "maxRepairAttempts": "number?"
+      }
+    },
+    {
       "id": "enqueue-coding-task-item",
       "title": "Enqueue coding task item",
       "kind": "deterministic",
