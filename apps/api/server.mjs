@@ -25,6 +25,7 @@ import {
 } from "../../packages/integrations/hermes-bridge.mjs";
 import {
   applyPrStatus,
+  applyCodingTaskReview,
   applyCodingTaskValidation,
   applyCodingTaskControl,
   archiveCodingTask,
@@ -35,6 +36,7 @@ import {
   normalizeCodingAgentSignal,
   normalizeCodingAgentFinding,
   normalizeCodingTaskMission,
+  normalizeCodingTaskModelPolicy,
   normalizeCodingAgentRegressionMemory,
   pickupExistingPrTask,
   planCodingAgentGoalMutation,
@@ -226,23 +228,29 @@ async function persistCodingAgentItem(item) {
   return item;
 }
 
+async function codingAgentModelPolicy() {
+  return normalizeCodingTaskModelPolicy((await pluginRegistry()).codingAgent?.modelPolicy);
+}
+
 async function registerCodingTask(payload) {
   if (!payload.repo) {
     return { ok: false, statusCode: 400, reason: "missing_repo" };
   }
-  const item = codingTaskItem(payload);
+  const item = codingTaskItem(payload, undefined, { modelPolicy: await codingAgentModelPolicy() });
   await persistCodingTaskItem(item);
   return { ok: true, statusCode: 202, task: item.payload, item };
 }
 
 async function planCodingTask(payload) {
-  const result = planCodingTaskIntake(payload);
+  const result = planCodingTaskIntake(payload, { modelPolicy: await codingAgentModelPolicy() });
   await persistCodingTaskItem(result.taskItem);
   return result;
 }
 
 async function planCodingQueue(payload) {
-  const result = planCodingTaskQueue(payload, await codingTaskItems());
+  const result = planCodingTaskQueue(payload, await codingTaskItems(), {
+    modelPolicy: await codingAgentModelPolicy()
+  });
   await persistCodingTaskItem(result.taskItem);
   return result;
 }
@@ -375,6 +383,21 @@ async function validateCodingTask(payload) {
     statusCode: 202,
     task: item.payload,
     validation: item.payload.latestValidation
+  };
+}
+
+async function reviewCodingTask(payload) {
+  const existing = await findCodingTask(payload);
+  if (!existing) {
+    return { ok: false, statusCode: 404, reason: "coding_task_not_found" };
+  }
+  const item = applyCodingTaskReview(existing, payload);
+  await persistCodingTaskItem(item);
+  return {
+    ok: true,
+    statusCode: 202,
+    task: item.payload,
+    review: item.payload.latestReview
   };
 }
 
@@ -933,6 +956,10 @@ async function dispatchDeterministicCapability(action, capability) {
   }
   if (capability.endpoint === "/api/apps/coding-agent/validate") {
     const response = await validateCodingTask(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/review") {
+    const response = await reviewCodingTask(action.payload);
     return { dispatched: response.ok, target: capability.target, response };
   }
   if (capability.endpoint === "/api/apps/coding-agent/queue") {
@@ -1518,6 +1545,23 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
           accepted: true,
           task: result.task,
           validation: result.validation
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/review") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await reviewCodingTask(await readJson(request));
+        if (!result.ok) {
+          error(response, result.statusCode, result.reason, "Registered coding task not found.");
+          return;
+        }
+        json(response, result.statusCode, {
+          accepted: true,
+          task: result.task,
+          review: result.review
         });
         return;
       }

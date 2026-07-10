@@ -55,3 +55,19 @@ apps:
         enabled: true
         position: operations
         order: 15
+
+codingAgent:
+  modelPolicy:
+    planner:
+      harness: claude
+      model: planner
+    executor:
+      harness: codex
+      model: executor
+    reviewer:
+      harness: claude
+      model: reviewer
+    fallbackChain:
+      - harness: claude
+        model: executor-fallback
+    escalateOnRepairAttempt: 2

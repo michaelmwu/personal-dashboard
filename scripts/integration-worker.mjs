@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import {
   codingAgentPolicyFromEnv,
   codingAgentExecutorPayload,
+  classifyCodingAgentRisk,
   commentRequestsCodingAgentPickup,
   evaluateCodingAgentPrPickup,
   relevantCodingAgentRegressionMemory,
@@ -279,6 +280,132 @@ export async function runCodingTaskValidation(task, options = {}) {
     commands: results,
     summary: passed ? "All validation commands passed." : "One or more validation commands failed."
   };
+}
+
+function reviewGatewayConfig(env = process.env, task = {}) {
+  const baseUrl = String(env.CODING_AGENT_REVIEW_GATEWAY_URL ?? "").replace(/\/$/, "");
+  const apiKey = env.CODING_AGENT_REVIEW_GATEWAY_KEY;
+  const reviewer = task.modelPolicy?.reviewer;
+  return {
+    baseUrl,
+    apiKey,
+    model: env.CODING_AGENT_REVIEW_MODEL ?? reviewer?.model,
+    reviewer
+  };
+}
+
+function parseReviewResponse(content) {
+  const parsed = typeof content === "string" ? JSON.parse(content) : content;
+  return {
+    findings: Array.isArray(parsed?.findings) ? parsed.findings : [],
+    definitionOfDone: Array.isArray(parsed?.definitionOfDone) ? parsed.definitionOfDone : [],
+    summary: parsed?.summary
+  };
+}
+
+export async function runCodingTaskReview(task, options = {}) {
+  const risk =
+    task.riskReview?.risk ??
+    classifyCodingAgentRisk({
+      title: task.title,
+      prompt: task.prompt,
+      files: task.changedFiles
+    });
+  const attempt = (Number.parseInt(task.reviewAttempts ?? 0, 10) || 0) + 1;
+  const baseBranch = task.baseBranch ?? "origin/main";
+  const reviewerConfig = reviewGatewayConfig(options.env ?? process.env, task);
+  const reviewBase = {
+    taskId: task.id,
+    runId: task.latestHermesRunId ?? task.hermesRunId,
+    attempt,
+    riskTier: risk.level,
+    model: reviewerConfig.reviewer
+  };
+  if (!task.worktreeDir || !task.mission) {
+    return {
+      ...reviewBase,
+      status: "failed",
+      findings: [],
+      definitionOfDone: [],
+      summary: "Missing task worktree or approved mission."
+    };
+  }
+  if (
+    reviewerConfig.reviewer &&
+    task.modelPolicy?.executor?.harness === reviewerConfig.reviewer.harness
+  ) {
+    return {
+      ...reviewBase,
+      status: "failed",
+      findings: [],
+      definitionOfDone: [],
+      summary: "reviewer_must_use_a_different_harness_than_executor"
+    };
+  }
+  try {
+    const diffResult = await (options.command ?? execFileAsync)(
+      "git",
+      ["diff", "--no-ext-diff", `${baseBranch}...HEAD`],
+      {
+        cwd: task.worktreeDir,
+        timeout: options.timeoutMs ?? envNumber("CODING_AGENT_REVIEW_TIMEOUT_MS", 120000),
+        maxBuffer: 2 * 1024 * 1024
+      }
+    );
+    const input = {
+      mission: task.mission,
+      diff: outputTail(diffResult.stdout, options.maxDiffChars ?? 50000),
+      riskTier: risk.level,
+      instructions:
+        "Review against the mission. Return JSON only: {summary, findings:[{severity,file,line,summary,failureScenario}], definitionOfDone:[{item,verdict,rationale}]}. You are a reviewer: never edit code or propose a patch."
+    };
+    let reviewed;
+    if (options.reviewer) {
+      reviewed = await options.reviewer(input, reviewBase);
+    } else {
+      if (!reviewerConfig.baseUrl || !reviewerConfig.apiKey || !reviewerConfig.model) {
+        throw new Error("missing_coding_agent_review_gateway_configuration");
+      }
+      const response = await fetch(`${reviewerConfig.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${reviewerConfig.apiKey}`
+        },
+        body: JSON.stringify({
+          model: reviewerConfig.model,
+          temperature: 0,
+          messages: [
+            {
+              role: "system",
+              content: "You are an adversarial coding reviewer. Return valid JSON only."
+            },
+            { role: "user", content: JSON.stringify(input) }
+          ]
+        })
+      });
+      if (!response.ok) {
+        throw new Error(`review_gateway_http_${response.status}`);
+      }
+      const body = await response.json();
+      reviewed = parseReviewResponse(body.choices?.[0]?.message?.content);
+    }
+    const result = parseReviewResponse(reviewed);
+    const blockerCount = result.findings.filter((finding) => finding.severity === "blocker").length;
+    return {
+      ...reviewBase,
+      ...result,
+      status: blockerCount ? "blocked" : result.findings.length ? "findings" : "clean"
+    };
+  } catch (error) {
+    return {
+      ...reviewBase,
+      status: "failed",
+      findings: [],
+      definitionOfDone: [],
+      summary: error instanceof Error ? error.message : String(error)
+    };
+  }
 }
 
 async function readJsonFeed(filePath) {
@@ -800,7 +927,8 @@ async function dispatchCodingTaskUpdate(task, snapshot) {
 async function dispatchCodingTaskValidationRepair(task, validation, options = {}) {
   const maxRepairAttempts =
     options.maxRepairAttempts ?? envNumber("CODING_AGENT_MAX_REPAIR_ATTEMPTS", 3);
-  if (validation.status !== "failed" || validation.attempt >= maxRepairAttempts) {
+  const nextRepairAttempt = (Number.parseInt(task.repairAttempts ?? 0, 10) || 0) + 1;
+  if (validation.status !== "failed" || nextRepairAttempt >= maxRepairAttempts) {
     return { dispatched: false, reason: "repair_not_allowed" };
   }
   const executorPayload = codingAgentExecutorPayload(task, {
@@ -827,6 +955,34 @@ async function dispatchCodingTaskValidationRepair(task, validation, options = {}
     capabilityId: "update-coding-task",
     origin: "dashboard",
     idempotencyKey: `coding-agent:${task.id}:validation-repair:${validation.id}`,
+    payload: executorPayload
+  });
+}
+
+async function dispatchCodingTaskReviewRepair(task, review, options = {}) {
+  const maxRepairAttempts =
+    options.maxRepairAttempts ?? envNumber("CODING_AGENT_MAX_REPAIR_ATTEMPTS", 3);
+  const nextRepairAttempt = (Number.parseInt(task.repairAttempts ?? 0, 10) || 0) + 1;
+  if (review.status !== "blocked" || nextRepairAttempt >= maxRepairAttempts) {
+    return { dispatched: false, reason: "repair_not_allowed" };
+  }
+  const executorPayload = codingAgentExecutorPayload(task, {
+    mode: "review-repair",
+    events: [{ kind: "coding-review", ...review }],
+    checks: {
+      failed: review.findings
+        .filter((finding) => finding.severity === "blocker")
+        .map((finding) => ({
+          name: `${finding.file ?? "task"}:${finding.line ?? "?"}`,
+          conclusion: "failure",
+          summary: finding.summary || finding.failureScenario
+        }))
+    }
+  });
+  return postDashboardAction("/api/hermes/actions", {
+    capabilityId: "update-coding-task",
+    origin: "dashboard",
+    idempotencyKey: `coding-agent:${task.id}:review-repair:${review.id ?? review.attempt}`,
     payload: executorPayload
   });
 }
@@ -867,6 +1023,46 @@ export async function validateCodingAgentTasks(options = {}) {
       taskId: task.id,
       status: validation.status,
       attempt: validation.attempt,
+      persisted,
+      repair
+    });
+  }
+  return { taskCount: tasks.length, results };
+}
+
+export async function reviewCodingAgentTasks(options = {}) {
+  const tasksResponse =
+    options.tasksResponse ??
+    (await getDashboardJson("/api/apps/coding-agent/tasks?includeArchived=false"));
+  const maxRepairAttempts =
+    options.maxRepairAttempts ?? envNumber("CODING_AGENT_MAX_REPAIR_ATTEMPTS", 3);
+  const tasks = (tasksResponse.tasks ?? []).filter((task) => {
+    if (task.status !== "running" || task.latestValidation?.status !== "passed") {
+      return false;
+    }
+    const runId = task.latestHermesRunId ?? task.hermesRunId;
+    return !task.latestReview || task.latestReview.runId !== runId;
+  });
+  const results = [];
+  for (const task of tasks) {
+    const review = await runCodingTaskReview(task, options);
+    const persisted = await (
+      options.persistReview ??
+      ((payload) => postDashboardAction("/api/apps/coding-agent/review", payload))
+    )({ ...review, maxRepairAttempts });
+    const repair =
+      review.status === "blocked"
+        ? await (options.dispatchRepair ?? dispatchCodingTaskReviewRepair)(task, review, {
+            maxRepairAttempts
+          })
+        : {
+            dispatched: false,
+            reason: review.status === "clean" ? "review_clean" : "review_not_repairable"
+          };
+    results.push({
+      taskId: task.id,
+      status: review.status,
+      attempt: review.attempt,
       persisted,
       repair
     });
@@ -962,6 +1158,9 @@ export async function runConfiguredIngestions(options = {}) {
   }
   if (process.env.CODING_AGENT_VALIDATION_ENABLED === "true") {
     results.push(await runIngestion("coding-agent-validation", validateCodingAgentTasks));
+  }
+  if (process.env.CODING_AGENT_REVIEW_ENABLED === "true") {
+    results.push(await runIngestion("coding-agent-review", reviewCodingAgentTasks));
   }
   if (
     process.env.CODING_AGENT_RECONCILE_ENABLED === "true" &&

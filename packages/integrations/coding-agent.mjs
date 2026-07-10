@@ -53,6 +53,7 @@ export const CODING_AGENT_CONTROL_ACTIONS = [
 ];
 
 export const CODING_VALIDATION_STATUSES = ["passed", "failed", "skipped"];
+export const CODING_REVIEW_STATUSES = ["clean", "findings", "blocked", "failed", "skipped"];
 
 export const CODING_AGENT_GOAL_MUTATION_ACTIONS = [
   "create-github-issue",
@@ -509,6 +510,9 @@ export function codingTaskItem(payload, existing, options = {}) {
         payload.duplicateCandidates ?? payload.duplicate_candidates ?? previous.duplicateCandidates,
       intakePlan: payload.intakePlan ?? payload.intake_plan ?? previous.intakePlan,
       mission: payload.mission ?? payload.mission_spec ?? previous.mission,
+      modelPolicy: normalizeCodingTaskModelPolicy(
+        payload.modelPolicy ?? payload.model_policy ?? previous.modelPolicy ?? options.modelPolicy
+      ),
       riskReview: payload.riskReview ?? payload.risk_review ?? previous.riskReview,
       coordination: payload.coordination ?? previous.coordination,
       latestControl: payload.latestControl ?? payload.latest_control ?? previous.latestControl,
@@ -555,6 +559,11 @@ export function codingTaskItem(payload, existing, options = {}) {
         payload.validation_attempts ??
         previous.validationAttempts ??
         0,
+      reviewAttempts:
+        payload.reviewAttempts ?? payload.review_attempts ?? previous.reviewAttempts ?? 0,
+      repairAttempts:
+        payload.repairAttempts ?? payload.repair_attempts ?? previous.repairAttempts ?? 0,
+      latestReview: payload.latestReview ?? payload.latest_review ?? previous.latestReview,
       validationOverride:
         payload.validationOverride ?? payload.validation_override ?? previous.validationOverride,
       evidencePacks: payload.evidencePacks ?? payload.evidence_packs ?? previous.evidencePacks,
@@ -591,6 +600,126 @@ export function inferPrStatus(payload, previousStatus = "pr-open") {
 export function codingTaskValidationPassed(task = {}) {
   const validation = task.latestValidation ?? task.latest_validation;
   return Boolean(validation && validation.status === "passed" && validation.passed !== false);
+}
+
+export function normalizeCodingTaskModelPolicy(policy = {}) {
+  const source = policy && typeof policy === "object" ? policy : {};
+  const normalizeSelection = (selection) => {
+    if (!selection || typeof selection !== "object") {
+      return undefined;
+    }
+    const harness = String(selection.harness ?? "").trim();
+    const model = String(selection.model ?? "").trim();
+    return harness && model ? { harness, model } : undefined;
+  };
+  const planner = normalizeSelection(source.planner);
+  const executor = normalizeSelection(source.executor);
+  const reviewer = normalizeSelection(source.reviewer);
+  const fallbackChain = Array.isArray(source.fallbackChain ?? source.fallback_chain)
+    ? (source.fallbackChain ?? source.fallback_chain).map(normalizeSelection).filter(Boolean)
+    : [];
+  const escalateOnRepairAttempt = Number.parseInt(
+    source.escalateOnRepairAttempt ?? source.escalate_on_repair_attempt ?? 2,
+    10
+  );
+  return {
+    planner,
+    executor,
+    reviewer,
+    fallbackChain,
+    escalateOnRepairAttempt:
+      Number.isFinite(escalateOnRepairAttempt) && escalateOnRepairAttempt > 0
+        ? escalateOnRepairAttempt
+        : 2
+  };
+}
+
+export function codingTaskReviewPassed(task = {}) {
+  const review = task.latestReview ?? task.latest_review;
+  return Boolean(review && review.status === "clean" && !review.blockerCount);
+}
+
+export function normalizeCodingReviewResult(payload = {}, task = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const findings = Array.isArray(payload.findings) ? payload.findings : [];
+  const normalizedFindings = findings.map((finding, index) => ({
+    id: finding.id ?? `review_finding_${index + 1}`,
+    severity: finding.severity === "blocker" ? "blocker" : "non-blocker",
+    file: finding.file,
+    line: Number.isFinite(finding.line) ? finding.line : undefined,
+    summary: String(finding.summary ?? "").trim(),
+    failureScenario: String(finding.failureScenario ?? finding.failure_scenario ?? "").trim()
+  }));
+  const blockerCount = normalizedFindings.filter(
+    (finding) => finding.severity === "blocker"
+  ).length;
+  const status = CODING_REVIEW_STATUSES.includes(payload.status)
+    ? payload.status
+    : blockerCount
+      ? "blocked"
+      : normalizedFindings.length
+        ? "findings"
+        : "clean";
+  return {
+    id:
+      payload.id ??
+      `review_${slug(task.id ?? payload.taskId ?? "task")}_${Date.parse(now) || Date.now()}_${Number.parseInt(payload.attempt ?? task.reviewAttempts ?? 0, 10) + 1}`,
+    taskId: payload.taskId ?? payload.task_id ?? task.id,
+    runId: payload.runId ?? payload.run_id ?? task.latestHermesRunId ?? task.hermesRunId,
+    status,
+    blockerCount,
+    attempt: Number.parseInt(payload.attempt ?? task.reviewAttempts ?? 0, 10) + 1,
+    riskTier: payload.riskTier ?? payload.risk_tier ?? task.riskReview?.risk?.level ?? "medium",
+    model: normalizeCodingTaskModelPolicy({ reviewer: payload.model ?? task.modelPolicy?.reviewer })
+      .reviewer,
+    findings: normalizedFindings,
+    definitionOfDone: Array.isArray(payload.definitionOfDone ?? payload.definition_of_done)
+      ? (payload.definitionOfDone ?? payload.definition_of_done)
+      : [],
+    summary: payload.summary,
+    createdAt: payload.createdAt ?? payload.created_at ?? now,
+    completedAt: payload.completedAt ?? payload.completed_at ?? now
+  };
+}
+
+export function applyCodingTaskReview(existing, payload = {}, options = {}) {
+  const now = options.now ?? new Date().toISOString();
+  const previous = existingPayload(existing);
+  const latestReview = normalizeCodingReviewResult(payload, previous, { now });
+  const reviewAttempts = Math.max(numberOrZero(previous.reviewAttempts), latestReview.attempt);
+  const repairAttempts = latestReview.blockerCount
+    ? Math.max(numberOrZero(previous.repairAttempts) + 1, latestReview.attempt)
+    : numberOrZero(previous.repairAttempts);
+  const maxRepairAttempts = Number.parseInt(payload.maxRepairAttempts ?? 3, 10) || 3;
+  const exhausted = latestReview.blockerCount > 0 && repairAttempts >= maxRepairAttempts;
+  return enqueueCodingTaskItems(
+    existing,
+    {
+      status: exhausted && previous.status === "running" ? "needs-clarification" : previous.status,
+      latestReview,
+      reviewAttempts,
+      repairAttempts,
+      handoff: exhausted
+        ? {
+            blocker: "review_blockers",
+            attempted: latestReview.findings.map((finding) => finding.summary),
+            artifacts: [`review:${latestReview.id}`],
+            nextAction: "inspect reviewer blockers before continuing",
+            createdAt: now
+          }
+        : previous.handoff,
+      items: [
+        {
+          kind: "coding-review",
+          status: latestReview.status,
+          title: `Coding review ${latestReview.status}`,
+          approvalRequired: false,
+          payload: latestReview
+        }
+      ]
+    },
+    { now, modelPolicy: options.modelPolicy }
+  );
 }
 
 export function normalizeCodingValidationResult(payload = {}, task = {}, options = {}) {
@@ -651,7 +780,11 @@ export function applyCodingTaskValidation(existing, payload = {}, options = {}) 
     Number.isFinite(requestedMaxRepairAttempts) && requestedMaxRepairAttempts >= 0
       ? requestedMaxRepairAttempts
       : 3;
-  const exhausted = latestValidation.status === "failed" && validationAttempts >= maxRepairAttempts;
+  const repairAttempts =
+    latestValidation.status === "failed"
+      ? Math.max(numberOrZero(previous.repairAttempts) + 1, latestValidation.attempt)
+      : numberOrZero(previous.repairAttempts);
+  const exhausted = latestValidation.status === "failed" && repairAttempts >= maxRepairAttempts;
   const handoff = exhausted
     ? {
         blocker: "validation_failed",
@@ -674,6 +807,7 @@ export function applyCodingTaskValidation(existing, payload = {}, options = {}) 
       status,
       latestValidation,
       validationAttempts,
+      repairAttempts,
       handoff,
       items: [
         {
@@ -685,7 +819,7 @@ export function applyCodingTaskValidation(existing, payload = {}, options = {}) 
         }
       ]
     },
-    { now }
+    { now, modelPolicy: options.modelPolicy }
   );
 }
 
@@ -896,7 +1030,7 @@ export function applyPrStatus(existing, payload, options = {}) {
   if (
     previous.status === "running" &&
     requestedStatus === "pr-open" &&
-    !codingTaskValidationPassed(previous) &&
+    (!codingTaskValidationPassed(previous) || !codingTaskReviewPassed(previous)) &&
     !override
   ) {
     return enqueueCodingTaskItems(
@@ -909,17 +1043,23 @@ export function applyPrStatus(existing, payload, options = {}) {
             : previous.latestPrEvents,
         status: "waiting-for-approval",
         handoff: {
-          blocker: "validation_required",
+          blocker: !codingTaskValidationPassed(previous)
+            ? "validation_required"
+            : "review_required",
           attempted: ["sync-pr-status"],
           artifacts: previous.latestValidation
             ? [`validation:${previous.latestValidation.id}`]
             : [],
-          nextAction: "run validate-coding-task or explicitly override validation",
+          nextAction: !codingTaskValidationPassed(previous)
+            ? "run validate-coding-task or explicitly override validation"
+            : "run review-coding-task or explicitly override validation",
           createdAt: now
         },
         items: [
           {
-            kind: "coding-validation-required",
+            kind: !codingTaskValidationPassed(previous)
+              ? "coding-validation-required"
+              : "coding-review-required",
             status: "blocked",
             title: "Validation required before PR-ready",
             approvalRequired: true,
@@ -1279,7 +1419,7 @@ export function planCodingTaskIntake(payload = {}, options = {}) {
       ]
     },
     undefined,
-    { now }
+    { now, modelPolicy: options.modelPolicy }
   );
   return {
     ok: true,
@@ -1357,6 +1497,7 @@ export function planCodingTaskQueue(payload = {}, existingTasks = [], options = 
     undefined,
     {
       now,
+      modelPolicy: options.modelPolicy,
       existingTasks,
       portBase: options.policy?.portBase,
       portSlots: options.policy?.portSlots
@@ -1470,7 +1611,7 @@ export function updateCodingTaskCoordination(existing, payload = {}, options = {
       status: payload.status ?? previous.status
     },
     existing,
-    { now }
+    { now, modelPolicy: options.modelPolicy }
   );
 }
 
@@ -1548,10 +1689,14 @@ export function applyCodingTaskControl(existing, payload = {}, options = {}) {
   if (
     action === "open-pr" &&
     previous.status === "running" &&
-    !codingTaskValidationPassed(previous) &&
+    (!codingTaskValidationPassed(previous) || !codingTaskReviewPassed(previous)) &&
     !override
   ) {
-    return { ok: false, statusCode: 409, reason: "validation_required" };
+    return {
+      ok: false,
+      statusCode: 409,
+      reason: codingTaskValidationPassed(previous) ? "review_required" : "validation_required"
+    };
   }
   const status =
     action === "pause"
