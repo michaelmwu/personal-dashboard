@@ -1147,6 +1147,9 @@ export async function reviewCodingAgentTasks(options = {}) {
       return false;
     }
     const runId = task.latestHermesRunId ?? task.hermesRunId;
+    if (task.latestValidation.runId !== runId) {
+      return false;
+    }
     return (
       task.reviewRequest?.status === "pending" ||
       !task.latestReview ||

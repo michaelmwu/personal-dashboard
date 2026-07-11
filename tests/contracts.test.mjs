@@ -3552,6 +3552,38 @@ describe("contracts", () => {
     );
     expect(opened.payload.status).toBe("pr-open");
 
+    const requestedRereview = applyCodingTaskControl(
+      passedReview,
+      {
+        action: "re-review",
+        requestedBy: "michaelmwu",
+        feedback: "Double-check the PR gate."
+      },
+      { now: "2026-07-07T10:03:45.000Z" }
+    );
+    expect(requestedRereview.task.reviewRequest).toMatchObject({ status: "pending" });
+    expect(
+      applyCodingTaskControl(requestedRereview.taskItem, {
+        action: "open-pr",
+        requestedBy: "michaelmwu"
+      })
+    ).toMatchObject({ ok: false, reason: "re-review_pending" });
+    const failedRereview = applyCodingTaskReview(
+      requestedRereview.taskItem,
+      {
+        taskId: "coding_validation_gate",
+        runId: "run_validation_gate",
+        status: "failed",
+        reviewRequestId: requestedRereview.task.reviewRequest.id,
+        summary: "review_gateway_http_503"
+      },
+      { now: "2026-07-07T10:03:50.000Z" }
+    );
+    expect(failedRereview.payload.reviewRequest).toMatchObject({
+      id: requestedRereview.task.reviewRequest.id,
+      status: "pending"
+    });
+
     expect(
       applyCodingTaskControl(runningTask, {
         action: "open-pr",
@@ -3915,6 +3947,28 @@ describe("contracts", () => {
       model: { harness: "cursor", model: "gpt-5" },
       summary: expect.stringContaining("review_harness_cursor_requires_isolated_runner")
     });
+  });
+
+  test("integration worker requires validation from the current Hermes run before review", async () => {
+    const result = await reviewCodingAgentTasks({
+      tasksResponse: {
+        tasks: [
+          {
+            id: "coding_stale_validation_review",
+            status: "pr-open",
+            latestHermesRunId: "run_current",
+            latestValidation: { status: "passed", runId: "run_previous" },
+            latestReview: { runId: "run_previous", status: "clean" },
+            reviewRequest: { id: "review_request_stale", status: "pending" }
+          }
+        ]
+      },
+      command: async () => {
+        throw new Error("review_must_not_start_before_current_validation");
+      }
+    });
+
+    expect(result).toEqual({ taskCount: 0, results: [] });
   });
 
   test("PR feedback deduplicates an inline comment already covered by internal review", () => {

@@ -676,6 +676,11 @@ export function codingTaskReviewPassed(task = {}) {
   return Boolean(review && review.status === "clean" && !review.blockerCount);
 }
 
+export function codingTaskReviewPending(task = {}) {
+  const request = task.reviewRequest ?? task.review_request;
+  return request?.status === "pending";
+}
+
 export function normalizeCodingReviewResult(payload = {}, task = {}, options = {}) {
   const now = options.now ?? new Date().toISOString();
   const findings = Array.isArray(payload.findings) ? payload.findings : [];
@@ -735,14 +740,17 @@ export function applyCodingTaskReview(existing, payload = {}, options = {}) {
     {
       status: exhausted && previous.status === "running" ? "needs-clarification" : previous.status,
       latestReview,
-      reviewRequest: payload.reviewRequestId
-        ? {
-            ...previous.reviewRequest,
-            status: "completed",
-            reviewId: latestReview.id,
-            completedAt: now
-          }
-        : previous.reviewRequest,
+      reviewRequest:
+        payload.reviewRequestId &&
+        previous.reviewRequest?.id === payload.reviewRequestId &&
+        latestReview.status !== "failed"
+          ? {
+              ...previous.reviewRequest,
+              status: "completed",
+              reviewId: latestReview.id,
+              completedAt: now
+            }
+          : previous.reviewRequest,
       reviewAttempts,
       repairAttempts,
       handoff: exhausted
@@ -1073,10 +1081,13 @@ export function applyPrStatus(existing, payload, options = {}) {
   const incomingEvents = payload.latestPrEvents ?? payload.latest_pr_events;
   const requestedStatus = inferPrStatus(payload, previous.status ?? "pr-open");
   const override = validationOverride(payload, now);
+  const validationPassed = codingTaskValidationPassed(previous);
+  const reviewPending = codingTaskReviewPending(previous);
+  const reviewPassed = codingTaskReviewPassed(previous);
   if (
     previous.status === "running" &&
     requestedStatus === "pr-open" &&
-    (!codingTaskValidationPassed(previous) || !codingTaskReviewPassed(previous)) &&
+    (!validationPassed || reviewPending || !reviewPassed) &&
     !override
   ) {
     return enqueueCodingTaskItems(
@@ -1089,25 +1100,35 @@ export function applyPrStatus(existing, payload, options = {}) {
             : previous.latestPrEvents,
         status: "waiting-for-approval",
         handoff: {
-          blocker: !codingTaskValidationPassed(previous)
+          blocker: !validationPassed
             ? "validation_required"
-            : "review_required",
+            : reviewPending
+              ? "re-review_pending"
+              : "review_required",
           attempted: ["sync-pr-status"],
           artifacts: previous.latestValidation
             ? [`validation:${previous.latestValidation.id}`]
             : [],
-          nextAction: !codingTaskValidationPassed(previous)
+          nextAction: !validationPassed
             ? "run validate-coding-task or explicitly override validation"
-            : "run review-coding-task or explicitly override validation",
+            : reviewPending
+              ? "wait for the requested re-review to complete"
+              : "run review-coding-task or explicitly override validation",
           createdAt: now
         },
         items: [
           {
-            kind: !codingTaskValidationPassed(previous)
+            kind: !validationPassed
               ? "coding-validation-required"
-              : "coding-review-required",
+              : reviewPending
+                ? "coding-re-review-pending"
+                : "coding-review-required",
             status: "blocked",
-            title: "Validation required before PR-ready",
+            title: !validationPassed
+              ? "Validation required before PR-ready"
+              : reviewPending
+                ? "Requested re-review must complete before PR-ready"
+                : "Review required before PR-ready",
             approvalRequired: true,
             payload: {
               requestedStatus,
@@ -1745,13 +1766,19 @@ export function applyCodingTaskControl(existing, payload = {}, options = {}) {
   if (
     action === "open-pr" &&
     previous.status === "running" &&
-    (!codingTaskValidationPassed(previous) || !codingTaskReviewPassed(previous)) &&
+    (!codingTaskValidationPassed(previous) ||
+      codingTaskReviewPending(previous) ||
+      !codingTaskReviewPassed(previous)) &&
     !override
   ) {
     return {
       ok: false,
       statusCode: 409,
-      reason: codingTaskValidationPassed(previous) ? "review_required" : "validation_required"
+      reason: !codingTaskValidationPassed(previous)
+        ? "validation_required"
+        : codingTaskReviewPending(previous)
+          ? "re-review_pending"
+          : "review_required"
     };
   }
   const status =
