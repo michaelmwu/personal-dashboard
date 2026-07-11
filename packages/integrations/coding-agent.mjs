@@ -47,6 +47,7 @@ export const CODING_AGENT_CONTROL_ACTIONS = [
   "approve-mission",
   "tests",
   "preview",
+  "re-review",
   "open-pr",
   "archive",
   "handoff"
@@ -54,6 +55,39 @@ export const CODING_AGENT_CONTROL_ACTIONS = [
 
 export const CODING_VALIDATION_STATUSES = ["passed", "failed", "skipped"];
 export const CODING_REVIEW_STATUSES = ["clean", "findings", "blocked", "failed", "skipped"];
+
+// This is deliberately a review-only capability catalog. A policy may select a
+// planned harness before it is executable so task state, controls, and model
+// selection do not need a migration when the adapter becomes available.
+export const CODING_AGENT_REVIEW_HARNESSES = Object.freeze([
+  Object.freeze({
+    id: "codex",
+    status: "available",
+    safety: "read-only-sandbox",
+    supportsModelSelection: true
+  }),
+  Object.freeze({
+    id: "claude",
+    status: "available",
+    safety: "plan-mode",
+    supportsModelSelection: true
+  }),
+  Object.freeze({
+    id: "cursor",
+    status: "planned",
+    safety: "requires-isolated-runner",
+    supportsModelSelection: true,
+    unavailableReason:
+      "Cursor CLI review is not enabled because noninteractive runs require an isolated runner before they can be treated as read-only."
+  })
+]);
+
+export function codingAgentReviewHarness(harness) {
+  const id = String(harness ?? "")
+    .trim()
+    .toLowerCase();
+  return CODING_AGENT_REVIEW_HARNESSES.find((candidate) => candidate.id === id);
+}
 
 export const CODING_AGENT_GOAL_MUTATION_ACTIONS = [
   "create-github-issue",
@@ -564,6 +598,7 @@ export function codingTaskItem(payload, existing, options = {}) {
       repairAttempts:
         payload.repairAttempts ?? payload.repair_attempts ?? previous.repairAttempts ?? 0,
       latestReview: payload.latestReview ?? payload.latest_review ?? previous.latestReview,
+      reviewRequest: payload.reviewRequest ?? payload.review_request ?? previous.reviewRequest,
       validationOverride:
         payload.validationOverride ?? payload.validation_override ?? previous.validationOverride,
       evidencePacks: payload.evidencePacks ?? payload.evidence_packs ?? previous.evidencePacks,
@@ -608,7 +643,9 @@ export function normalizeCodingTaskModelPolicy(policy = {}) {
     if (!selection || typeof selection !== "object") {
       return undefined;
     }
-    const harness = String(selection.harness ?? "").trim();
+    const harness = String(selection.harness ?? "")
+      .trim()
+      .toLowerCase();
     const model = String(selection.model ?? "").trim();
     return harness && model ? { harness, model } : undefined;
   };
@@ -637,6 +674,11 @@ export function normalizeCodingTaskModelPolicy(policy = {}) {
 export function codingTaskReviewPassed(task = {}) {
   const review = task.latestReview ?? task.latest_review;
   return Boolean(review && review.status === "clean" && !review.blockerCount);
+}
+
+export function codingTaskReviewPending(task = {}) {
+  const request = task.reviewRequest ?? task.review_request;
+  return request?.status === "pending";
 }
 
 export function normalizeCodingReviewResult(payload = {}, task = {}, options = {}) {
@@ -698,6 +740,17 @@ export function applyCodingTaskReview(existing, payload = {}, options = {}) {
     {
       status: exhausted && previous.status === "running" ? "needs-clarification" : previous.status,
       latestReview,
+      reviewRequest:
+        payload.reviewRequestId &&
+        previous.reviewRequest?.id === payload.reviewRequestId &&
+        latestReview.status !== "failed"
+          ? {
+              ...previous.reviewRequest,
+              status: "completed",
+              reviewId: latestReview.id,
+              completedAt: now
+            }
+          : previous.reviewRequest,
       reviewAttempts,
       repairAttempts,
       handoff: exhausted
@@ -1028,10 +1081,13 @@ export function applyPrStatus(existing, payload, options = {}) {
   const incomingEvents = payload.latestPrEvents ?? payload.latest_pr_events;
   const requestedStatus = inferPrStatus(payload, previous.status ?? "pr-open");
   const override = validationOverride(payload, now);
+  const validationPassed = codingTaskValidationPassed(previous);
+  const reviewPending = codingTaskReviewPending(previous);
+  const reviewPassed = codingTaskReviewPassed(previous);
   if (
     previous.status === "running" &&
     requestedStatus === "pr-open" &&
-    (!codingTaskValidationPassed(previous) || !codingTaskReviewPassed(previous)) &&
+    (!validationPassed || reviewPending || !reviewPassed) &&
     !override
   ) {
     return enqueueCodingTaskItems(
@@ -1044,25 +1100,35 @@ export function applyPrStatus(existing, payload, options = {}) {
             : previous.latestPrEvents,
         status: "waiting-for-approval",
         handoff: {
-          blocker: !codingTaskValidationPassed(previous)
+          blocker: !validationPassed
             ? "validation_required"
-            : "review_required",
+            : reviewPending
+              ? "re-review_pending"
+              : "review_required",
           attempted: ["sync-pr-status"],
           artifacts: previous.latestValidation
             ? [`validation:${previous.latestValidation.id}`]
             : [],
-          nextAction: !codingTaskValidationPassed(previous)
+          nextAction: !validationPassed
             ? "run validate-coding-task or explicitly override validation"
-            : "run review-coding-task or explicitly override validation",
+            : reviewPending
+              ? "wait for the requested re-review to complete"
+              : "run review-coding-task or explicitly override validation",
           createdAt: now
         },
         items: [
           {
-            kind: !codingTaskValidationPassed(previous)
+            kind: !validationPassed
               ? "coding-validation-required"
-              : "coding-review-required",
+              : reviewPending
+                ? "coding-re-review-pending"
+                : "coding-review-required",
             status: "blocked",
-            title: "Validation required before PR-ready",
+            title: !validationPassed
+              ? "Validation required before PR-ready"
+              : reviewPending
+                ? "Requested re-review must complete before PR-ready"
+                : "Review required before PR-ready",
             approvalRequired: true,
             payload: {
               requestedStatus,
@@ -1666,6 +1732,16 @@ export function applyCodingTaskControl(existing, payload = {}, options = {}) {
     reason: payload.reason,
     createdAt: now
   };
+  const reviewRequest =
+    action === "re-review"
+      ? {
+          id: `review_request_${slug(previous.id)}_${Date.parse(now) || Date.now()}`,
+          feedback: String(payload.feedback ?? payload.reason ?? "").trim(),
+          requestedBy: payload.requestedBy ?? payload.requested_by,
+          createdAt: now,
+          status: "pending"
+        }
+      : previous.reviewRequest;
   const mission =
     action === "approve-mission"
       ? {
@@ -1690,13 +1766,19 @@ export function applyCodingTaskControl(existing, payload = {}, options = {}) {
   if (
     action === "open-pr" &&
     previous.status === "running" &&
-    (!codingTaskValidationPassed(previous) || !codingTaskReviewPassed(previous)) &&
+    (!codingTaskValidationPassed(previous) ||
+      codingTaskReviewPending(previous) ||
+      !codingTaskReviewPassed(previous)) &&
     !override
   ) {
     return {
       ok: false,
       statusCode: 409,
-      reason: codingTaskValidationPassed(previous) ? "review_required" : "validation_required"
+      reason: !codingTaskValidationPassed(previous)
+        ? "validation_required"
+        : codingTaskReviewPending(previous)
+          ? "re-review_pending"
+          : "review_required"
     };
   }
   const status =
@@ -1720,6 +1802,7 @@ export function applyCodingTaskControl(existing, payload = {}, options = {}) {
       mission,
       validationOverride: override ?? previous.validationOverride,
       latestControl: control,
+      reviewRequest,
       handoff,
       items: [
         {

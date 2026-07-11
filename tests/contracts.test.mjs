@@ -33,6 +33,8 @@ import {
   normalizeCodingTaskMission,
   normalizeCodingTaskPortRange,
   applyCodingTaskValidation,
+  codingAgentReviewHarness,
+  normalizeCodingTaskModelPolicy,
   normalizeCodingAgentSignal,
   normalizeCodingAgentRegressionMemory,
   planCodingAgentGoalMutation,
@@ -3550,6 +3552,38 @@ describe("contracts", () => {
     );
     expect(opened.payload.status).toBe("pr-open");
 
+    const requestedRereview = applyCodingTaskControl(
+      passedReview,
+      {
+        action: "re-review",
+        requestedBy: "michaelmwu",
+        feedback: "Double-check the PR gate."
+      },
+      { now: "2026-07-07T10:03:45.000Z" }
+    );
+    expect(requestedRereview.task.reviewRequest).toMatchObject({ status: "pending" });
+    expect(
+      applyCodingTaskControl(requestedRereview.taskItem, {
+        action: "open-pr",
+        requestedBy: "michaelmwu"
+      })
+    ).toMatchObject({ ok: false, reason: "re-review_pending" });
+    const failedRereview = applyCodingTaskReview(
+      requestedRereview.taskItem,
+      {
+        taskId: "coding_validation_gate",
+        runId: "run_validation_gate",
+        status: "failed",
+        reviewRequestId: requestedRereview.task.reviewRequest.id,
+        summary: "review_gateway_http_503"
+      },
+      { now: "2026-07-07T10:03:50.000Z" }
+    );
+    expect(failedRereview.payload.reviewRequest).toMatchObject({
+      id: requestedRereview.task.reviewRequest.id,
+      status: "pending"
+    });
+
     expect(
       applyCodingTaskControl(runningTask, {
         action: "open-pr",
@@ -3867,6 +3901,74 @@ describe("contracts", () => {
     expect(persisted[0].findings[0]).toMatchObject({ severity: "blocker" });
     expect(dispatched[0].reviewPayload.findings).toHaveLength(1);
     expect(deepReviews[0].reviewPayload.riskTier).toBe("high");
+  });
+
+  test("Cursor is a planned review harness that preserves model selection but fails closed", async () => {
+    expect(codingAgentReviewHarness("CURSOR")).toMatchObject({
+      id: "cursor",
+      status: "planned",
+      safety: "requires-isolated-runner",
+      supportsModelSelection: true
+    });
+    expect(
+      normalizeCodingTaskModelPolicy({ reviewer: { harness: "CURSOR", model: "gpt-5" } })
+    ).toMatchObject({ reviewer: { harness: "cursor", model: "gpt-5" } });
+
+    const commands = [];
+    const review = await runCodingTaskReview(
+      {
+        id: "coding_cursor_review",
+        title: "Reserve Cursor review support",
+        status: "running",
+        baseBranch: "origin/main",
+        worktreeDir: "/tmp/coding-cursor-review",
+        latestHermesRunId: "run_cursor_review",
+        riskReview: { risk: { level: "medium" } },
+        modelPolicy: {
+          executor: { harness: "codex", model: "executor" },
+          reviewer: { harness: "cursor", model: "gpt-5" }
+        },
+        mission: { goal: "Keep review execution isolated." }
+      },
+      {
+        env: { CODING_AGENT_REVIEW_USE_HARNESS: "true" },
+        command: async (executable, args) => {
+          commands.push({ executable, args });
+          return { stdout: "diff --git a/file.mjs b/file.mjs", stderr: "" };
+        }
+      }
+    );
+
+    expect(commands).toEqual([
+      { executable: "git", args: ["diff", "--no-ext-diff", "origin/main...HEAD"] }
+    ]);
+    expect(review).toMatchObject({
+      status: "failed",
+      model: { harness: "cursor", model: "gpt-5" },
+      summary: expect.stringContaining("review_harness_cursor_requires_isolated_runner")
+    });
+  });
+
+  test("integration worker requires validation from the current Hermes run before review", async () => {
+    const result = await reviewCodingAgentTasks({
+      tasksResponse: {
+        tasks: [
+          {
+            id: "coding_stale_validation_review",
+            status: "pr-open",
+            latestHermesRunId: "run_current",
+            latestValidation: { status: "passed", runId: "run_previous" },
+            latestReview: { runId: "run_previous", status: "clean" },
+            reviewRequest: { id: "review_request_stale", status: "pending" }
+          }
+        ]
+      },
+      command: async () => {
+        throw new Error("review_must_not_start_before_current_validation");
+      }
+    });
+
+    expect(result).toEqual({ taskCount: 0, results: [] });
   });
 
   test("PR feedback deduplicates an inline comment already covered by internal review", () => {
