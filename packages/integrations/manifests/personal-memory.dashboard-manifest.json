@@ -1,0 +1,44 @@
+{
+  "id": "personal-memory",
+  "name": "Personal Memory",
+  "version": "dashboard-app.v1",
+  "baseUrl": "internal:personal-memory",
+  "panels": [
+    {
+      "id": "memory-proposals",
+      "type": "feed",
+      "title": "Memory Proposals",
+      "dataSource": "/api/apps/personal-memory/items?type=memory",
+      "defaultPosition": "operations"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "propose_personal_memory",
+      "title": "Propose personal memory",
+      "kind": "deterministic",
+      "target": "personal-memory",
+      "description": "Store a provenance-carrying personal-memory proposal. It is not recallable until an approved operator decision activates it.",
+      "inputSchema": {
+        "title": "string",
+        "content": "string",
+        "kind": "fact|preference|decision|session-summary",
+        "sensitivity": "personal|private|restricted",
+        "provenance": "object?",
+        "confidence": "number?"
+      }
+    },
+    {
+      "id": "recall_personal_memory",
+      "title": "Recall approved personal memory",
+      "kind": "deterministic",
+      "target": "personal-memory",
+      "description": "Recall only approved, unexpired personal memories. Returned memories include provenance so Hermes can cite its basis.",
+      "inputSchema": {
+        "query": "string",
+        "limit": "number?"
+      }
+    }
+  ],
+  "eventTypes": ["memory"]
+}

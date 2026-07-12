@@ -59,6 +59,13 @@ import {
   normalizeSourceEvent
 } from "../../packages/integrations/sources.mjs";
 import {
+  applyPersonalMemoryDecision,
+  PERSONAL_MEMORY_APP_ID,
+  personalMemoryConfig,
+  planPersonalMemoryProposal,
+  recallPersonalMemories
+} from "../../packages/integrations/personal-memory.mjs";
+import {
   genericAppItemsFromDashboard,
   loadPluginRegistry
 } from "../../packages/integrations/registry.mjs";
@@ -180,6 +187,47 @@ async function appItems(appId, { type } = {}) {
       ? await codingAgentStore.listItems({ type })
       : await listAppItems(storePath, { app: appId, type });
   return [...projectedItems, ...overlayItems].filter((item) => !type || item.type === type);
+}
+
+async function personalMemoryItems() {
+  return listAppItems(storePath, { app: PERSONAL_MEMORY_APP_ID, type: "memory" });
+}
+
+async function findPersonalMemory(payload = {}) {
+  const memoryId = payload.memoryId ?? payload.memory_id ?? payload.id;
+  return (await personalMemoryItems()).find(
+    (item) => item.id === memoryId || item.payload?.id === memoryId
+  );
+}
+
+async function proposePersonalMemory(payload = {}) {
+  const result = planPersonalMemoryProposal(payload);
+  if (!result.ok) {
+    return result;
+  }
+  await upsertAppItem(storePath, result.item);
+  return result;
+}
+
+async function decidePersonalMemory(payload = {}) {
+  const existing = await findPersonalMemory(payload);
+  const result = applyPersonalMemoryDecision(existing, payload);
+  if (!result.ok) {
+    return result;
+  }
+  await upsertAppItem(storePath, result.item);
+  return result;
+}
+
+async function recallPersonalMemory(payload = {}) {
+  const config = personalMemoryConfig();
+  return {
+    ok: true,
+    statusCode: 200,
+    ...recallPersonalMemories(await personalMemoryItems(), payload.query, {
+      limit: payload.limit ?? config.recallLimit
+    })
+  };
 }
 
 async function codingTaskItems() {
@@ -981,6 +1029,14 @@ async function dispatchDeterministicCapability(action, capability) {
     });
     return { dispatched: response.synced, target: capability.target, response };
   }
+  if (capability.endpoint === "/api/apps/personal-memory/proposals") {
+    const response = await proposePersonalMemory(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/personal-memory/recall") {
+    const response = await recallPersonalMemory(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
   if (capability.endpoint === "/api/apps/coding-agent/tasks") {
     const response = await registerCodingTask(action.payload);
     return { dispatched: response.ok, target: capability.target, response };
@@ -1332,10 +1388,61 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
 
       const appItemsMatch = url.pathname.match(/^\/api\/apps\/([^/]+)\/items$/);
       if (request.method === "GET" && appItemsMatch) {
+        if (appItemsMatch[1] === PERSONAL_MEMORY_APP_ID && !requireAuth(request, response)) {
+          return;
+        }
         json(response, 200, {
           app: appItemsMatch[1],
           items: await appItems(appItemsMatch[1], { type: url.searchParams.get("type") })
         });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/apps/personal-memory/config") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        json(response, 200, personalMemoryConfig());
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/apps/personal-memory/memories") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const status = url.searchParams.get("status");
+        json(response, 200, {
+          memories: (await personalMemoryItems())
+            .map((item) => item.payload)
+            .filter((memory) => !status || memory.status === status)
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/personal-memory/proposals") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await proposePersonalMemory(await readJson(request));
+        json(response, result.statusCode, result);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/personal-memory/decisions") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await decidePersonalMemory(await readJson(request));
+        json(response, result.statusCode, result);
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/personal-memory/recall") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const result = await recallPersonalMemory(await readJson(request));
+        json(response, result.statusCode, result);
         return;
       }
 
@@ -1345,6 +1452,15 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
           return;
         }
         const payload = await readJson(request);
+        if (appEventsMatch[1] === PERSONAL_MEMORY_APP_ID) {
+          error(
+            response,
+            400,
+            "personal_memory_direct_event_rejected",
+            "Use /api/apps/personal-memory/proposals so durable memories remain approval-gated."
+          );
+          return;
+        }
         const item = {
           app: appEventsMatch[1],
           type: payload.type ?? "event",
@@ -1823,6 +1939,26 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
           return;
         }
         json(response, 200, hermesContextFromDashboard(await dashboardSnapshot()));
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/hermes/memory/context") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const config = personalMemoryConfig();
+        json(response, 200, {
+          policy: {
+            durableWrites: "proposal-only",
+            approvalRequired: true,
+            recall: "approved-unexpired-only"
+          },
+          gbrain: config.gbrain,
+          curatedObsidianPaths: config.curatedObsidianPaths,
+          activeMemoryCount: (await personalMemoryItems()).filter(
+            (item) => item.payload?.status === "active"
+          ).length
+        });
         return;
       }
 
