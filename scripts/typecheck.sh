@@ -14,6 +14,7 @@ bun build \
   packages/integrations/hermes.mjs \
   packages/integrations/hotel-rates.mjs \
   packages/integrations/openclaw.mjs \
+  packages/integrations/omp-rpc.mjs \
   packages/integrations/plaid.mjs \
   packages/integrations/registry.mjs \
   packages/integrations/sources.mjs \

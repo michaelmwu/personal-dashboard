@@ -62,11 +62,11 @@ codingAgent:
       harness: claude
       model: planner
     executor:
-      harness: codex
-      model: executor
+      harness: omp
+      model: default
     reviewer:
-      harness: claude
-      model: reviewer
+      harness: omp
+      model: default
     fallbackChain:
       - harness: claude
         model: executor-fallback

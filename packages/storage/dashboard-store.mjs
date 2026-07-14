@@ -278,6 +278,7 @@ export async function patchAppItemPayload(filePath, selector, patcher) {
         ...payload,
         ...patch
       },
+      status: patch.status ?? item.status,
       ts: item.ts ?? new Date().toISOString()
     };
     overlay.apps.items[index] = next;
