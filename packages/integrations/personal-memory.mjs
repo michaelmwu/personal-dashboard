@@ -37,6 +37,32 @@ function memoryPayload(item) {
   return item?.payload ?? item ?? {};
 }
 
+function uriPath(uri, protocol) {
+  try {
+    const parsed = new URL(uri);
+    if (parsed.protocol !== `${protocol}:`) {
+      return undefined;
+    }
+    return [parsed.hostname, ...parsed.pathname.split("/").filter(Boolean)].join("/");
+  } catch {
+    return undefined;
+  }
+}
+
+function matchesConfiguredPath(path, configuredPaths) {
+  const normalizedPath = text(path).toLowerCase();
+  return configuredPaths.some((configuredPath) => {
+    const normalizedConfiguredPath = text(configuredPath)
+      .replace(/^\/+|\/+$/g, "")
+      .toLowerCase();
+    return (
+      normalizedConfiguredPath &&
+      (normalizedPath === normalizedConfiguredPath ||
+        normalizedPath.startsWith(`${normalizedConfiguredPath}/`))
+    );
+  });
+}
+
 export function personalMemoryConfig(env = process.env) {
   return {
     recallLimit: Math.round(boundedNumber(env.PERSONAL_MEMORY_RECALL_LIMIT, 8, 1, 20)),
@@ -51,10 +77,17 @@ export function personalMemoryConfig(env = process.env) {
 
 export function planPersonalMemoryProposal(input = {}, options = {}) {
   const now = options.now ?? new Date().toISOString();
+  const config = personalMemoryConfig(options.env);
   const title = text(input.title);
   const content = text(input.content ?? input.value ?? input.detail);
   const kind = text(input.kind || "fact").toLowerCase();
   const sensitivity = text(input.sensitivity || "private").toLowerCase();
+  const source = input.provenance ?? input.source ?? {};
+  const sourceId = text(source.sourceId ?? source.id ?? input.sourceId);
+  const sourceUri = text(source.sourceUri ?? source.uri ?? input.sourceUri);
+  const obsidianPath = uriPath(sourceUri, "obsidian");
+  const gbrainPath = uriPath(sourceUri, "gbrain");
+  const sourceType = text(source.sourceType ?? source.type ?? input.sourceType ?? "hermes");
   const errors = [];
   if (!title) {
     errors.push("missing_memory_title");
@@ -68,11 +101,23 @@ export function planPersonalMemoryProposal(input = {}, options = {}) {
   if (!PERSONAL_MEMORY_SENSITIVITIES.includes(sensitivity)) {
     errors.push("unsupported_memory_sensitivity");
   }
+  if (!sourceId && !sourceUri) {
+    errors.push("missing_memory_provenance_source");
+  }
+  if (obsidianPath && !matchesConfiguredPath(obsidianPath, config.curatedObsidianPaths)) {
+    errors.push("memory_obsidian_source_not_allowed");
+  }
+  if (sourceType.toLowerCase() === "gbrain" || gbrainPath) {
+    const configuredSource = text(config.gbrain.source);
+    const declaredSource = sourceId || gbrainPath;
+    if (!configuredSource || !matchesConfiguredPath(declaredSource, [configuredSource])) {
+      errors.push("memory_gbrain_source_not_allowed");
+    }
+  }
   if (errors.length) {
     return { ok: false, statusCode: 400, reason: errors[0], errors };
   }
 
-  const source = input.provenance ?? input.source ?? {};
   const id =
     text(input.memoryId ?? input.memory_id ?? input.id) ||
     `memory_${slug(title) || "proposal"}_${createHash("sha256")
@@ -92,9 +137,9 @@ export function planPersonalMemoryProposal(input = {}, options = {}) {
     tags: list(input.tags),
     expiresAt: text(input.expiresAt ?? input.expires_at) || undefined,
     provenance: {
-      sourceType: text(source.sourceType ?? source.type ?? input.sourceType ?? "hermes"),
-      sourceId: text(source.sourceId ?? source.id ?? input.sourceId) || undefined,
-      sourceUri: text(source.sourceUri ?? source.uri ?? input.sourceUri) || undefined,
+      sourceType,
+      sourceId: sourceId || undefined,
+      sourceUri: sourceUri || undefined,
       capturedAt: text(source.capturedAt ?? input.capturedAt) || now
     },
     proposedBy: text(input.proposedBy ?? input.proposed_by ?? "hermes"),
@@ -178,6 +223,9 @@ export function recallPersonalMemories(items = [], query, options = {}) {
   const now = options.now ?? new Date().toISOString();
   const terms = recallTerms(query);
   const limit = Math.round(boundedNumber(options.limit, 8, 1, 20));
+  if (!terms.length) {
+    return { query: text(query), retrievedAt: now, memories: [] };
+  }
   const memories = items
     .map(memoryPayload)
     .filter(
@@ -191,7 +239,7 @@ export function recallPersonalMemories(items = [], query, options = {}) {
       const score = terms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0);
       return { memory, score };
     })
-    .filter(({ score }) => terms.length === 0 || score > 0)
+    .filter(({ score }) => score > 0)
     .sort(
       (left, right) =>
         right.score - left.score ||

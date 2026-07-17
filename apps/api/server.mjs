@@ -147,7 +147,9 @@ async function dashboardSnapshot() {
   );
   const codingItems = await codingAgentStore.listItems();
   const persistedItems = [
-    ...(dashboard.apps?.items ?? []).filter((item) => item.app !== "coding-agent"),
+    ...(dashboard.apps?.items ?? []).filter(
+      (item) => item.app !== "coding-agent" && item.app !== PERSONAL_MEMORY_APP_ID
+    ),
     ...codingItems
   ];
   return {
@@ -201,9 +203,12 @@ async function findPersonalMemory(payload = {}) {
 }
 
 async function proposePersonalMemory(payload = {}) {
-  const result = planPersonalMemoryProposal(payload);
+  const result = planPersonalMemoryProposal(payload, { env: process.env });
   if (!result.ok) {
     return result;
+  }
+  if (await findPersonalMemory({ memoryId: result.memory.id })) {
+    return { ok: false, statusCode: 409, reason: "personal_memory_already_exists" };
   }
   await upsertAppItem(storePath, result.item);
   return result;
@@ -220,6 +225,9 @@ async function decidePersonalMemory(payload = {}) {
 }
 
 async function recallPersonalMemory(payload = {}) {
+  if (!String(payload.query ?? "").trim()) {
+    return { ok: false, statusCode: 400, reason: "missing_memory_recall_query" };
+  }
   const config = personalMemoryConfig();
   return {
     ok: true,

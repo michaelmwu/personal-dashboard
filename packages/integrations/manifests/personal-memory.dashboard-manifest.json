@@ -18,13 +18,14 @@
       "title": "Propose personal memory",
       "kind": "deterministic",
       "target": "personal-memory",
+      "endpoint": "/api/apps/personal-memory/proposals",
       "description": "Store a provenance-carrying personal-memory proposal. It is not recallable until an approved operator decision activates it.",
       "inputSchema": {
         "title": "string",
         "content": "string",
         "kind": "fact|preference|decision|session-summary",
         "sensitivity": "personal|private|restricted",
-        "provenance": "object?",
+        "provenance": "object",
         "confidence": "number?"
       }
     },
@@ -33,6 +34,7 @@
       "title": "Recall approved personal memory",
       "kind": "deterministic",
       "target": "personal-memory",
+      "endpoint": "/api/apps/personal-memory/recall",
       "description": "Recall only approved, unexpired personal memories. Returned memories include provenance so Hermes can cite its basis.",
       "inputSchema": {
         "query": "string",

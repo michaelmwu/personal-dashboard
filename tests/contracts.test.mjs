@@ -317,6 +317,16 @@ describe("contracts", () => {
           target: "gmail-intake"
         }),
         expect.objectContaining({
+          id: "propose_personal_memory",
+          kind: "deterministic",
+          endpoint: "/api/apps/personal-memory/proposals"
+        }),
+        expect.objectContaining({
+          id: "recall_personal_memory",
+          kind: "deterministic",
+          endpoint: "/api/apps/personal-memory/recall"
+        }),
+        expect.objectContaining({
           id: "register-coding-task",
           kind: "deterministic",
           endpoint: "/api/apps/coding-agent/tasks"
@@ -1076,7 +1086,10 @@ describe("contracts", () => {
           sourceUri: "obsidian://Hermes/preferences"
         }
       },
-      { now: "2026-07-11T09:00:00.000Z" }
+      {
+        now: "2026-07-11T09:00:00.000Z",
+        env: { PERSONAL_MEMORY_OBSIDIAN_PATHS: "Hermes" }
+      }
     );
     expect(proposal).toMatchObject({
       ok: true,
@@ -1109,6 +1122,33 @@ describe("contracts", () => {
       id: "memory_test_preference",
       provenance: { sourceType: "operator-note", sourceId: "note_123" }
     });
+    expect(recallPersonalMemories([approved.item], "   ").memories).toEqual([]);
+    expect(
+      planPersonalMemoryProposal({
+        title: "Uncited memory",
+        content: "This must not be stored without provenance."
+      })
+    ).toMatchObject({ ok: false, reason: "missing_memory_provenance_source" });
+    expect(
+      planPersonalMemoryProposal(
+        {
+          title: "Unapproved vault path",
+          content: "This path is outside the configured vault folders.",
+          provenance: { sourceUri: "obsidian://Private/notes" }
+        },
+        { env: { PERSONAL_MEMORY_OBSIDIAN_PATHS: "Projects" } }
+      )
+    ).toMatchObject({ ok: false, reason: "memory_obsidian_source_not_allowed" });
+    expect(
+      planPersonalMemoryProposal(
+        {
+          title: "Approved GBrain source",
+          content: "This source is explicitly declared.",
+          provenance: { sourceType: "gbrain", sourceId: "hermes-personal" }
+        },
+        { env: { GBRAIN_PERSONAL_MEMORY_SOURCE: "hermes-personal" } }
+      )
+    ).toMatchObject({ ok: true });
     expect(
       personalMemoryConfig({
         PERSONAL_MEMORY_RECALL_LIMIT: "50",
@@ -1129,12 +1169,57 @@ describe("contracts", () => {
     const endpoint = `http://127.0.0.1:${apiPort}/api/apps/personal-memory`;
 
     try {
+      const capabilities = await fetch(`http://127.0.0.1:${apiPort}/api/hermes/capabilities`, {
+        headers: { Authorization: "Bearer dashboard-token" }
+      });
+      expect(capabilities.status).toBe(200);
+      expect((await capabilities.json()).capabilities).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "propose_personal_memory",
+            endpoint: "/api/apps/personal-memory/proposals"
+          }),
+          expect.objectContaining({
+            id: "recall_personal_memory",
+            endpoint: "/api/apps/personal-memory/recall"
+          })
+        ])
+      );
+
       const unauthorized = await fetch(`${endpoint}/proposals`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: "Do not write", content: "unauthorized" })
       });
       expect(unauthorized.status).toBe(401);
+
+      const hermesProposal = await fetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json",
+          "Idempotency-Key": `${memoryId}_hermes_proposal`
+        },
+        body: JSON.stringify({
+          capabilityId: "propose_personal_memory",
+          origin: "hermes",
+          payload: {
+            id: `${memoryId}_hermes`,
+            title: "Hermes personal-memory proposal",
+            content: "This verifies the manifest capability dispatches to the gateway.",
+            provenance: { sourceType: "hermes-run", sourceId: `${memoryId}_run` }
+          }
+        })
+      });
+      expect(hermesProposal.status).toBe(202);
+      expect(await hermesProposal.json()).toMatchObject({
+        accepted: true,
+        dispatch: {
+          dispatched: true,
+          target: "personal-memory",
+          response: { memory: { id: `${memoryId}_hermes`, status: "pending" } }
+        }
+      });
 
       const proposal = await fetch(`${endpoint}/proposals`, {
         method: "POST",
@@ -1150,6 +1235,29 @@ describe("contracts", () => {
       });
       expect(proposal.status).toBe(202);
       expect(await proposal.json()).toMatchObject({ memory: { id: memoryId, status: "pending" } });
+
+      const duplicate = await fetch(`${endpoint}/proposals`, {
+        method: "POST",
+        headers: { Authorization: "Bearer dashboard-token", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: memoryId,
+          title: "Overwrite attempt",
+          content: "This must not overwrite a pending or reviewed memory.",
+          provenance: { sourceType: "operator-note", sourceId: "duplicate_test" }
+        })
+      });
+      expect(duplicate.status).toBe(409);
+      expect(await duplicate.json()).toMatchObject({ reason: "personal_memory_already_exists" });
+
+      const publicDashboard = await fetch(`http://127.0.0.1:${apiPort}/api/dashboard`);
+      expect(publicDashboard.status).toBe(200);
+      const publicDashboardBody = await publicDashboard.json();
+      expect(publicDashboardBody.apps.items).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ app: "personal-memory" })])
+      );
+      expect(JSON.stringify(publicDashboardBody)).not.toContain(
+        "A proposed personal reminder, pending review."
+      );
 
       const privateItems = await fetch(`${endpoint}/items?type=memory`);
       expect(privateItems.status).toBe(401);
@@ -1185,6 +1293,16 @@ describe("contracts", () => {
         })
       });
       expect(approved.status).toBe(202);
+
+      const missingRecallQuery = await fetch(`${endpoint}/recall`, {
+        method: "POST",
+        headers: { Authorization: "Bearer dashboard-token", "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "   " })
+      });
+      expect(missingRecallQuery.status).toBe(400);
+      expect(await missingRecallQuery.json()).toMatchObject({
+        reason: "missing_memory_recall_query"
+      });
 
       const recalled = await fetch(`${endpoint}/recall`, {
         method: "POST",
