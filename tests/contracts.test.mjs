@@ -10,47 +10,42 @@ import { PassThrough, Writable } from "node:stream";
 
 import { createApiServer } from "../apps/api/server.mjs";
 import { createWebServer } from "../apps/web/server.mjs";
+import { hostDashboardSummary } from "../packages/contracts/index.mjs";
 import { dashboardFixture } from "../packages/fixtures/dashboard.mjs";
 import {
-  createHermesBridgeRun,
-  HermesBridgeLoopError,
-  parseSseFrame,
-  startHermesBridgeRun
-} from "../packages/integrations/hermes-bridge.mjs";
-import {
+  applyCodingTaskControl,
+  applyCodingTaskReview,
+  applyCodingTaskValidation,
+  applyPrStatus,
   archiveCodingTask,
   assertTaskTransition,
   classifyCodingAgentRisk,
-  applyPrStatus,
-  applyCodingTaskReview,
-  applyCodingTaskControl,
-  codingAgentExecutorPayload,
-  codingAgentPolicyFromEnv,
   codingAgentCampaignItem,
-  codingAgentGoalItem,
-  codingAgentScheduleItem,
   codingAgentDeliveryItem,
+  codingAgentExecutorPayload,
+  codingAgentGoalItem,
+  codingAgentPolicyFromEnv,
+  codingAgentReviewHarness,
   codingAgentRunRequestItem,
-  codingTaskMissionApproved,
-  codingTaskValidationPassed,
-  codingTaskReviewPassed,
+  codingAgentScheduleItem,
   codingTaskItem,
+  codingTaskMissionApproved,
+  codingTaskReviewPassed,
+  codingTaskValidationPassed,
   commentRequestsCodingAgentPickup,
   duplicateCodingTaskCandidates,
   evaluateCodingAgentPrPickup,
-  normalizeCodingTaskMission,
-  normalizeCodingTaskPortRange,
-  applyCodingTaskValidation,
-  codingAgentReviewHarness,
-  normalizeCodingTaskModelPolicy,
-  normalizeCodingAgentSignal,
-  normalizeCodingAgentRegressionMemory,
   nextCodingAgentScheduleRunAt,
+  normalizeCodingAgentRegressionMemory,
+  normalizeCodingAgentSignal,
+  normalizeCodingTaskMission,
+  normalizeCodingTaskModelPolicy,
+  normalizeCodingTaskPortRange,
+  pickupExistingPrTask,
   planCodingAgentAutomationTick,
   planCodingAgentGoalMutation,
-  planCodingTaskQueue,
-  pickupExistingPrTask,
   planCodingTaskIntake,
+  planCodingTaskQueue,
   planPrMaintenance,
   proposeCodingAgentGoalMutations,
   reconcileCodingAgentTasks,
@@ -61,12 +56,6 @@ import {
   validateCodingAgentAutomation
 } from "../packages/integrations/coding-agent.mjs";
 import {
-  ompApprovalMode,
-  ompChildEnvironment,
-  ompRpcArgs,
-  runOmpRpcSession
-} from "../packages/integrations/omp-rpc.mjs";
-import {
   createHermesAction,
   hermesActionIdFromIdempotencyKey,
   hermesCapabilities,
@@ -74,10 +63,11 @@ import {
   normalizeHermesEvent
 } from "../packages/integrations/hermes.mjs";
 import {
-  genericAppItemsFromDashboard,
-  loadPluginRegistry
-} from "../packages/integrations/registry.mjs";
-import { integrationCatalog, normalizeSourceEvent } from "../packages/integrations/sources.mjs";
+  createHermesBridgeRun,
+  HermesBridgeLoopError,
+  parseSseFrame,
+  startHermesBridgeRun
+} from "../packages/integrations/hermes-bridge.mjs";
 import {
   createHotelSavedSearch,
   hotelRateDropAlert,
@@ -89,6 +79,12 @@ import {
   waitForHotelJob
 } from "../packages/integrations/hotel-rates.mjs";
 import {
+  ompApprovalMode,
+  ompChildEnvironment,
+  ompRpcArgs,
+  runOmpRpcSession
+} from "../packages/integrations/omp-rpc.mjs";
+import {
   createPlaidLinkToken,
   exchangePlaidPublicToken,
   normalizePlaidAccount,
@@ -98,23 +94,28 @@ import {
   verifyPlaidWebhook
 } from "../packages/integrations/plaid.mjs";
 import {
+  genericAppItemsFromDashboard,
+  loadPluginRegistry
+} from "../packages/integrations/registry.mjs";
+import { integrationCatalog, normalizeSourceEvent } from "../packages/integrations/sources.mjs";
+import {
+  codingAgentStateStoreMode,
+  createCodingAgentJsonStore,
+  migrateCodingAgentJsonToStore
+} from "../packages/storage/coding-agent-store.mjs";
+import {
   applyHotelRateWatch,
   applyPlaidSync,
   listAppItems,
   listPlaidItems,
   loadDashboard,
   patchAppItemPayload,
-  upsertPlaidItem,
-  upsertHotelReservation,
   upsertAppItem,
   upsertHermesAction,
-  upsertNormalizedEvent
+  upsertHotelReservation,
+  upsertNormalizedEvent,
+  upsertPlaidItem
 } from "../packages/storage/dashboard-store.mjs";
-import {
-  codingAgentStateStoreMode,
-  createCodingAgentJsonStore,
-  migrateCodingAgentJsonToStore
-} from "../packages/storage/coding-agent-store.mjs";
 import {
   appendRunEvidenceEvent,
   captureRunGitDiff,
@@ -125,28 +126,28 @@ import {
   writeRunEvidenceArtifact
 } from "../packages/storage/run-evidence.mjs";
 import {
-  discoverCodingAgentIssueTriage,
-  discoverCodingAgentPrPickups,
-  dedupePrFeedbackAgainstInternalReview,
-  fetchCodingTaskPrSnapshot,
-  pollCodingAgentPrs,
-  deliverCodingAgentResults,
-  processCodingAgentRuns,
-  publishReadyCodingAgentPrs,
-  runCodingTaskValidation,
-  runCodingTaskReview,
-  runConfiguredIngestions,
-  runIngestion,
-  splitValidationCommand,
-  validateCodingAgentTasks,
-  reviewCodingAgentTasks
-} from "../scripts/integration-worker.mjs";
-import {
   aggregateTransactions,
   queryTransactions,
   transactionQueryFromSearchParams,
   transactionSummary
 } from "../packages/transactions/index.mjs";
+import {
+  dedupePrFeedbackAgainstInternalReview,
+  deliverCodingAgentResults,
+  discoverCodingAgentIssueTriage,
+  discoverCodingAgentPrPickups,
+  fetchCodingTaskPrSnapshot,
+  pollCodingAgentPrs,
+  processCodingAgentRuns,
+  publishReadyCodingAgentPrs,
+  reviewCodingAgentTasks,
+  runCodingTaskReview,
+  runCodingTaskValidation,
+  runConfiguredIngestions,
+  runIngestion,
+  splitValidationCommand,
+  validateCodingAgentTasks
+} from "../scripts/integration-worker.mjs";
 
 function listen(server) {
   return new Promise((resolve) => {
@@ -349,6 +350,95 @@ describe("contracts", () => {
     expect(dashboard.integrations.map((integration) => integration.id)).toContain("plaid");
   });
 
+  test("host dashboard summary is a compact read-only projection", () => {
+    const summary = hostDashboardSummary(dashboardFixture());
+
+    expect(summary).toMatchObject({
+      version: "host-dashboard-summary.v1",
+      health: {
+        level: "warning",
+        summary: expect.stringContaining("Hermes online")
+      }
+    });
+    expect(summary.metrics).toEqual(
+      expect.arrayContaining([expect.objectContaining({ label: "Tracked spend", value: "$1,120" })])
+    );
+    expect(summary.alerts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "alert_001", severity: "high" })])
+    );
+    expect(summary.travel).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "reservation_001", kind: "reservation" }),
+        expect.objectContaining({ id: "hotel_001", kind: "hotel-watch" })
+      ])
+    );
+    expect(summary.tasks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "oc_001", kind: "openclaw-task", priority: "high" })
+      ])
+    );
+    expect(summary).not.toHaveProperty("transactions");
+    expect(summary).not.toHaveProperty("finance");
+    expect(summary).not.toHaveProperty("hermes");
+  });
+
+  test("host dashboard summary endpoint remains loopback-friendly and read-only", async () => {
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      const response = await fetch(`http://127.0.0.1:${apiPort}/api/host-dashboard/summary`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        version: "host-dashboard-summary.v1",
+        health: { level: "warning" }
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("host adapter bundles keep browser auth at the host boundary", async () => {
+    const adapterRoot = join(process.cwd(), "adapters");
+    const [hermesManifestRaw, hermesProxy, hermesScript, webuiManifestRaw, webuiScript] =
+      await Promise.all([
+        readFile(join(adapterRoot, "hermes-dashboard/dashboard/manifest.json"), "utf8"),
+        readFile(join(adapterRoot, "hermes-dashboard/dashboard/plugin_api.py"), "utf8"),
+        readFile(join(adapterRoot, "hermes-dashboard/dashboard/dist/index.js"), "utf8"),
+        readFile(join(adapterRoot, "hermes-webui/manifest.json"), "utf8"),
+        readFile(join(adapterRoot, "hermes-webui/assets/personal-dashboard-extension.js"), "utf8")
+      ]);
+    const hermesManifest = JSON.parse(hermesManifestRaw);
+    const webuiManifest = JSON.parse(webuiManifestRaw);
+
+    expect(hermesManifest).toMatchObject({
+      name: "personal-dashboard",
+      entry: "dist/index.js",
+      api: "plugin_api.py",
+      tab: { path: "/personal-dashboard" }
+    });
+    expect(hermesProxy).toContain('SUMMARY_PATH = "/api/host-dashboard/summary"');
+    expect(hermesProxy).toContain('@router.get("/summary")');
+    expect(hermesProxy).not.toContain("PERSONAL_DASHBOARD_API_TOKEN");
+    expect(hermesScript).toContain('SDK.fetchJSON("/api/plugins/personal-dashboard/summary")');
+    expect(hermesScript).not.toContain("PERSONAL_DASHBOARD_API_TOKEN");
+
+    expect(webuiManifest).toMatchObject({
+      id: "personal-dashboard",
+      sidecar: {
+        type: "loopback",
+        origin: "http://127.0.0.1:8810",
+        health_path: "/api/health"
+      }
+    });
+    expect(webuiScript).toContain(
+      '"/api/extensions/personal-dashboard/sidecar/api/host-dashboard/summary"'
+    );
+    expect(webuiScript).not.toContain("http://127.0.0.1:8810");
+    expect(webuiScript).not.toContain("PERSONAL_DASHBOARD_API_TOKEN");
+    expect(webuiScript).not.toContain("innerHTML");
+  });
+
   test("Hermes events normalize into alert and transaction candidates", () => {
     const normalized = normalizeHermesEvent({
       id: "evt_123",
@@ -528,6 +618,10 @@ describe("contracts", () => {
       });
       expect(proxied.ok).toBe(true);
       expect(await proxied.json()).toEqual({ ok: true, path: "/api/dashboard?source=test" });
+
+      const hostSummary = await fetch(`http://127.0.0.1:${webPort}/api/host-dashboard/summary`);
+      expect(hostSummary.status).toBe(404);
+
       expect(apiRequests).toEqual([
         {
           method: "GET",

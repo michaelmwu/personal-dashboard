@@ -1,6 +1,171 @@
 export const DASHBOARD_CONTRACT_VERSION = "dashboard.v1";
 export const HERMES_ACTION_VERSION = "hermes-action.v1";
 export const DASHBOARD_APP_MANIFEST_VERSION = "dashboard-app.v1";
+export const HOST_DASHBOARD_SUMMARY_VERSION = "host-dashboard-summary.v1";
+
+const HOST_DASHBOARD_DEFAULT_LIMIT = 6;
+
+function hostDashboardString(value, fallback = "") {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function hostDashboardList(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function hostDashboardObject(value) {
+  return value && typeof value === "object" ? value : {};
+}
+
+function hostDashboardDetail(...parts) {
+  return parts
+    .map((part) => hostDashboardString(part))
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function hostDashboardItem({ id, kind, title, detail, status, source, priority }) {
+  return {
+    id: hostDashboardString(id, `${kind}-unknown`),
+    kind,
+    title: hostDashboardString(title, "Untitled item"),
+    detail: hostDashboardString(detail),
+    status: hostDashboardString(status, "unknown"),
+    source: hostDashboardString(source),
+    priority: hostDashboardString(priority)
+  };
+}
+
+/**
+ * A deliberately compact, read-only projection for trusted host dashboards.
+ *
+ * Keep this contract separate from dashboard.v1: host adapters need enough
+ * context to render useful status, but never the full account, transaction,
+ * action, or token-bearing dashboard payload.
+ */
+export function hostDashboardSummary(
+  dashboard = {},
+  { limit = HOST_DASHBOARD_DEFAULT_LIMIT } = {}
+) {
+  const sourceDashboard = hostDashboardObject(dashboard);
+  const itemLimit = Number.isInteger(limit) && limit > 0 ? limit : HOST_DASHBOARD_DEFAULT_LIMIT;
+  const travel = hostDashboardObject(sourceDashboard.travel);
+  const appItems = hostDashboardList(sourceDashboard.apps?.items);
+
+  const travelItems = [
+    ...hostDashboardList(travel.reservations).map((rawReservation) => {
+      const reservation = hostDashboardObject(rawReservation);
+      return hostDashboardItem({
+        id: reservation.id,
+        kind: "reservation",
+        title: reservation.title,
+        detail: hostDashboardDetail(reservation.dates, reservation.type),
+        status: reservation.status,
+        source: reservation.source
+      });
+    }),
+    ...hostDashboardList(travel.hotelWatches).map((rawWatch) => {
+      const watch = hostDashboardObject(rawWatch);
+      return hostDashboardItem({
+        id: watch.id,
+        kind: "hotel-watch",
+        title: watch.property ?? watch.location,
+        detail: hostDashboardDetail(
+          watch.location,
+          watch.checkIn && watch.checkOut ? `${watch.checkIn} to ${watch.checkOut}` : ""
+        ),
+        status: watch.status,
+        source: watch.source
+      });
+    }),
+    ...hostDashboardList(travel.flightWatches).map((rawWatch) => {
+      const watch = hostDashboardObject(rawWatch);
+      return hostDashboardItem({
+        id: watch.id,
+        kind: "flight-watch",
+        title: watch.route,
+        detail: watch.dates,
+        status: watch.status,
+        source: "flight-watch"
+      });
+    }),
+    ...hostDashboardList(travel.dealFeed).map((rawDeal) => {
+      const deal = hostDashboardObject(rawDeal);
+      return hostDashboardItem({
+        id: deal.id,
+        kind: "travel-deal",
+        title: deal.title,
+        detail: hostDashboardDetail(deal.route, deal.price === undefined ? "" : String(deal.price)),
+        status: deal.status,
+        source: deal.source
+      });
+    })
+  ].slice(0, itemLimit);
+
+  const taskItems = [
+    ...hostDashboardList(sourceDashboard.openclaw?.tasks).map((rawTask) => {
+      const task = hostDashboardObject(rawTask);
+      return hostDashboardItem({
+        id: task.id,
+        kind: "openclaw-task",
+        title: task.title,
+        detail: task.owner,
+        status: task.state,
+        source: "openclaw",
+        priority: task.priority
+      });
+    }),
+    ...appItems
+      .map(hostDashboardObject)
+      .filter((item) => item.app === "coding-agent" && item.type === "coding-task")
+      .map((task) =>
+        hostDashboardItem({
+          id: task.id,
+          kind: "coding-task",
+          title: task.title,
+          detail: task.detail,
+          status: task.status,
+          source: task.app
+        })
+      )
+  ].slice(0, itemLimit);
+
+  return {
+    version: HOST_DASHBOARD_SUMMARY_VERSION,
+    generatedAt: hostDashboardString(sourceDashboard.generatedAt, new Date().toISOString()),
+    health: {
+      level: hostDashboardString(sourceDashboard.health?.level, "unknown"),
+      summary: hostDashboardString(
+        sourceDashboard.health?.summary,
+        "Dashboard status is unavailable."
+      )
+    },
+    metrics: hostDashboardList(sourceDashboard.metrics)
+      .slice(0, itemLimit)
+      .map((rawMetricItem) => {
+        const metricItem = hostDashboardObject(rawMetricItem);
+        return {
+          label: hostDashboardString(metricItem.label, "Metric"),
+          value: hostDashboardString(String(metricItem.value ?? ""), "—"),
+          delta: hostDashboardString(metricItem.delta)
+        };
+      }),
+    alerts: hostDashboardList(sourceDashboard.alerts)
+      .slice(0, itemLimit)
+      .map((rawAlertItem) => {
+        const alertItem = hostDashboardObject(rawAlertItem);
+        return {
+          id: hostDashboardString(alertItem.id, "alert-unknown"),
+          title: hostDashboardString(alertItem.title, "Untitled alert"),
+          detail: hostDashboardString(alertItem.detail),
+          severity: hostDashboardString(alertItem.severity, "unknown"),
+          source: hostDashboardString(alertItem.source)
+        };
+      }),
+    travel: travelItems,
+    tasks: taskItems
+  };
+}
 
 export function metric(label, value, delta) {
   return { label, value, delta };

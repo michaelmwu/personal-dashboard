@@ -22,6 +22,7 @@ packages/
   fixtures/     Representative local development data
   integrations/ Hermes, OpenClaw, travel, finance, and intake adapter boundaries
 scripts/        Conductor-aware dev, archive, port, and smoke-test scripts
+adapters/       Native read-only Hermes Dashboard and Hermes WebUI host views
 dashboard.config.yaml
                  Enabled app registry, panel order, and app manifest paths
 ```
@@ -223,6 +224,38 @@ When `PERSONAL_DASHBOARD_API_TOKEN` is configured, all `/api/hermes/*`
 endpoints require a bearer token. Action envelopes include a contract version
 and idempotency key. Hermes-originated envelopes use `origin: "hermes"` so the
 dispatcher does not forward them back into Hermes.
+
+## Host Dashboard Boundary
+
+The standalone `apps/web` application is the canonical complete dashboard. A
+host adapter must not iframe or proxy that app wholesale: it has its own shell,
+relative assets, and browser-side control surfaces. Instead, the API projects a
+small `host-dashboard-summary.v1` at `GET /api/host-dashboard/summary`:
+
+```text
+Dashboard state (dashboard.v1)
+  -> hostDashboardSummary()
+  -> loopback-only /api/host-dashboard/summary
+  -> host-authenticated Hermes Dashboard plugin route
+     or consented Hermes WebUI sidecar proxy
+  -> native read-only host panel
+```
+
+The summary contains only health, compact metrics, alerts, travel items, and
+tasks. It intentionally omits raw transactions, accounts, provider data,
+Hermes actions/capabilities, and credentials. This is a runtime boundary, not
+a UI-only convenience: the host browser never receives a dashboard bearer token
+or a direct route to the loopback API.
+
+The official Hermes Dashboard adapter is a user plugin and uses
+`SDK.fetchJSON()` to inherit the existing Dashboard session. Its Python plugin
+backend proxies exactly one fixed, read-only loopback endpoint and does not
+forward browser cookies or authorization headers. The Hermes WebUI adapter is
+an optional separate deployment. Its extension calls only WebUI's fixed
+sidecar-proxy path after the owner approves that proxy in Settings; WebUI strips
+browser credentials before forwarding. Both adapters are read-only in this
+release. Any future mutation needs a scoped server-side identity, typed action
+contract, explicit authorization, and an audit record.
 
 ## Local Development
 

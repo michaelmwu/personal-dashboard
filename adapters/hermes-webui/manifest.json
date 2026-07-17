@@ -1,0 +1,13 @@
+{
+  "id": "personal-dashboard",
+  "name": "Personal Dashboard",
+  "description": "Experimental read-only Personal Dashboard panel.",
+  "version": "0.1.0",
+  "scripts": ["assets/personal-dashboard-extension.js"],
+  "stylesheets": ["assets/personal-dashboard-extension.css"],
+  "sidecar": {
+    "type": "loopback",
+    "origin": "http://127.0.0.1:8810",
+    "health_path": "/api/health"
+  }
+}

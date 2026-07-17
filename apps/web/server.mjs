@@ -1,8 +1,7 @@
-import http from "node:http";
 import { readFile } from "node:fs/promises";
-import { extname, join, normalize } from "node:path";
+import http from "node:http";
+import { dirname, extname, join, normalize } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const port = Number.parseInt(process.env.WEB_PORT ?? "8811", 10);
@@ -16,6 +15,8 @@ const contentTypes = new Map([
   [".js", "text/javascript; charset=utf-8"],
   [".json", "application/json; charset=utf-8"]
 ]);
+
+const loopbackOnlyApiPaths = new Set(["/api/host-dashboard/summary"]);
 
 function safePath(pathname, rootDir = __dirname) {
   const relative = pathname === "/" ? "index.html" : pathname.slice(1);
@@ -111,6 +112,12 @@ export function createWebServer({ rootDir = __dirname, proxyBaseUrl = apiBaseUrl
     if (request.method === "GET" && url.pathname === "/config.json") {
       response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ apiBaseUrl: "" }));
+      return;
+    }
+
+    if (loopbackOnlyApiPaths.has(url.pathname)) {
+      response.writeHead(404);
+      response.end("Not found");
       return;
     }
 
