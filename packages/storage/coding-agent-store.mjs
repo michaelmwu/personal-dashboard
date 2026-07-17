@@ -58,7 +58,7 @@ function runRowToItem(row) {
     type: "coding-run",
     externalId: row.run_id,
     status: row.status,
-    title: payload.title ?? `Hermes run ${row.run_id}`,
+    title: payload.title ?? `Coding run ${row.run_id}`,
     detail: row.task_id,
     payload: {
       ...payload,
@@ -194,13 +194,13 @@ export function createCodingAgentPostgresStore(sql) {
           payload = excluded.payload,
           updated_at = now()
       `;
-      const runId = payload.latestHermesRunId ?? payload.hermesRunId;
+      const runId = payload.latestAgentRunId ?? payload.latestHermesRunId ?? payload.hermesRunId;
       if (runId) {
         await db`
           insert into coding_agent_runs (run_id, task_id, status, payload, last_event_at, updated_at)
           values (
-            ${runId}, ${id}, ${sqlNullable(payload.hermesRunStatus)}, ${sql.json(payload)},
-            ${sqlNullable(payload.hermesLastEventAt ?? payload.lastEventAt ?? null)}, now()
+            ${runId}, ${id}, ${sqlNullable(payload.latestAgentRunStatus ?? payload.hermesRunStatus)}, ${sql.json(payload)},
+            ${sqlNullable(payload.lastEventAt ?? payload.hermesLastEventAt ?? null)}, now()
           )
           on conflict (run_id) do update set
             task_id = excluded.task_id,

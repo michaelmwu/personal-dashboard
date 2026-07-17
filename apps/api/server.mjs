@@ -29,9 +29,19 @@ import {
   applyCodingTaskValidation,
   applyCodingTaskControl,
   archiveCodingTask,
+  claimCodingAgentRunRequest,
+  codingAgentCampaignItem,
+  codingAgentDeliveryItem,
+  codingAgentExecutorPayload,
+  codingAgentGoalItem,
   codingTaskMissionApproved,
   codingAgentPolicyFromEnv,
+  codingAgentRunRequestItem,
+  codingAgentScheduleItem,
+  codingTaskLatestRunId,
   codingTaskItem,
+  classifyCodingAgentRisk,
+  completeCodingAgentRunRequest,
   enqueueCodingTaskItems,
   normalizeCodingAgentSignal,
   normalizeCodingAgentFinding,
@@ -40,6 +50,7 @@ import {
   normalizeCodingAgentRegressionMemory,
   pickupExistingPrTask,
   planCodingAgentGoalMutation,
+  planCodingAgentAutomationTick,
   planCodingTaskIntake,
   planCodingTaskQueue,
   planPrMaintenance,
@@ -51,6 +62,7 @@ import {
   synthesizeCodingAgentFindings,
   triageCodingAgentIssue,
   updateCodingTaskCoordination,
+  validateCodingAgentAutomation,
   visibleCodingTasks
 } from "../../packages/integrations/coding-agent.mjs";
 import {
@@ -246,6 +258,14 @@ async function codingFindingItems() {
   return codingAgentStore.listItems({ type: "coding-improvement-finding" });
 }
 
+async function codingAgentItems(type) {
+  return codingAgentStore.listItems({ type });
+}
+
+async function findCodingAgentItem(type, id) {
+  return (await codingAgentItems(type)).find((item) => item.id === id);
+}
+
 async function findCodingTask(payload) {
   const taskId = payload.taskId ?? payload.task_id ?? payload.id;
   const prNumber = payload.prNumber ?? payload.pr_number;
@@ -292,9 +312,311 @@ async function registerCodingTask(payload) {
   if (!payload.repo) {
     return { ok: false, statusCode: 400, reason: "missing_repo" };
   }
-  const item = codingTaskItem(payload, undefined, { modelPolicy: await codingAgentModelPolicy() });
+  const requestedId = payload.id ?? payload.taskId ?? payload.task_id;
+  const existing = requestedId
+    ? await findCodingAgentItem("coding-task", requestedId)
+    : await findCodingTask(payload);
+  const item = codingTaskItem(payload, existing, {
+    modelPolicy: await codingAgentModelPolicy()
+  });
   await persistCodingTaskItem(item);
   return { ok: true, statusCode: 202, task: item.payload, item };
+}
+
+async function enqueueOmpCodingRun(action, mission) {
+  const payload = { ...(action.payload ?? {}), mission };
+  let existing = await findCodingTask(payload);
+  if (!existing && !payload.repo) {
+    return { dispatched: false, target: "omp", reason: "coding_task_not_found" };
+  }
+  if (!existing) {
+    let item = codingTaskItem(
+      {
+        ...payload,
+        status: "queued",
+        runtime: "omp",
+        mission,
+        title: payload.title ?? action.title
+      },
+      undefined,
+      { modelPolicy: await codingAgentModelPolicy() }
+    );
+    if (!item.payload.branch) {
+      item = codingTaskItem(
+        {
+          ...item.payload,
+          branch: `${codingAgentPolicy.branchPrefix}/${item.id.replaceAll("_", "-")}`
+        },
+        item
+      );
+    }
+    await persistCodingTaskItem(item);
+    existing = item;
+  }
+
+  const task = existing.payload;
+  const runExecutionMode =
+    action.capabilityId === "deep-review-coding-task" ? "manual" : task.executionMode;
+  if (
+    runExecutionMode === "auto" &&
+    (!Array.isArray(mission.validationCommands) || mission.validationCommands.length === 0)
+  ) {
+    return {
+      dispatched: false,
+      target: "omp",
+      reason: "auto_mode_validation_commands_required"
+    };
+  }
+  const risk = classifyCodingAgentRisk({ ...task, ...payload });
+  const riskApproved = Boolean(
+    task.riskReview?.approved ||
+      ((payload.riskAcceptedBy ?? payload.risk_accepted_by) &&
+        (payload.riskApprovalId ?? payload.risk_approval_id))
+  );
+  if (runExecutionMode === "auto" && risk.highRisk && !riskApproved) {
+    return {
+      dispatched: false,
+      target: "omp",
+      reason: "high_risk_approval_required",
+      risk
+    };
+  }
+  const enrichedAction = actionWithMission(action, mission);
+  const executorPayload = codingAgentExecutorPayload(task, {
+    mode: payload.mode,
+    executionMode: runExecutionMode,
+    events: payload.events,
+    checks: payload.checks
+  });
+  const idempotencyKey =
+    action.idempotencyKey ?? `${existing.id}:${action.capabilityId}:${payload.mode ?? "task"}`;
+  const prior = (await codingAgentItems("coding-run-request")).find(
+    (item) => item.payload?.idempotencyKey === idempotencyKey
+  );
+  const runItem = codingAgentRunRequestItem(
+    {
+      idempotencyKey,
+      taskId: existing.id,
+      actionId: action.capabilityId,
+      executionMode: runExecutionMode,
+      mode: payload.mode ?? executorPayload.mode,
+      title: action.title,
+      prompt: [
+        enrichedAction.payload?.instructions ?? executorPayload.instructions,
+        enrichedAction.payload?.prompt ?? executorPayload.prompt
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      model: task.modelPolicy?.executor?.model,
+      status: prior?.payload?.status ?? "queued"
+    },
+    prior
+  );
+  await persistCodingAgentItem(runItem);
+  if (action.capabilityId !== "deep-review-coding-task") {
+    const taskItem = codingTaskItem(
+      {
+        ...task,
+        runtime: "omp",
+        riskReview: risk.highRisk
+          ? {
+              risk,
+              approved: riskApproved,
+              riskAcceptedBy: payload.riskAcceptedBy ?? payload.risk_accepted_by,
+              riskApprovalId: payload.riskApprovalId ?? payload.risk_approval_id
+            }
+          : task.riskReview,
+        latestAgentRunId: runItem.id,
+        latestAgentRunStatus: runItem.payload.status
+      },
+      existing
+    );
+    await persistCodingTaskItem(taskItem);
+  }
+  return {
+    dispatched: true,
+    queued: runItem.payload.status === "queued",
+    target: "omp",
+    runtime: "omp",
+    runId: runItem.id,
+    taskId: existing.id,
+    response: { run: runItem.payload, task: existing.payload }
+  };
+}
+
+async function claimOmpCodingRun(payload = {}) {
+  const id = payload.runId ?? payload.run_id ?? payload.id;
+  const existing = id ? await findCodingAgentItem("coding-run-request", id) : undefined;
+  if (!existing) return { ok: false, statusCode: 404, reason: "coding_run_not_found" };
+  let result;
+  const patched = await codingAgentStore.patchItemPayload(
+    { type: "coding-run-request", id },
+    (_run, current) => {
+      result = claimCodingAgentRunRequest(current, payload);
+      return result.ok ? result.item.payload : undefined;
+    }
+  );
+  if (!result?.ok) return result;
+  const task = await findCodingTask({ taskId: result.run.taskId });
+  if (task && result.run.actionId !== "deep-review-coding-task") {
+    await persistCodingTaskItem(
+      codingTaskItem(
+        {
+          ...task.payload,
+          status: "running",
+          latestAgentRunId: id,
+          latestAgentRunStatus: "running",
+          lastEventAt: new Date().toISOString()
+        },
+        task
+      )
+    );
+  }
+  return { ...result, item: patched };
+}
+
+async function recordOmpCodingRunEvent(payload = {}) {
+  const id = payload.runId ?? payload.run_id;
+  const existing = id ? await findCodingAgentItem("coding-run-request", id) : undefined;
+  if (!existing) return { ok: false, statusCode: 404, reason: "coding_run_not_found" };
+  const workerId = payload.workerId ?? payload.worker_id;
+  if (existing.payload?.status !== "running") {
+    return { ok: false, statusCode: 409, reason: "coding_run_not_running" };
+  }
+  if (existing.payload?.leaseOwner && workerId !== existing.payload.leaseOwner) {
+    return { ok: false, statusCode: 409, reason: "coding_run_lease_owner_mismatch" };
+  }
+  const observedAt = payload.observedAt ?? payload.observed_at ?? new Date().toISOString();
+  const event = payload.event ?? payload;
+  await codingAgentStore.appendRunEvent(id, event, {
+    taskId: existing.payload?.taskId,
+    eventType: event.type
+  });
+  const patched = await codingAgentStore.patchItemPayload(
+    { type: "coding-run-request", id },
+    (run) => ({
+      events: [...(run.events ?? []), event].slice(-500),
+      lastEventAt: observedAt,
+      updatedAt: observedAt
+    })
+  );
+  if (existing.payload?.actionId !== "deep-review-coding-task") {
+    await codingAgentStore.patchItemPayload(
+      { type: "coding-task", id: existing.payload?.taskId },
+      {
+        lastEventAt: observedAt,
+        latestAgentRunStatus: "running",
+        ...(event.type === "session_state"
+          ? { ompSessionId: event.sessionId, ompSessionPath: event.sessionPath }
+          : {}),
+        updatedAt: observedAt
+      }
+    );
+  }
+  return { ok: true, statusCode: 202, run: patched?.payload, event };
+}
+
+async function completeOmpCodingRun(payload = {}) {
+  const id = payload.runId ?? payload.run_id ?? payload.id;
+  const existing = id ? await findCodingAgentItem("coding-run-request", id) : undefined;
+  if (!existing) return { ok: false, statusCode: 404, reason: "coding_run_not_found" };
+  const result = completeCodingAgentRunRequest(existing, payload);
+  if (!result.ok) return result;
+  await persistCodingAgentItem(result.item);
+  const task = await findCodingTask({ taskId: result.run.taskId });
+  if (task && result.run.actionId !== "deep-review-coding-task") {
+    const status =
+      result.run.status === "waiting-for-approval"
+        ? "waiting-for-approval"
+        : result.run.status === "failed"
+          ? "failed"
+          : result.run.status === "cancelled"
+            ? "abandoned"
+            : "running";
+    const taskItem = codingTaskItem(
+      {
+        ...task.payload,
+        status,
+        latestAgentRunId: id,
+        latestAgentRunStatus: result.run.status,
+        ompSessionId: payload.result?.sessionId,
+        ompSessionPath: payload.result?.sessionPath,
+        headSha: payload.result?.checkpoint?.headSha ?? task.payload.headSha,
+        latestApprovalRequest: payload.result?.approvals?.at(-1),
+        lastEventAt: new Date().toISOString(),
+        handoff:
+          result.run.status === "failed"
+            ? {
+                blocker: payload.error ?? payload.result?.error ?? "omp_run_failed",
+                attempted: [result.run.mode],
+                artifacts: [`agent-run:${id}`],
+                nextAction: "inspect run evidence and retry or take over manually",
+                createdAt: new Date().toISOString()
+              }
+            : task.payload.handoff
+      },
+      task
+    );
+    await persistCodingTaskItem(taskItem);
+  }
+  await writeRunEvidenceArtifact(
+    root,
+    id,
+    "omp-final-status.json",
+    `${JSON.stringify(result.run, null, 2)}\n`
+  );
+  return result;
+}
+
+async function createCodingAutomation(type, payload = {}) {
+  const factory =
+    type === "coding-schedule"
+      ? codingAgentScheduleItem
+      : type === "coding-goal"
+        ? codingAgentGoalItem
+        : codingAgentCampaignItem;
+  const existing = payload.id ? await findCodingAgentItem(type, payload.id) : undefined;
+  let item;
+  try {
+    item = factory(payload, existing);
+  } catch (error) {
+    return {
+      ok: false,
+      statusCode: 400,
+      reason: error instanceof Error ? error.message : String(error),
+      errors: [error instanceof Error ? error.message : String(error)]
+    };
+  }
+  const validation = validateCodingAgentAutomation(
+    { ...item, type, payload: item.payload },
+    codingAgentPolicy
+  );
+  if (!validation.ok) {
+    return { ok: false, statusCode: 409, reason: validation.errors[0], errors: validation.errors };
+  }
+  await persistCodingAgentItem(item);
+  return { ok: true, statusCode: 202, automation: item.payload, item };
+}
+
+async function tickCodingAutomations(payload = {}) {
+  const types = ["coding-schedule", "coding-goal", "coding-campaign"];
+  const groups = await Promise.all(types.map((type) => codingAgentItems(type)));
+  const result = planCodingAgentAutomationTick(groups.flat(), await codingTaskItems(), {
+    now: payload.now,
+    policy: codingAgentPolicy
+  });
+  for (const item of [...result.taskItems, ...result.runItems, ...result.automationItems]) {
+    await persistCodingAgentItem(item);
+  }
+  return { ...result, statusCode: 202 };
+}
+
+async function upsertCodingDelivery(payload = {}) {
+  const task = await findCodingTask({ taskId: payload.taskId ?? payload.task_id });
+  if (!task) return { ok: false, statusCode: 404, reason: "coding_task_not_found" };
+  const item = codingAgentDeliveryItem(task.payload, payload.target, payload);
+  await persistCodingAgentItem(item);
+  return { ok: true, statusCode: 202, delivery: item.payload, item };
 }
 
 async function planCodingTask(payload) {
@@ -414,6 +736,24 @@ async function applyCodingControl(payload) {
     return result;
   }
   await persistCodingTaskItem(result.taskItem);
+  if (result.control.action === "resume-agent") {
+    const dispatch = await enqueueOmpCodingRun(
+      {
+        idempotencyKey: `control:${result.task.id}:${result.control.createdAt}`,
+        capabilityId: "update-coding-task",
+        title: `Resume ${result.task.title}`,
+        payload: {
+          taskId: result.task.id,
+          repo: result.task.repo,
+          mode: "manual-resume",
+          prompt:
+            payload.prompt ?? payload.reason ?? "Resume this coding task from its durable state."
+        }
+      },
+      result.task.mission
+    );
+    return { ...result, dispatch };
+  }
   return result;
 }
 
@@ -447,11 +787,7 @@ async function reviewCodingTask(payload) {
   if (!existing) {
     return { ok: false, statusCode: 404, reason: "coding_task_not_found" };
   }
-  const reviewRunId =
-    payload.runId ??
-    payload.run_id ??
-    existing.payload?.latestHermesRunId ??
-    existing.payload?.hermesRunId;
+  const reviewRunId = payload.runId ?? payload.run_id ?? codingTaskLatestRunId(existing.payload);
   const evidencePath = reviewRunId
     ? await writeRunEvidenceArtifact(
         root,
@@ -584,6 +920,7 @@ async function archiveCodingTaskByPayload(payload) {
     const runIds = new Set([
       existing.payload?.hermesRunId,
       existing.payload?.latestHermesRunId,
+      existing.payload?.latestAgentRunId,
       ...(existing.payload?.evidencePacks ?? []).map((pack) => pack.runId)
     ]);
     for (const runId of [...runIds].filter(Boolean)) {
@@ -1010,7 +1347,7 @@ async function dispatchHermesAction(action, capability) {
         retryable: missionGuard.retryable === true
       };
     }
-    action = actionWithMission(action, missionGuard.mission);
+    return enqueueOmpCodingRun(action, missionGuard.mission);
   }
 
   const dispatch = await createHermesBridgeRun(action);
@@ -1047,6 +1384,29 @@ async function dispatchDeterministicCapability(action, capability) {
   }
   if (capability.endpoint === "/api/apps/coding-agent/tasks") {
     const response = await registerCodingTask(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (
+    [
+      "/api/apps/coding-agent/schedules",
+      "/api/apps/coding-agent/goals",
+      "/api/apps/coding-agent/campaigns"
+    ].includes(capability.endpoint)
+  ) {
+    const type = {
+      "/api/apps/coding-agent/schedules": "coding-schedule",
+      "/api/apps/coding-agent/goals": "coding-goal",
+      "/api/apps/coding-agent/campaigns": "coding-campaign"
+    }[capability.endpoint];
+    const response = await createCodingAutomation(type, action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/automation/tick") {
+    const response = await tickCodingAutomations(action.payload);
+    return { dispatched: response.ok, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/apps/coding-agent/deliveries") {
+    const response = await upsertCodingDelivery(action.payload);
     return { dispatched: response.ok, target: capability.target, response };
   }
   if (capability.endpoint === "/api/apps/coding-agent/intake-plan") {
@@ -1516,6 +1876,81 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         return;
       }
 
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/runs/claim") {
+        if (!requireAuth(request, response)) return;
+        const result = await claimOmpCodingRun(await readJson(request));
+        if (!result.ok) {
+          error(response, result.statusCode, result.reason, "Coding run could not be claimed.");
+          return;
+        }
+        json(response, result.statusCode, { accepted: true, run: result.run });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/runs/events") {
+        if (!requireAuth(request, response)) return;
+        const result = await recordOmpCodingRunEvent(await readJson(request));
+        if (!result.ok) {
+          error(response, result.statusCode, result.reason, "Coding run event was rejected.");
+          return;
+        }
+        json(response, result.statusCode, { accepted: true, event: result.event });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/runs/complete") {
+        if (!requireAuth(request, response)) return;
+        const result = await completeOmpCodingRun(await readJson(request));
+        if (!result.ok) {
+          error(response, result.statusCode, result.reason, "Coding run completion was rejected.");
+          return;
+        }
+        json(response, result.statusCode, { accepted: true, run: result.run });
+        return;
+      }
+
+      const codingAutomationMatch = url.pathname.match(
+        /^\/api\/apps\/coding-agent\/(schedules|goals|campaigns)$/
+      );
+      if (request.method === "POST" && codingAutomationMatch) {
+        if (!requireAuth(request, response)) return;
+        const type = {
+          schedules: "coding-schedule",
+          goals: "coding-goal",
+          campaigns: "coding-campaign"
+        }[codingAutomationMatch[1]];
+        const result = await createCodingAutomation(type, await readJson(request));
+        if (!result.ok) {
+          error(response, result.statusCode, result.reason, result.errors?.join(", "));
+          return;
+        }
+        json(response, result.statusCode, { accepted: true, automation: result.automation });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/automation/tick") {
+        if (!requireAuth(request, response)) return;
+        const result = await tickCodingAutomations(await readJson(request));
+        json(response, result.statusCode, {
+          accepted: true,
+          results: result.results,
+          taskCount: result.taskItems.length,
+          runCount: result.runItems.length
+        });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/deliveries") {
+        if (!requireAuth(request, response)) return;
+        const result = await upsertCodingDelivery(await readJson(request));
+        if (!result.ok) {
+          error(response, result.statusCode, result.reason, "Coding delivery was rejected.");
+          return;
+        }
+        json(response, result.statusCode, { accepted: true, delivery: result.delivery });
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/api/apps/coding-agent/intake-plan") {
         if (!requireAuth(request, response)) {
           return;
@@ -1605,7 +2040,8 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         json(response, result.statusCode, {
           accepted: true,
           control: result.control,
-          task: result.task
+          task: result.task,
+          dispatch: result.dispatch
         });
         return;
       }
@@ -2122,8 +2558,9 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         if (dispatch.dispatched) {
           action = {
             ...action,
-            status: dispatch.runId ? "running" : "dispatched",
-            bridgeRunId: dispatch.runId,
+            status: dispatch.queued ? "queued" : dispatch.runId ? "running" : "dispatched",
+            agentRunId: dispatch.runId,
+            bridgeRunId: dispatch.target === "hermes-bridge" ? dispatch.runId : undefined,
             payload: { ...action.payload, dispatch },
             dispatch
           };

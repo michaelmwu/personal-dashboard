@@ -2,7 +2,7 @@
   "id": "coding-agent",
   "name": "Coding Agent",
   "version": "dashboard-app.v1",
-  "baseUrl": "internal:hermes-bridge",
+  "baseUrl": "internal:omp-rpc",
   "panels": [
     {
       "id": "task-queue",
@@ -15,7 +15,14 @@
       "id": "active-runs",
       "type": "run-status",
       "title": "Coding Agent Runs",
-      "dataSource": "/api/apps/coding-agent/items?type=coding-run",
+      "dataSource": "/api/apps/coding-agent/items?type=coding-run-request",
+      "defaultPosition": "operations"
+    },
+    {
+      "id": "automations",
+      "type": "task-queue",
+      "title": "Coding Automations",
+      "dataSource": "/api/apps/coding-agent/items?type=coding-goal",
       "defaultPosition": "operations"
     }
   ],
@@ -25,12 +32,13 @@
       "title": "Start coding task",
       "kind": "agentic",
       "target": "coding-agent",
-      "description": "Ask Hermes to create an isolated worktree, execute a coding task, and open a PR.",
+      "description": "Queue Oh My Pi in an isolated worktree; the dashboard validates and publishes the resulting PR through checked host actions.",
       "inputSchema": {
         "repo": "string",
         "title": "string",
         "prompt": "string",
         "mission": "object",
+        "executionMode": "manual|auto?",
         "baseBranch": "string?",
         "conductorPort": "number?",
         "portRange": "object?",
@@ -42,7 +50,7 @@
       "title": "Update coding task",
       "kind": "agentic",
       "target": "coding-agent",
-      "description": "Resume a registered coding task in its worktree after PR feedback, CI failures, or dashboard follow-up.",
+      "description": "Resume an Oh My Pi session in a registered worktree after PR feedback, CI failures, conflicts, or dashboard follow-up.",
       "inputSchema": {
         "taskId": "string",
         "repo": "string",
@@ -59,19 +67,93 @@
       "kind": "deterministic",
       "target": "coding-agent",
       "endpoint": "/api/apps/coding-agent/tasks",
-      "description": "Persist the task, worktree, Hermes session, PR, and preview URL anchors for one coding task.",
+      "description": "Persist task, worktree, Oh My Pi session/run, execution-mode, PR, and preview URL anchors for one coding task.",
       "inputSchema": {
         "id": "string?",
         "repo": "string",
         "title": "string",
         "branch": "string?",
         "mission": "object?",
+        "executionMode": "manual|auto?",
         "worktreeDir": "string?",
         "conductorPort": "number?",
         "portRange": "object?",
         "hermesSessionKey": "string?",
+        "ompSessionId": "string?",
+        "ompSessionPath": "string?",
         "prNumber": "number?",
         "previewUrl": "string?"
+      }
+    },
+    {
+      "id": "create-coding-schedule",
+      "title": "Create coding schedule",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/schedules",
+      "description": "Create a durable one-shot, interval, or cron-like schedule whose occurrences queue ordinary coding tasks idempotently.",
+      "inputSchema": {
+        "title": "string",
+        "executionMode": "manual|auto",
+        "nextRunAt": "string?",
+        "intervalMinutes": "number?",
+        "expression": "string?",
+        "timezone": "string?",
+        "template": "object"
+      }
+    },
+    {
+      "id": "create-coding-goal",
+      "title": "Create recurring coding goal",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/goals",
+      "description": "Create a bounded recurring goal with durable iterations, cadence, budget, and no-progress cutoff.",
+      "inputSchema": {
+        "objective": "string",
+        "executionMode": "manual|auto",
+        "repositories": "array",
+        "iterationBudget": "number?",
+        "noProgressLimit": "number?",
+        "template": "object"
+      }
+    },
+    {
+      "id": "create-coding-campaign",
+      "title": "Create cross-repo campaign",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/campaigns",
+      "description": "Create a dependency graph with one isolated coding task and PR per repository.",
+      "inputSchema": {
+        "title": "string",
+        "executionMode": "manual|auto",
+        "steps": "array",
+        "maxParallelTasks": "number?"
+      }
+    },
+    {
+      "id": "run-coding-automation",
+      "title": "Run coding automation tick",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/automation/tick",
+      "description": "Lease due schedule occurrences, goal iterations, and ready campaign steps into ordinary Oh My Pi run requests.",
+      "inputSchema": {
+        "now": "string?"
+      }
+    },
+    {
+      "id": "notify-coding-result",
+      "title": "Record coding result delivery",
+      "kind": "deterministic",
+      "target": "coding-agent",
+      "endpoint": "/api/apps/coding-agent/deliveries",
+      "description": "Persist an idempotent Hermes delivery attempt for a task result; the worker sends it without another model turn.",
+      "inputSchema": {
+        "taskId": "string",
+        "target": "string",
+        "status": "string?"
       }
     },
     {
@@ -395,6 +477,11 @@
   "eventTypes": [
     "coding-task",
     "coding-run",
+    "coding-run-request",
+    "coding-schedule",
+    "coding-goal",
+    "coding-campaign",
+    "coding-delivery",
     "pr-status",
     "coding-pr-pickup-attempt",
     "coding-issue-triage",

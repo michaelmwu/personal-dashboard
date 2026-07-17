@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough, Writable } from "node:stream";
 
 import { createApiServer } from "../apps/api/server.mjs";
 import { createWebServer } from "../apps/web/server.mjs";
@@ -23,6 +25,12 @@ import {
   applyCodingTaskReview,
   applyCodingTaskControl,
   codingAgentExecutorPayload,
+  codingAgentPolicyFromEnv,
+  codingAgentCampaignItem,
+  codingAgentGoalItem,
+  codingAgentScheduleItem,
+  codingAgentDeliveryItem,
+  codingAgentRunRequestItem,
   codingTaskMissionApproved,
   codingTaskValidationPassed,
   codingTaskReviewPassed,
@@ -37,6 +45,8 @@ import {
   normalizeCodingTaskModelPolicy,
   normalizeCodingAgentSignal,
   normalizeCodingAgentRegressionMemory,
+  nextCodingAgentScheduleRunAt,
+  planCodingAgentAutomationTick,
   planCodingAgentGoalMutation,
   planCodingTaskQueue,
   pickupExistingPrTask,
@@ -47,7 +57,8 @@ import {
   relevantCodingAgentRegressionMemory,
   summarizeCodingTaskHandoff,
   synthesizeCodingAgentFindings,
-  triageCodingAgentIssue
+  triageCodingAgentIssue,
+  validateCodingAgentAutomation
 } from "../packages/integrations/coding-agent.mjs";
 import {
   applyPersonalMemoryDecision,
@@ -55,6 +66,12 @@ import {
   planPersonalMemoryProposal,
   recallPersonalMemories
 } from "../packages/integrations/personal-memory.mjs";
+import {
+  ompApprovalMode,
+  ompChildEnvironment,
+  ompRpcArgs,
+  runOmpRpcSession
+} from "../packages/integrations/omp-rpc.mjs";
 import {
   createHermesAction,
   hermesActionIdFromIdempotencyKey,
@@ -119,6 +136,9 @@ import {
   dedupePrFeedbackAgainstInternalReview,
   fetchCodingTaskPrSnapshot,
   pollCodingAgentPrs,
+  deliverCodingAgentResults,
+  processCodingAgentRuns,
+  publishReadyCodingAgentPrs,
   runCodingTaskValidation,
   runCodingTaskReview,
   runConfiguredIngestions,
@@ -170,17 +190,6 @@ function waitForOutput(child, pattern) {
   });
 }
 
-async function waitFor(condition, { attempts = 20, intervalMs = 25 } = {}) {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const result = await condition();
-    if (result) {
-      return result;
-    }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
-  throw new Error("Timed out waiting for condition");
-}
-
 async function withMockBridge(fetchImpl, fn) {
   const previousFetch = globalThis.fetch;
   const previousUrl = process.env.HERMES_BRIDGE_URL;
@@ -210,6 +219,89 @@ async function withMockBridge(fetchImpl, fn) {
       process.env.HERMES_BRIDGE_SESSION_KEY = previousSession;
     }
   }
+}
+
+function fakeOmpProcess({ approvalRequest = false, promptResultAgentInvoked } = {}) {
+  const launch = {};
+  const inbound = [];
+  const outbound = [];
+  const spawnImpl = (command, args, options) => {
+    Object.assign(launch, { command, args, options });
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    let input = "";
+    const send = (frame) => {
+      outbound.push(frame);
+      child.stdout.write(`${JSON.stringify(frame)}\n`);
+    };
+    child.stdin = new Writable({
+      write(chunk, _encoding, callback) {
+        input += chunk.toString();
+        const lines = input.split("\n");
+        input = lines.pop();
+        for (const line of lines.filter(Boolean)) {
+          const frame = JSON.parse(line);
+          inbound.push(frame);
+          if (frame.type === "get_state") {
+            send({
+              id: frame.id,
+              type: "response",
+              command: "get_state",
+              success: true,
+              data: {
+                sessionId: "omp-session-1",
+                sessionFile: "/sessions/omp-session-1.jsonl",
+                isStreaming: false
+              }
+            });
+          } else if (frame.type === "prompt") {
+            send({
+              id: frame.id,
+              type: "response",
+              command: "prompt",
+              success: true,
+              data: promptResultAgentInvoked === undefined ? { agentInvoked: true } : undefined
+            });
+            if (promptResultAgentInvoked !== undefined) {
+              send({
+                id: frame.id,
+                type: "prompt_result",
+                agentInvoked: promptResultAgentInvoked
+              });
+            }
+            if (promptResultAgentInvoked === false) continue;
+            send({ type: "agent_start" });
+            if (approvalRequest) {
+              send({
+                type: "extension_ui_request",
+                id: "approval-1",
+                method: "confirm",
+                title: "Approve critical operation",
+                message: "Requires operator approval"
+              });
+            }
+            queueMicrotask(() => send({ type: "agent_end", stopReason: "stop" }));
+          } else if (frame.type === "get_last_assistant_text") {
+            send({
+              id: frame.id,
+              type: "response",
+              command: "get_last_assistant_text",
+              success: true,
+              data: { text: "Implemented the requested change." }
+            });
+          } else if (frame.type === "abort") {
+            send({ id: frame.id, type: "response", command: "abort", success: true });
+          }
+        }
+        callback();
+      }
+    });
+    child.kill = () => true;
+    queueMicrotask(() => send({ type: "ready" }));
+    return child;
+  };
+  return { spawnImpl, launch, inbound, outbound };
 }
 
 function base64UrlJson(payload) {
@@ -1021,6 +1113,14 @@ describe("contracts", () => {
       "/api/apps/personal-memory/decisions",
       "/api/apps/personal-memory/recall",
       "/api/apps/coding-agent/tasks",
+      "/api/apps/coding-agent/runs/claim",
+      "/api/apps/coding-agent/runs/events",
+      "/api/apps/coding-agent/runs/complete",
+      "/api/apps/coding-agent/schedules",
+      "/api/apps/coding-agent/goals",
+      "/api/apps/coding-agent/campaigns",
+      "/api/apps/coding-agent/automation/tick",
+      "/api/apps/coding-agent/deliveries",
       "/api/apps/coding-agent/intake-plan",
       "/api/apps/coding-agent/queue-plan",
       "/api/apps/coding-agent/pr-pickup",
@@ -1070,7 +1170,7 @@ describe("contracts", () => {
     }
   });
 
-  test("personal memory keeps proposals pending until an approved decision and recalls with provenance", async () => {
+  test("personal memory keeps proposals pending until an approved decision and recalls with provenance", () => {
     const proposal = planPersonalMemoryProposal(
       {
         id: "memory_test_preference",
@@ -1329,6 +1429,610 @@ describe("contracts", () => {
     } finally {
       await closeServer(apiServer);
     }
+  });
+
+  test("OMP RPC adapter waits for agent_end, scrubs secrets, and surfaces approvals", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "dashboard-omp-rpc-"));
+    const worktreeDir = join(rootDir, "worktrees", "task-1");
+    const sessionDir = join(rootDir, "sessions", "task-1");
+    const homeDir = join(rootDir, "homes", "task-1");
+    const agentDir = join(rootDir, "agent");
+    await mkdir(worktreeDir, { recursive: true });
+    const canonicalWorktreeDir = await realpath(worktreeDir);
+    const fake = fakeOmpProcess({ approvalRequest: true });
+
+    try {
+      const result = await runOmpRpcSession({
+        spawn: fake.spawnImpl,
+        command: "omp-test",
+        worktreeDir,
+        workRoot: rootDir,
+        sessionDir,
+        homeDir,
+        agentDir,
+        executionMode: "manual",
+        model: "openai-codex/test-model",
+        prompt: "Implement the task",
+        env: {
+          PATH: "/usr/bin",
+          PI_CODING_AGENT_DIR: agentDir,
+          DATABASE_URL: "postgres://must-not-leak",
+          PERSONAL_DASHBOARD_API_TOKEN: "must-not-leak",
+          GITHUB_TOKEN: "must-not-leak"
+        }
+      });
+
+      expect(result).toMatchObject({
+        status: "waiting-for-approval",
+        approvalMode: "always-ask",
+        sessionId: "omp-session-1",
+        sessionPath: "/sessions/omp-session-1.jsonl",
+        finalText: "Implemented the requested change.",
+        approvals: [
+          expect.objectContaining({
+            id: "approval-1",
+            method: "confirm",
+            requiresResponse: true
+          })
+        ],
+        terminal: { type: "agent_end" }
+      });
+      expect(fake.launch).toMatchObject({
+        command: "omp-test",
+        args: [
+          "--mode",
+          "rpc",
+          "--session-dir",
+          sessionDir,
+          "--approval-mode",
+          "always-ask",
+          "--model",
+          "openai-codex/test-model"
+        ],
+        options: {
+          cwd: canonicalWorktreeDir,
+          env: {
+            PATH: "/usr/bin",
+            HOME: homeDir,
+            PI_CODING_AGENT_DIR: agentDir,
+            NO_COLOR: "1"
+          }
+        }
+      });
+      expect(fake.launch.options.env.DATABASE_URL).toBeUndefined();
+      expect(fake.launch.options.env.PERSONAL_DASHBOARD_API_TOKEN).toBeUndefined();
+      expect(fake.launch.options.env.GITHUB_TOKEN).toBeUndefined();
+      expect(fake.inbound).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: "prompt", message: "Implement the task" }),
+          { type: "extension_ui_response", id: "approval-1", cancelled: true }
+        ])
+      );
+      expect(ompApprovalMode("auto")).toBe("yolo");
+      expect(ompRpcArgs({ sessionDir, executionMode: "auto" })).toContain("yolo");
+      expect(
+        ompChildEnvironment({
+          env: { PATH: "/usr/bin", GITHUB_TOKEN: "secret" },
+          homeDir,
+          agentDir
+        }).GITHUB_TOKEN
+      ).toBeUndefined();
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  test("OMP RPC adapter honors a separate prompt_result when no agent turn starts", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "dashboard-omp-prompt-result-"));
+    const worktreeDir = join(rootDir, "worktrees", "task-1");
+    const sessionDir = join(rootDir, "sessions", "task-1");
+    const homeDir = join(rootDir, "homes", "task-1");
+    const agentDir = join(rootDir, "agent");
+    await mkdir(worktreeDir, { recursive: true });
+    const fake = fakeOmpProcess({ promptResultAgentInvoked: false });
+
+    try {
+      const result = await runOmpRpcSession({
+        spawn: fake.spawnImpl,
+        worktreeDir,
+        workRoot: rootDir,
+        sessionDir,
+        homeDir,
+        agentDir,
+        executionMode: "manual",
+        prompt: "No-op prompt"
+      });
+      expect(result).toMatchObject({ status: "completed", agentInvoked: false });
+      expect(result.events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: "prompt_result", agentInvoked: false })
+        ])
+      );
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  test("integration worker claims queued OMP runs and persists their terminal lifecycle", async () => {
+    const runItem = codingAgentRunRequestItem({
+      id: "coding-run-worker-1",
+      taskId: "coding-task-worker-1",
+      executionMode: "auto",
+      prompt: "Fix the failing test",
+      status: "queued"
+    });
+    const completed = [];
+    const events = [];
+    const updates = [];
+    const result = await processCodingAgentRuns({
+      env: {
+        CODING_AGENT_WORK_ROOT: "/tmp/coding-agent-work",
+        PI_CODING_AGENT_DIR: "/tmp/omp-agent"
+      },
+      itemsResponse: { items: [runItem] },
+      tasksResponse: {
+        tasks: [
+          {
+            id: "coding-task-worker-1",
+            repo: "personal-dashboard",
+            branch: "hermes/worker-1",
+            executionMode: "auto",
+            status: "queued"
+          }
+        ]
+      },
+      claim: async () => ({ run: { ...runItem.payload, status: "running" } }),
+      prepareWorktree: async () => ({
+        worktreeDir: "/tmp/coding-agent-work/personal-dashboard/coding-task-worker-1",
+        sourceRepoDir: "/tmp/personal-dashboard",
+        workRoot: "/tmp/coding-agent-work",
+        baseSync: { conflicts: [] }
+      }),
+      updateTask: async (payload) => updates.push(payload),
+      runOmp: async (options) => {
+        options.onEvent({ type: "agent_start", observedAt: "2026-07-13T18:00:00.000Z" });
+        options.onEvent({ type: "agent_end", observedAt: "2026-07-13T18:01:00.000Z" });
+        return {
+          status: "completed",
+          sessionId: "omp-worker-session",
+          sessionPath: "/sessions/omp-worker-session.jsonl"
+        };
+      },
+      checkpointWorktree: async () => ({ committed: true, headSha: "abc123" }),
+      persistEvent: async (payload) => events.push(payload),
+      complete: async (payload) => completed.push(payload)
+    });
+
+    expect(result).toMatchObject({
+      runCount: 1,
+      results: [{ runId: runItem.id, taskId: "coding-task-worker-1", status: "completed" }]
+    });
+    expect(updates).toEqual([
+      expect.objectContaining({
+        id: "coding-task-worker-1",
+        worktreeDir: "/tmp/coding-agent-work/personal-dashboard/coding-task-worker-1"
+      })
+    ]);
+    expect(events.map((event) => event.event.type)).toEqual(["agent_start", "agent_end"]);
+    expect(completed).toEqual([
+      expect.objectContaining({
+        runId: runItem.id,
+        status: "completed",
+        result: expect.objectContaining({ sessionId: "omp-worker-session" })
+      })
+    ]);
+  });
+
+  test("coding schedules emit one idempotent auto task and run per occurrence", () => {
+    const now = "2026-07-13T16:00:00.000Z";
+    const mission = {
+      goal: "Refresh locked dependencies",
+      context: "Open a reviewable dependency update PR.",
+      constraints: ["Keep the lockfile frozen"],
+      allowedRepos: ["personal-dashboard"],
+      definitionOfDone: ["Checks pass", "A PR is open"],
+      validationCommands: ["bun test tests/contracts.test.mjs"],
+      rollback: "Close the PR and delete the task branch.",
+      status: "approved",
+      approvedBy: "michaelmwu",
+      approvalId: "schedule-approval-1"
+    };
+    const schedule = codingAgentScheduleItem(
+      {
+        id: "schedule-dependencies",
+        title: "Dependency refresh",
+        executionMode: "auto",
+        nextRunAt: now,
+        intervalMinutes: 60,
+        template: {
+          repo: "personal-dashboard",
+          title: "Refresh dependencies",
+          prompt: "Update dependencies that satisfy the cooldown policy.",
+          mission
+        }
+      },
+      undefined,
+      { now }
+    );
+    const policy = codingAgentPolicyFromEnv({
+      CODING_AGENT_ALLOWED_REPOS: "personal-dashboard",
+      CODING_AGENT_BRANCH_PREFIX: "hermes"
+    });
+    const tick = planCodingAgentAutomationTick([schedule], [], { now, policy });
+
+    expect(tick.results).toEqual([
+      expect.objectContaining({
+        id: "schedule-dependencies",
+        type: "coding-schedule",
+        childTaskIds: [expect.stringMatching(/^coding_task_/)],
+        status: "active"
+      })
+    ]);
+    expect(tick.taskItems).toEqual([
+      expect.objectContaining({
+        type: "coding-task",
+        payload: expect.objectContaining({
+          repo: "personal-dashboard",
+          executionMode: "auto",
+          runtime: "omp",
+          branch: expect.stringMatching(/^hermes\//),
+          latestAgentRunStatus: "queued"
+        })
+      })
+    ]);
+    expect(tick.runItems).toEqual([
+      expect.objectContaining({
+        type: "coding-run-request",
+        payload: expect.objectContaining({
+          runtime: "omp",
+          executionMode: "auto",
+          approvalMode: "yolo",
+          status: "queued"
+        })
+      })
+    ]);
+    expect(tick.automationItems[0].payload.nextRunAt).toBe("2026-07-13T17:00:00.000Z");
+    const duplicateTick = planCodingAgentAutomationTick(tick.automationItems, tick.taskItems, {
+      now,
+      policy
+    });
+    expect(duplicateTick.taskItems).toEqual([]);
+    expect(nextCodingAgentScheduleRunAt("0 9 * * 1", now, "America/Los_Angeles")).toBe(
+      "2026-07-20T16:00:00.000Z"
+    );
+  });
+
+  test("coding automation API persists a due schedule and queues its OMP run", async () => {
+    const scheduleId = `schedule_api_${Date.now()}`;
+    const now = "2026-07-13T20:00:00.000Z";
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      const created = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/schedules`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          id: scheduleId,
+          title: "Scheduled docs maintenance",
+          executionMode: "auto",
+          nextRunAt: now,
+          intervalMinutes: 1440,
+          template: {
+            repo: "personal-dashboard",
+            title: "Refresh operator docs",
+            prompt: "Refresh stale coding-agent operator documentation.",
+            mission: {
+              goal: "Refresh operator documentation",
+              context: "Keep the coding-agent runbook current.",
+              constraints: [],
+              allowedRepos: ["personal-dashboard"],
+              definitionOfDone: ["Documentation is current", "Checks pass"],
+              validationCommands: ["bun test tests/contracts.test.mjs"],
+              rollback: "Revert the documentation PR.",
+              status: "approved",
+              approvedBy: "michaelmwu",
+              approvalId: `${scheduleId}_approval`
+            }
+          }
+        })
+      });
+      expect(created.status).toBe(202);
+      expect(await created.json()).toMatchObject({
+        accepted: true,
+        automation: { id: scheduleId, executionMode: "auto", status: "active" }
+      });
+
+      const tick = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/automation/tick`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer dashboard-token",
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ now })
+        }
+      );
+      expect(tick.status).toBe(202);
+      expect(await tick.json()).toMatchObject({ accepted: true, taskCount: 1, runCount: 1 });
+
+      const runs = await fetch(
+        `http://127.0.0.1:${apiPort}/api/apps/coding-agent/items?type=coding-run-request`
+      );
+      const runItems = (await runs.json()).items;
+      expect(runItems).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            status: "queued",
+            payload: expect.objectContaining({
+              runtime: "omp",
+              executionMode: "auto",
+              approvalMode: "yolo"
+            })
+          })
+        ])
+      );
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("recurring goals and cross-repo campaigns keep parent state outside OMP", () => {
+    const now = "2026-07-13T18:00:00.000Z";
+    const policy = codingAgentPolicyFromEnv({
+      CODING_AGENT_ALLOWED_REPOS: "personal-dashboard,moo-infra",
+      CODING_AGENT_BRANCH_PREFIX: "hermes"
+    });
+    const approvedMission = (repo, approvalId) => ({
+      goal: `Improve ${repo}`,
+      context: "Produce one measurable improvement.",
+      constraints: [],
+      allowedRepos: [repo],
+      definitionOfDone: ["Checks pass"],
+      validationCommands: [repo === "personal-dashboard" ? "bun test" : "uv run pytest"],
+      rollback: "Revert the child PR.",
+      status: "approved",
+      approvedBy: "michaelmwu",
+      approvalId
+    });
+    const goal = codingAgentGoalItem(
+      {
+        id: "goal-quality",
+        title: "Quality goal",
+        objective: "Continuously reduce flaky checks",
+        executionMode: "auto",
+        repositories: [
+          {
+            repo: "personal-dashboard",
+            mission: approvedMission("personal-dashboard", "goal-dashboard")
+          },
+          { repo: "moo-infra", mission: approvedMission("moo-infra", "goal-infra") }
+        ],
+        iterationBudget: 4,
+        noProgressLimit: 2,
+        nextIterationAt: now,
+        template: {}
+      },
+      undefined,
+      { now }
+    );
+    const goalTick = planCodingAgentAutomationTick([goal], [], { now, policy });
+    expect(goalTick.taskItems).toHaveLength(1);
+    expect(goalTick.automationItems[0].payload.iterations).toEqual([
+      expect.objectContaining({ iteration: 1, repo: "personal-dashboard", status: "pending" })
+    ]);
+
+    const campaign = codingAgentCampaignItem(
+      {
+        id: "campaign-runtime",
+        title: "Runtime rollout",
+        executionMode: "auto",
+        maxParallelTasks: 2,
+        steps: [
+          {
+            id: "dashboard",
+            repo: "personal-dashboard",
+            prompt: "Land the controller contract.",
+            mission: approvedMission("personal-dashboard", "campaign-dashboard")
+          },
+          {
+            id: "infra",
+            repo: "moo-infra",
+            dependsOn: ["dashboard"],
+            prompt: "Roll out the matching service configuration.",
+            mission: approvedMission("moo-infra", "campaign-infra")
+          }
+        ]
+      },
+      undefined,
+      { now }
+    );
+    expect(validateCodingAgentAutomation(campaign, policy)).toEqual({ ok: true, errors: [] });
+    const cyclicCampaign = codingAgentCampaignItem(
+      {
+        ...campaign.payload,
+        id: "campaign-cycle",
+        steps: campaign.payload.steps.map((step) => ({
+          ...step,
+          dependsOn: step.id === "dashboard" ? ["infra"] : ["dashboard"]
+        }))
+      },
+      undefined,
+      { now }
+    );
+    expect(validateCodingAgentAutomation(cyclicCampaign, policy)).toMatchObject({
+      ok: false,
+      errors: expect.arrayContaining(["campaign_dependency_cycle"])
+    });
+    const first = planCodingAgentAutomationTick([campaign], [], { now, policy });
+    expect(first.taskItems).toHaveLength(1);
+    expect(first.taskItems[0].payload.repo).toBe("personal-dashboard");
+    const completedDashboard = {
+      ...first.taskItems[0],
+      status: "pr-open",
+      payload: { ...first.taskItems[0].payload, status: "pr-open" }
+    };
+    const second = planCodingAgentAutomationTick(first.automationItems, [completedDashboard], {
+      now: "2026-07-13T19:00:00.000Z",
+      policy
+    });
+    expect(second.taskItems).toHaveLength(1);
+    expect(second.taskItems[0].payload.repo).toBe("moo-infra");
+    expect(second.taskItems[0].payload.automation).toMatchObject({
+      parentType: "coding-campaign",
+      parentId: "campaign-runtime",
+      key: "infra"
+    });
+  });
+
+  test("auto mode publishes validated work through checked host git and gh actions", async () => {
+    const rootDir = await mkdtemp(join(tmpdir(), "dashboard-publish-pr-"));
+    const worktreeDir = join(rootDir, "personal-dashboard", "task-1");
+    await mkdir(worktreeDir, { recursive: true });
+    const commands = [];
+    const syncs = [];
+    let prViews = 0;
+    const command = async (executable, args) => {
+      commands.push([executable, ...args]);
+      if (executable === "git" && args.join(" ") === "rev-parse HEAD") {
+        return { stdout: "reviewed-head\n", stderr: "" };
+      }
+      if (executable === "gh" && args[0] === "pr" && args[1] === "view") {
+        prViews += 1;
+        if (prViews === 1) {
+          throw Object.assign(new Error("no pull request"), { code: 1, stderr: "not found" });
+        }
+        return {
+          stdout: JSON.stringify({
+            number: 123,
+            url: "https://github.com/michaelmwu/personal-dashboard/pull/123",
+            state: "OPEN"
+          }),
+          stderr: ""
+        };
+      }
+      return { stdout: "", stderr: "" };
+    };
+    const task = {
+      id: "coding-publish-1",
+      repo: "personal-dashboard",
+      githubRepo: "michaelmwu/personal-dashboard",
+      title: "Publish OMP task",
+      branch: "hermes/publish-omp-task",
+      baseBranch: "origin/main",
+      worktreeDir,
+      executionMode: "auto",
+      status: "running",
+      latestAgentRunId: "coding-run-1",
+      latestAgentRunStatus: "completed",
+      latestValidation: {
+        runId: "coding-run-1",
+        headSha: "reviewed-head",
+        status: "passed",
+        summary: "Tests passed."
+      },
+      latestReview: {
+        runId: "coding-run-1",
+        headSha: "reviewed-head",
+        status: "clean",
+        summary: "Review clean."
+      },
+      queue: []
+    };
+
+    try {
+      const result = await publishReadyCodingAgentPrs({
+        env: {
+          CODING_AGENT_ALLOWED_REPOS: "personal-dashboard",
+          CODING_AGENT_BRANCH_PREFIX: "hermes",
+          CODING_AGENT_DEFAULT_BASE_BRANCH: "origin/main",
+          CODING_AGENT_WORK_ROOT: rootDir,
+          CODING_AGENT_GITHUB_OWNER: "michaelmwu"
+        },
+        tasksResponse: { tasks: [task] },
+        command,
+        planMaintenance: async () => ({ blocked: false, maintenance: [{ status: "approved" }] }),
+        syncPr: async (payload) => syncs.push(payload),
+        updateTask: async () => ({ accepted: true })
+      });
+
+      expect(result).toMatchObject({
+        taskCount: 1,
+        results: [
+          {
+            taskId: task.id,
+            status: "pr-open",
+            prNumber: 123,
+            prUrl: "https://github.com/michaelmwu/personal-dashboard/pull/123"
+          }
+        ]
+      });
+      expect(commands).toEqual(
+        expect.arrayContaining([
+          ["git", "push", "--set-upstream", "origin", task.branch],
+          expect.arrayContaining(["gh", "pr", "create", "--repo", task.githubRepo])
+        ])
+      );
+      expect(commands.some((entry) => entry.includes("merge"))).toBe(false);
+      expect(syncs).toEqual([
+        expect.objectContaining({ taskId: task.id, prNumber: 123, status: "pr-open" })
+      ]);
+    } finally {
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
+  test("final coding results are delivered idempotently through Hermes targets", async () => {
+    const task = {
+      id: "coding-delivery-1",
+      title: "Deliver result",
+      repo: "personal-dashboard",
+      status: "pr-open",
+      latestAgentRunId: "coding-run-delivery-1",
+      prUrl: "https://github.com/michaelmwu/personal-dashboard/pull/124",
+      latestValidation: { summary: "All checks passed." },
+      latestReview: { summary: "No blockers." }
+    };
+    const calls = [];
+    const persisted = [];
+    const result = await deliverCodingAgentResults({
+      targets: ["telegram", "discord:#agent-results"],
+      tasksResponse: { tasks: [task] },
+      deliveriesResponse: { items: [] },
+      command: async (executable, args) => {
+        calls.push([executable, ...args]);
+        return { stdout: "sent", stderr: "" };
+      },
+      persistDelivery: async (payload) => {
+        persisted.push(payload);
+        return { accepted: true };
+      }
+    });
+
+    expect(result.deliveryCount).toBe(2);
+    expect(calls).toEqual([
+      expect.arrayContaining(["hermes", "send", "--to", "telegram", "--file"]),
+      expect.arrayContaining(["hermes", "send", "--to", "discord:#agent-results", "--file"])
+    ]);
+    expect(persisted).toEqual([
+      expect.objectContaining({ taskId: task.id, target: "telegram", status: "running" }),
+      expect.objectContaining({ taskId: task.id, target: "telegram", status: "completed" }),
+      expect.objectContaining({
+        taskId: task.id,
+        target: "discord:#agent-results",
+        status: "running"
+      }),
+      expect.objectContaining({
+        taskId: task.id,
+        target: "discord:#agent-results",
+        status: "completed"
+      })
+    ]);
+    expect(codingAgentDeliveryItem(task, "telegram").payload.summary).toContain(task.prUrl);
   });
 
   test("coding agent registry persists task anchors through deterministic Hermes actions", async () => {
@@ -2227,23 +2931,20 @@ describe("contracts", () => {
           })
         });
         expect(approvedRetry.status).toBe(202);
-        expect(await approvedRetry.json()).toMatchObject({
+        const approvedRetryPayload = await approvedRetry.json();
+        expect(approvedRetryPayload).toMatchObject({
           dispatch: {
             dispatched: true,
-            runId: "run_mission_001"
+            queued: true,
+            target: "omp",
+            runtime: "omp",
+            runId: expect.stringMatching(/^coding_run_/)
           }
         });
-        expect(bridgeRequests).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              path: "/v1/runs",
-              method: "POST",
-              body: expect.objectContaining({
-                input: expect.stringContaining("Require mission approval.")
-              })
-            })
-          ])
+        expect(approvedRetryPayload.dispatch.response.run.prompt).toContain(
+          "Require mission approval."
         );
+        expect(bridgeRequests).toEqual([]);
 
         const legacyTaskId = `${taskId}_legacy`;
         const legacyRegister = await clientFetch(
@@ -2365,29 +3066,21 @@ describe("contracts", () => {
           })
         });
         expect(approvedStart.status).toBe(202);
-        expect(await approvedStart.json()).toMatchObject({
+        const approvedStartPayload = await approvedStart.json();
+        expect(approvedStartPayload).toMatchObject({
           dispatch: {
             dispatched: true,
-            runId: "run_mission_001"
+            queued: true,
+            target: "omp",
+            runId: expect.stringMatching(/^coding_run_/)
           }
         });
-        expect(bridgeRequests).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              path: "/v1/runs",
-              method: "POST",
-              body: expect.objectContaining({
-                input: expect.stringContaining("Mission:")
-              })
-            })
-          ])
-        );
-        expect(bridgeRequests.find((request) => request.path === "/v1/runs").body.input).toContain(
+        expect(approvedStartPayload.dispatch.response.run.prompt).toContain("Mission:");
+        expect(approvedStartPayload.dispatch.response.run.prompt).toContain(
           "Unapproved starts are blocked"
         );
-        expect(bridgeRequests.find((request) => request.path === "/v1/runs").body.input).toContain(
-          '"definitionOfDone"'
-        );
+        expect(approvedStartPayload.dispatch.response.run.prompt).toContain('"definitionOfDone"');
+        expect(bridgeRequests).toEqual([]);
 
         bridgeRequests.length = 0;
         const approvedUpdateWithoutPrompt = await clientFetch(
@@ -2416,17 +3109,20 @@ describe("contracts", () => {
           }
         );
         expect(approvedUpdateWithoutPrompt.status).toBe(202);
-        expect(await approvedUpdateWithoutPrompt.json()).toMatchObject({
+        const noPromptPayload = await approvedUpdateWithoutPrompt.json();
+        expect(noPromptPayload).toMatchObject({
           dispatch: {
             dispatched: true,
-            runId: "run_mission_001"
+            queued: true,
+            target: "omp",
+            runId: expect.stringMatching(/^coding_run_/)
           }
         });
-        const noPromptRun = bridgeRequests.find((request) => request.path === "/v1/runs");
-        expect(noPromptRun.body.input).toContain("Payload:");
-        expect(noPromptRun.body.input).toContain('"events"');
-        expect(noPromptRun.body.input).toContain("Preserve prompt fallback payload events.");
-        expect(noPromptRun.body.input).toContain("Mission:");
+        expect(noPromptPayload.dispatch.response.run.prompt).toContain('"events"');
+        expect(noPromptPayload.dispatch.response.run.prompt).toContain(
+          "Preserve prompt fallback payload events."
+        );
+        expect(noPromptPayload.dispatch.response.run.prompt).toContain("Mission:");
       });
     } finally {
       await closeServer(apiServer);
@@ -3455,7 +4151,7 @@ describe("contracts", () => {
     }
   });
 
-  test("coding agent executor dispatch stores Hermes run id on the task record", async () => {
+  test("coding agent executor dispatch stores queued OMP run id on the task record", async () => {
     const taskId = `coding_run_${Date.now()}`;
     const bridgeRequests = [];
     const bridgeFetch = async (url, options = {}) => {
@@ -3549,47 +4245,45 @@ describe("contracts", () => {
           })
         });
         expect(action.status).toBe(202);
-        expect(await action.json()).toMatchObject({
+        const actionPayload = await action.json();
+        expect(actionPayload).toMatchObject({
           accepted: true,
           dispatch: {
             dispatched: true,
-            runId: "run_coding_001"
+            queued: true,
+            target: "omp",
+            runtime: "omp",
+            runId: expect.stringMatching(/^coding_run_/)
           }
         });
-        expect(bridgeRequests[0]).toMatchObject({
-          path: "/v1/runs",
-          headers: {
-            "X-Hermes-Session-Key": `coding-agent:${taskId}`
-          },
-          body: {
-            session_id: `coding-agent:${taskId}`,
-            metadata: {
-              taskId,
-              worktreeDir: "/tmp/coding-run-id"
-            }
-          }
-        });
+        expect(bridgeRequests).toEqual([]);
 
-        const tasksJson = await waitFor(async () => {
-          const tasks = await clientFetch(
-            `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`
-          );
-          const json = await tasks.json();
-          return json.tasks.some(
-            (task) => task.id === taskId && task.hermesRunStatus === "waiting_for_approval"
-          )
-            ? json
-            : false;
-        });
+        const tasks = await clientFetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`);
+        const tasksJson = await tasks.json();
         expect(tasksJson).toEqual({
           tasks: expect.arrayContaining([
             expect.objectContaining({
               id: taskId,
-              hermesRunId: "run_coding_001",
-              latestHermesRunId: "run_coding_001",
-              hermesRunStatus: "waiting_for_approval",
-              lastEventAt: expect.any(String),
-              hermesLastEventAt: expect.any(String)
+              runtime: "omp",
+              latestAgentRunId: actionPayload.dispatch.runId,
+              latestAgentRunStatus: "queued"
+            })
+          ])
+        });
+        const runs = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/items?type=coding-run-request`
+        );
+        expect(await runs.json()).toEqual({
+          app: "coding-agent",
+          items: expect.arrayContaining([
+            expect.objectContaining({
+              id: actionPayload.dispatch.runId,
+              status: "queued",
+              payload: expect.objectContaining({
+                taskId,
+                runtime: "omp",
+                approvalMode: "always-ask"
+              })
             })
           ])
         });
@@ -3599,7 +4293,7 @@ describe("contracts", () => {
     }
   });
 
-  test("coding agent executor records failed evidence when Bridge event streaming fails", async () => {
+  test("coding agent OMP lifecycle records events and failed terminal evidence", async () => {
     const taskId = `coding_stream_failed_${Date.now()}`;
     const bridgeFetch = async (url, options = {}) => {
       const path = new URL(url).pathname;
@@ -3671,33 +4365,75 @@ describe("contracts", () => {
           })
         });
         expect(action.status).toBe(202);
+        const actionPayload = await action.json();
+        const runId = actionPayload.dispatch.runId;
 
-        const tasksJson = await waitFor(async () => {
-          const tasks = await clientFetch(
-            `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`
-          );
-          const json = await tasks.json();
-          const task = json.tasks.find((candidate) => candidate.id === taskId);
-          return task?.queue?.some(
-            (item) => item.kind === "coding-evidence-pack" && item.status === "failed"
-          )
-            ? json
-            : false;
+        const claim = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/runs/claim`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ runId, workerId: "contract-worker" })
+          }
+        );
+        expect(claim.status).toBe(202);
+        expect(await claim.json()).toMatchObject({
+          run: { id: runId, taskId, status: "running", leaseOwner: "contract-worker" }
         });
+
+        const event = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/runs/events`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              runId,
+              workerId: "contract-worker",
+              event: { type: "tool_execution_end", toolName: "bash", isError: true }
+            })
+          }
+        );
+        expect(event.status).toBe(202);
+
+        const completed = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/runs/complete`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer dashboard-token",
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              runId,
+              workerId: "contract-worker",
+              status: "failed",
+              error: "omp_rpc_turn_failed"
+            })
+          }
+        );
+        expect(completed.status).toBe(202);
+
+        const tasksResponse = await clientFetch(
+          `http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks?includeArchived=true`
+        );
+        const tasksJson = await tasksResponse.json();
         expect(tasksJson.tasks).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
               id: taskId,
-              evidencePacks: expect.arrayContaining([
-                expect.objectContaining({
-                  runId: "run_stream_failed",
-                  status: "failed",
-                  stream: expect.objectContaining({
-                    streamed: false,
-                    statusCode: 500
-                  })
-                })
-              ])
+              status: "failed",
+              latestAgentRunId: runId,
+              latestAgentRunStatus: "failed",
+              handoff: expect.objectContaining({
+                blocker: "omp_rpc_turn_failed",
+                artifacts: [`agent-run:${runId}`]
+              })
             })
           ])
         );
@@ -4033,6 +4769,7 @@ describe("contracts", () => {
       id: "coding_validation_repair",
       repo: "personal-dashboard",
       title: "Repair validation failure",
+      executionMode: "auto",
       status: "running",
       worktreeDir: "/tmp/coding-validation-repair",
       latestHermesRunId: "run_validation_repair",
@@ -4090,6 +4827,37 @@ describe("contracts", () => {
     });
   });
 
+  test("manual mode leaves a failed validation for explicit operator action", async () => {
+    const task = {
+      id: "coding_validation_manual",
+      repo: "personal-dashboard",
+      title: "Manually repair validation",
+      executionMode: "manual",
+      status: "running",
+      worktreeDir: "/tmp/coding-validation-manual",
+      latestAgentRunId: "run_validation_manual",
+      latestAgentRunStatus: "completed",
+      mission: { validationCommands: ["bun test"] }
+    };
+    const result = await validateCodingAgentTasks({
+      tasksResponse: { tasks: [task] },
+      command: async () => {
+        throw Object.assign(new Error("validation failed"), {
+          code: 1,
+          stderr: "fix this manually"
+        });
+      },
+      persistValidation: async () => ({ accepted: true }),
+      dispatchRepair: async () => {
+        throw new Error("manual mode must not auto-dispatch a repair");
+      }
+    });
+    expect(result.results[0]).toMatchObject({
+      status: "failed",
+      repair: { dispatched: false, reason: "manual_mode_requires_operator" }
+    });
+  });
+
   test("integration worker reviews the mission and diff before PR-ready", async () => {
     const task = {
       id: "coding_mission_review",
@@ -4099,7 +4867,12 @@ describe("contracts", () => {
       baseBranch: "origin/main",
       worktreeDir: "/tmp/coding-mission-review",
       latestHermesRunId: "run_mission_review",
-      latestValidation: { status: "passed", runId: "run_mission_review" },
+      executionMode: "auto",
+      latestValidation: {
+        status: "passed",
+        runId: "run_mission_review",
+        headSha: "review-head"
+      },
       riskReview: { risk: { level: "high" } },
       modelPolicy: { reviewer: { harness: "claude", model: "reviewer" } },
       mission: {
@@ -4111,8 +4884,12 @@ describe("contracts", () => {
     const review = await runCodingTaskReview(task, {
       command: async (executable, args, options) => {
         expect(executable).toBe("git");
-        expect(args).toEqual(["diff", "--no-ext-diff", "origin/main...HEAD"]);
         expect(options.cwd).toBe("/tmp/coding-mission-review");
+        if (args.join(" ") === "status --porcelain=v1") return { stdout: "", stderr: "" };
+        if (args.join(" ") === "rev-parse HEAD") {
+          return { stdout: "review-head\n", stderr: "" };
+        }
+        expect(args).toEqual(["diff", "--no-ext-diff", "origin/main...HEAD"]);
         return { stdout: "diff --git a/file.mjs b/file.mjs", stderr: "" };
       },
       reviewer: async (input) => {
@@ -4146,7 +4923,13 @@ describe("contracts", () => {
     const deepReviews = [];
     const result = await reviewCodingAgentTasks({
       tasksResponse: { tasks: [task] },
-      command: async () => ({ stdout: "diff --git a/file.mjs b/file.mjs", stderr: "" }),
+      command: async (_executable, args) => {
+        if (args.join(" ") === "status --porcelain=v1") return { stdout: "", stderr: "" };
+        if (args.join(" ") === "rev-parse HEAD") {
+          return { stdout: "review-head\n", stderr: "" };
+        }
+        return { stdout: "diff --git a/file.mjs b/file.mjs", stderr: "" };
+      },
       reviewer: async () => ({
         findings: [
           {
@@ -4183,6 +4966,69 @@ describe("contracts", () => {
     expect(deepReviews[0].reviewPayload.riskTier).toBe("high");
   });
 
+  test("OMP can run a fresh always-ask review session without sharing executor context", async () => {
+    expect(codingAgentReviewHarness("omp")).toMatchObject({
+      status: "available",
+      safety: "fresh-session-always-ask"
+    });
+    const calls = [];
+    const review = await runCodingTaskReview(
+      {
+        id: "coding_omp_review",
+        repo: "personal-dashboard",
+        title: "Review through OMP",
+        status: "running",
+        baseBranch: "origin/main",
+        worktreeDir: "/tmp/coding-omp-review",
+        latestAgentRunId: "run_omp_review",
+        latestValidation: {
+          status: "passed",
+          runId: "run_omp_review",
+          headSha: "reviewed-omp-head"
+        },
+        modelPolicy: {
+          executor: { harness: "omp", model: "default" },
+          reviewer: { harness: "omp", model: "default" }
+        },
+        mission: { goal: "Review this exact committed diff." }
+      },
+      {
+        env: {
+          CODING_AGENT_REVIEW_USE_HARNESS: "true",
+          CODING_AGENT_WORK_ROOT: "/tmp/coding-work",
+          PI_CODING_AGENT_DIR: "/tmp/omp-agent"
+        },
+        command: async (_executable, args) => {
+          if (args.join(" ") === "status --porcelain=v1") return { stdout: "", stderr: "" };
+          if (args.join(" ") === "rev-parse HEAD") {
+            return { stdout: "reviewed-omp-head\n", stderr: "" };
+          }
+          return { stdout: "diff --git a/file.mjs b/file.mjs", stderr: "" };
+        },
+        runOmpReview: async (options) => {
+          calls.push(options);
+          return {
+            status: "completed",
+            finalText: '```json\n{"summary":"Clean.","findings":[],"definitionOfDone":[]}\n```'
+          };
+        }
+      }
+    );
+    expect(review).toMatchObject({
+      status: "clean",
+      headSha: "reviewed-omp-head",
+      summary: "Clean."
+    });
+    expect(calls).toEqual([
+      expect.objectContaining({
+        executionMode: "manual",
+        model: undefined,
+        worktreeDir: "/tmp/coding-omp-review",
+        workRoot: "/tmp/coding-work"
+      })
+    ]);
+  });
+
   test("Cursor is a planned review harness that preserves model selection but fails closed", async () => {
     expect(codingAgentReviewHarness("CURSOR")).toMatchObject({
       id: "cursor",
@@ -4214,12 +5060,16 @@ describe("contracts", () => {
         env: { CODING_AGENT_REVIEW_USE_HARNESS: "true" },
         command: async (executable, args) => {
           commands.push({ executable, args });
+          if (args.join(" ") === "status --porcelain=v1") return { stdout: "", stderr: "" };
+          if (args.join(" ") === "rev-parse HEAD") return { stdout: "cursor-head\n", stderr: "" };
           return { stdout: "diff --git a/file.mjs b/file.mjs", stderr: "" };
         }
       }
     );
 
     expect(commands).toEqual([
+      { executable: "git", args: ["status", "--porcelain=v1"] },
+      { executable: "git", args: ["rev-parse", "HEAD"] },
       { executable: "git", args: ["diff", "--no-ext-diff", "origin/main...HEAD"] }
     ]);
     expect(review).toMatchObject({
@@ -4374,7 +5224,7 @@ describe("contracts", () => {
           taskId: "coding_reconcile_orphan",
           previousStatus: "running",
           nextStatus: "waiting-for-approval",
-          reason: "missing_hermes_run_anchor",
+          reason: "missing_agent_run_anchor",
           providerMutationAllowed: false
         },
         {
@@ -4388,14 +5238,14 @@ describe("contracts", () => {
           taskId: "coding_reconcile_stalled",
           previousStatus: "running",
           nextStatus: "waiting-for-approval",
-          reason: "stalled_hermes_run",
+          reason: "stalled_agent_run",
           providerMutationAllowed: false
         },
         {
           taskId: "coding_reconcile_pr_update",
           previousStatus: "pr-open",
           nextStatus: "waiting-for-approval",
-          reason: "stale_hermes_run",
+          reason: "stale_agent_run",
           providerMutationAllowed: false
         }
       ],
@@ -4423,7 +5273,7 @@ describe("contracts", () => {
           status: "waiting-for-approval",
           hermesRunStatus: "orphaned",
           handoff: expect.objectContaining({
-            blocker: "missing_hermes_run_anchor"
+            blocker: "missing_agent_run_anchor"
           }),
           queue: expect.arrayContaining([
             expect.objectContaining({
@@ -4451,7 +5301,7 @@ describe("contracts", () => {
           status: "waiting-for-approval",
           hermesRunStatus: "stalled",
           handoff: expect.objectContaining({
-            blocker: "stalled_hermes_run"
+            blocker: "stalled_agent_run"
           })
         })
       }),
@@ -4461,7 +5311,7 @@ describe("contracts", () => {
           status: "waiting-for-approval",
           hermesRunStatus: "stale",
           handoff: expect.objectContaining({
-            blocker: "stale_hermes_run"
+            blocker: "stale_agent_run"
           })
         })
       })
@@ -4543,7 +5393,7 @@ describe("contracts", () => {
         results: expect.arrayContaining([
           expect.objectContaining({
             taskId: orphanId,
-            reason: "missing_hermes_run_anchor",
+            reason: "missing_agent_run_anchor",
             nextStatus: "waiting-for-approval"
           }),
           expect.objectContaining({
@@ -5034,6 +5884,7 @@ describe("contracts", () => {
             id: "coding_poll_002",
             repo: "personal-dashboard",
             prNumber: 42,
+            executionMode: "auto",
             status: "pr-open"
           },
           {
