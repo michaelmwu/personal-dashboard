@@ -88,6 +88,18 @@ App manifest
   -> packages/integrations/registry
   -> apps/api /api/apps and /api/hermes/capabilities
   -> apps/web generic plugin panel summary
+
+Telegram / Discord
+  -> Hermes conversational intake
+  -> apps/api typed coding capability
+  -> coding-task + coding-run-request durable records
+  -> scripts/integration-worker lease
+  -> isolated repo worktree
+  -> Oh My Pi newline-delimited JSON RPC
+  -> deterministic validation + independent review
+  -> host-owned git push / gh PR creation
+  -> PR/CI/review polling and bounded repair runs
+  -> idempotent Hermes final-result delivery
 ```
 
 The API currently uses local fixtures. The boundary is intentional: replacing fixtures with real Hermes and OpenClaw clients should not require rewriting dashboard rendering code.
@@ -110,6 +122,14 @@ Core entities:
 - `HermesCapability`: action Hermes is allowed to trigger.
 - `HermesAction`: versioned, idempotent, dashboard-visible request envelope for
   Hermes/app work.
+- `CodingTask`: canonical repo, branch, worktree, mission, execution mode,
+  current run, validation/review, PR, repair budget, and delivery anchors.
+- `CodingRunRequest`: leased OMP RPC execution with immutable manual/auto mode,
+  sanitized events, session identity, approvals, and terminal result.
+- `CodingSchedule`, `CodingGoal`, `CodingCampaign`: durable automation parents
+  that emit ordinary child tasks instead of storing control flow in transcripts.
+- `CodingDelivery`: target-specific, independently retryable Hermes result
+  delivery keyed by the task outcome fingerprint.
 - `AppManifest`, `AppPanel`, `AppItem`: lightweight plugin tier for enabled
   apps, generic panel declarations, and opaque app-specific payloads.
 
@@ -179,6 +199,25 @@ Hermes integration is bidirectional:
   capabilities from Hermes. Deterministic capabilities route to declared
   endpoints; agentic capabilities route to Hermes Bridge with the existing
   origin loop guard.
+
+Coding-agent capabilities are the intentional exception to the final bullet:
+`start-coding-task`, `update-coding-task`, and deep review enqueue durable OMP
+run requests. Other agentic capabilities continue to use Hermes Bridge. The API
+classifies and persists; the worker leases and executes; OMP edits only inside
+the registered worktree; deterministic host code validates, reviews, pushes,
+creates PRs, polls feedback, and delivers outcomes. UI and chat clients render
+typed state and never parse assistant prose to decide lifecycle transitions.
+
+The OMP child receives an environment built from an allowlist. It gets runtime
+basics, the selected provider-auth mechanism, its task port, an isolated HOME,
+and `PI_CODING_AGENT_DIR`; it does not inherit dashboard/API/database,
+GitHub/SSH, messaging, or observability credentials. Auto mode authorizes OMP
+workspace tools, not GitHub mutation. Host push and PR creation require allowed
+repo/branch/worktree, current-run validation, a clean review, and a clean HEAD
+that still matches the commit SHA accepted by both gates. Merge always remains
+a separate human-approved action. This child-environment boundary reduces
+accidental credential exposure but is not process isolation from files readable
+by the worker's Unix account.
 
 When `PERSONAL_DASHBOARD_API_TOKEN` is configured, all `/api/hermes/*`
 endpoints require a bearer token. Action envelopes include a contract version

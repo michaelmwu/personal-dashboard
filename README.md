@@ -86,12 +86,27 @@ Set `PERSONAL_DASHBOARD_API_TOKEN` to require `Authorization: Bearer ...` on
 the Hermes endpoints. The Bridge password stays server-side in the API process;
 it must never be sent to the web client.
 
-Coding Agent endpoints:
+Coding Agent endpoints (see [the OMP operations guide](docs/coding-agent-automation.md)
+for complete mode, scheduler, campaign, recovery, and delivery examples):
 
 - `GET /api/apps/coding-agent/tasks`: list active coding tasks. Pass
   `includeArchived=true` to include archived records.
 - `POST /api/apps/coding-agent/tasks`: register the durable task anchor
-  `{id, repo, branch, worktreeDir, hermesSessionKey, prNumber, previewUrl}`.
+  `{id, repo, branch, worktreeDir, executionMode, ompSessionId, prNumber,
+  previewUrl}`.
+- `POST /api/apps/coding-agent/runs/claim`, `/runs/events`, and
+  `/runs/complete`: lease queued OMP RPC runs and persist their lifecycle. A
+  prompt acknowledgement is not completion; the worker waits for `agent_end`.
+- `POST /api/apps/coding-agent/schedules`: create a durable one-shot, interval,
+  or five-field cron schedule with idempotent occurrences.
+- `POST /api/apps/coding-agent/goals`: create a bounded recurring goal with an
+  iteration budget and no-progress cutoff.
+- `POST /api/apps/coding-agent/campaigns`: create a dependency graph with one
+  isolated task, worktree, and PR per repository.
+- `POST /api/apps/coding-agent/automation/tick`: materialize due schedule
+  occurrences, goal iterations, and campaign steps into tasks plus OMP runs.
+- `POST /api/apps/coding-agent/deliveries`: persist idempotent final-result
+  delivery attempts sent by the worker through `hermes send`.
 - `POST /api/apps/coding-agent/intake-plan`: turn a request into a durable
   intake plan with clarification questions, proposed surfaces, and risk
   classification before execution.
@@ -135,11 +150,29 @@ Coding Agent endpoints:
 - `POST /api/apps/coding-agent/archive`: archive a completed or abandoned task
   and its remaining queue items.
 
+Coding execution is owned by Oh My Pi RPC; orchestration remains owned by the
+dashboard. `start-coding-task` and `update-coding-task` enqueue durable
+`coding-run-request` records instead of forwarding coding work through Hermes
+Bridge. Hermes remains the conversational intake and Telegram/Discord delivery
+surface. The worker launches OMP with the task worktree as cwd, a per-task home,
+and an environment allowlist that excludes dashboard, database, GitHub,
+messaging, and observability credentials.
+
+Every task stores `executionMode: manual | auto`. Manual mode launches OMP with
+`always-ask`, does not auto-dispatch validation/review/PR-feedback repairs, and
+requires approved host-action items before push or PR creation.
+Auto mode launches with `yolo` inside the task worktree, but GitHub credentials
+remain host-only: after current-run validation and a clean independent review,
+the worker performs checked `git push` and `gh pr create` actions only if the
+worktree is still clean at the exact reviewed commit. Critical OMP
+approval prompts still pause as typed approval requests. Neither mode
+auto-merges.
+
 Coding-agent state uses the JSON dashboard store by default for local
 development. Set `CODING_AGENT_STATE_STORE=postgres` with `DATABASE_URL` to move
 coding-agent items, task anchors, run status, and run events into Postgres; run
 `bun run migrate:coding-agent` once after configuring the database to backfill
-existing JSON records. Hermes run evidence is written under
+existing JSON records. Coding run evidence is written under
 `CODING_AGENT_RUN_EVIDENCE_DIR` or `.data/runs` as NDJSON events plus final
 artifacts such as diffs and status output. Archiving a task removes its evidence
 packs unless the task has `keepEvidence=true`. Reconciliation also prunes
@@ -148,9 +181,21 @@ defaults to 30 days; set it to `-1` to disable age-based pruning.
 
 Set `CODING_AGENT_ALLOWED_REPOS` to a comma-separated repo allowlist when
 enforcing PR-maintenance repo policy. `CODING_AGENT_BRANCH_PREFIX` defaults to
-`hermes`, and side-effecting maintenance actions such as push, PR creation,
-merge, cleanup, and PR replies require `approvedBy` plus `approvalId`. High-risk
-side effects additionally require `riskAcceptedBy` plus `riskApprovalId`.
+`hermes`. Manual side effects require `approvedBy` plus `approvalId`. Auto mode
+may authorize push, PR creation, and PR replies only after current-run
+validation and review; merge and destructive cleanup remain approval-gated.
+High-risk side effects additionally require `riskAcceptedBy` plus
+`riskApprovalId`.
+
+Set `CODING_AGENT_OMP_ENABLED=true`, `CODING_AGENT_WORK_ROOT`, and either
+`CODING_AGENT_REPO_MAP_JSON` or `CODING_AGENT_REPO_ROOT` to execute queued runs.
+`PI_CODING_AGENT_DIR` points at OMP's owner-only provider auth/config store.
+Leave `CODING_AGENT_OMP_MODEL` blank to use OMP's configured default model.
+Enable the full controller with `CODING_AGENT_AUTOMATION_ENABLED`,
+`CODING_AGENT_VALIDATION_ENABLED`, `CODING_AGENT_REVIEW_ENABLED`,
+`CODING_AGENT_PR_PUBLISH_ENABLED`, and `CODING_AGENT_DELIVERY_ENABLED`.
+`CODING_AGENT_RESULT_TARGETS` is a comma-separated allowlist such as
+`telegram,discord:#agent-results`.
 
 Set `CODING_AGENT_PR_POLL_ENABLED=true` on the integration worker to poll active
 coding-task PRs with `gh api`. The poller reads `pr-open`,
@@ -195,8 +240,8 @@ dashboard-side reconciliation. It posts to
 `/api/apps/coding-agent/reconcile`, does not contact providers, and records
 `coding-reconciliation` audit items. Use `CODING_AGENT_STALE_RUNNING_MINUTES`
 to override the default 90-minute stale running threshold, and
-`CODING_AGENT_RUN_QUIET_MINUTES` to override the default 10-minute Bridge event
-quiet window that marks active Hermes runs as stalled. Reconciliation runs on
+`CODING_AGENT_RUN_QUIET_MINUTES` to override the default 10-minute event quiet
+window that marks active OMP runs as stalled. Reconciliation runs on
 startup and every worker polling interval by default; set
 `CODING_AGENT_RECONCILE_WATCHDOG_ENABLED=false` to keep it startup-only.
 
