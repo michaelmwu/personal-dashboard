@@ -55,6 +55,14 @@ apps:
         enabled: true
         position: operations
         order: 15
+  - id: personal-memory
+    enabled: true
+    manifest: packages/integrations/manifests/personal-memory.dashboard-manifest.json
+    panels:
+      - id: memory-proposals
+        enabled: true
+        position: operations
+        order: 40
 
 codingAgent:
   modelPolicy:

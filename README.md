@@ -109,6 +109,32 @@ Hermes-facing endpoints:
   envelopes are kept in the dashboard queue; dashboard-originated envelopes can
   dispatch to Hermes Bridge when `HERMES_BRIDGE_URL` and
   `HERMES_BRIDGE_PASSWORD` are configured.
+- `GET /api/hermes/memory/context`: authenticated memory policy and curated
+  source configuration. It deliberately exposes no memory body content.
+
+## Personal memory
+
+`personal-memory` is the durable-memory boundary for Hermes. It keeps domain
+records such as reservations and transactions in their owning data stores;
+personal memories are separate, provenance-carrying app items.
+
+- `POST /api/apps/personal-memory/proposals`: create a `pending` memory
+  proposal. It requires a title, content, kind, sensitivity, and provenance.
+- `POST /api/apps/personal-memory/decisions`: approve or reject a proposal.
+  Both actions require `approvedBy` and `approvalId`; only approved memories
+  become `active`.
+- `POST /api/apps/personal-memory/recall`: return only active, unexpired
+  memories and their provenance. It never reads an Obsidian vault or GBrain
+  directly.
+- `GET /api/apps/personal-memory/config`: return the explicit Obsidian-folder
+  allowlist and optional GBrain source name. `PERSONAL_MEMORY_OBSIDIAN_PATHS`
+  and `GBRAIN_PERSONAL_MEMORY_SOURCE` must be set deliberately; the dashboard
+  never scans a personal vault by default.
+
+The optional GBrain configuration is intentionally a source declaration, not
+an automatic ingest or write credential. Configure a dedicated `hermes-personal`
+source only after choosing the vault folders and trust policy. Use
+`PERSONAL_MEMORY_RECALL_LIMIT` to cap local recall results (default `8`).
 
 Set `PERSONAL_DASHBOARD_API_TOKEN` to require `Authorization: Bearer ...` on
 the Hermes endpoints. The Bridge password stays server-side in the API process;

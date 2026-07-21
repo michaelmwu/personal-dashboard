@@ -56,6 +56,12 @@ import {
   validateCodingAgentAutomation
 } from "../packages/integrations/coding-agent.mjs";
 import {
+  applyPersonalMemoryDecision,
+  personalMemoryConfig,
+  planPersonalMemoryProposal,
+  recallPersonalMemories
+} from "../packages/integrations/personal-memory.mjs";
+import {
   createHermesAction,
   hermesActionIdFromIdempotencyKey,
   hermesCapabilities,
@@ -491,6 +497,16 @@ describe("contracts", () => {
           id: "reservation_parse",
           kind: "agentic",
           target: "gmail-intake"
+        }),
+        expect.objectContaining({
+          id: "propose_personal_memory",
+          kind: "deterministic",
+          endpoint: "/api/apps/personal-memory/proposals"
+        }),
+        expect.objectContaining({
+          id: "recall_personal_memory",
+          kind: "deterministic",
+          endpoint: "/api/apps/personal-memory/recall"
         }),
         expect.objectContaining({
           id: "register-coding-task",
@@ -1187,6 +1203,9 @@ describe("contracts", () => {
   test("mutating API endpoints require bearer auth before side effects", async () => {
     const mutatingEndpoints = [
       "/api/apps/test-app/events",
+      "/api/apps/personal-memory/proposals",
+      "/api/apps/personal-memory/decisions",
+      "/api/apps/personal-memory/recall",
       "/api/apps/coding-agent/tasks",
       "/api/apps/coding-agent/runs/claim",
       "/api/apps/coding-agent/runs/events",
@@ -1240,6 +1259,267 @@ describe("contracts", () => {
         });
         expect(response.status).toBe(401);
       }
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("personal memory keeps proposals pending until an approved decision and recalls with provenance", () => {
+    const proposal = planPersonalMemoryProposal(
+      {
+        id: "memory_test_preference",
+        title: "Morning flight preference",
+        content: "Prefer departures before 10am when practical.",
+        kind: "preference",
+        sensitivity: "private",
+        confidence: 0.9,
+        tags: ["travel", "flight"],
+        provenance: {
+          sourceType: "operator-note",
+          sourceId: "note_123",
+          sourceUri: "obsidian://Hermes/preferences"
+        }
+      },
+      {
+        now: "2026-07-11T09:00:00.000Z",
+        env: { PERSONAL_MEMORY_OBSIDIAN_PATHS: "Hermes" }
+      }
+    );
+    expect(proposal).toMatchObject({
+      ok: true,
+      memory: {
+        status: "pending",
+        scope: "personal",
+        provenance: { sourceType: "operator-note", sourceId: "note_123" }
+      }
+    });
+    expect(recallPersonalMemories([proposal.item], "morning flight").memories).toEqual([]);
+
+    const approvalRequired = applyPersonalMemoryDecision(proposal.item, { action: "approve" });
+    expect(approvalRequired).toMatchObject({
+      ok: false,
+      reason: "memory_decision_approval_required"
+    });
+    const approved = applyPersonalMemoryDecision(
+      proposal.item,
+      { action: "approve", approvedBy: "michaelmwu", approvalId: "approval_memory_123" },
+      { now: "2026-07-11T09:01:00.000Z" }
+    );
+    expect(approved.memory).toMatchObject({
+      status: "active",
+      review: { approvalId: "approval_memory_123" }
+    });
+    const recalled = recallPersonalMemories([approved.item], "morning flight", { limit: 1 });
+    expect(recalled.query).toBe("morning flight");
+    expect(recalled.memories).toHaveLength(1);
+    expect(recalled.memories[0]).toMatchObject({
+      id: "memory_test_preference",
+      provenance: { sourceType: "operator-note", sourceId: "note_123" }
+    });
+    expect(recallPersonalMemories([approved.item], "   ").memories).toEqual([]);
+    expect(
+      planPersonalMemoryProposal({
+        title: "Uncited memory",
+        content: "This must not be stored without provenance."
+      })
+    ).toMatchObject({ ok: false, reason: "missing_memory_provenance_source" });
+    expect(
+      planPersonalMemoryProposal(
+        {
+          title: "Unapproved vault path",
+          content: "This path is outside the configured vault folders.",
+          provenance: { sourceUri: "obsidian://Private/notes" }
+        },
+        { env: { PERSONAL_MEMORY_OBSIDIAN_PATHS: "Projects" } }
+      )
+    ).toMatchObject({ ok: false, reason: "memory_obsidian_source_not_allowed" });
+    expect(
+      planPersonalMemoryProposal(
+        {
+          title: "Approved GBrain source",
+          content: "This source is explicitly declared.",
+          provenance: { sourceType: "gbrain", sourceId: "hermes-personal" }
+        },
+        { env: { GBRAIN_PERSONAL_MEMORY_SOURCE: "hermes-personal" } }
+      )
+    ).toMatchObject({ ok: true });
+    expect(
+      personalMemoryConfig({
+        PERSONAL_MEMORY_RECALL_LIMIT: "50",
+        PERSONAL_MEMORY_OBSIDIAN_PATHS: "AI, Projects , Hermes",
+        GBRAIN_PERSONAL_MEMORY_SOURCE: "hermes-personal"
+      })
+    ).toEqual({
+      recallLimit: 20,
+      curatedObsidianPaths: ["AI", "Projects", "Hermes"],
+      gbrain: { source: "hermes-personal", configured: true, writeMode: "proposal-only" }
+    });
+  });
+
+  test("personal memory API enforces auth, approval, and explicit recall", async () => {
+    const memoryId = `memory_api_${Date.now()}`;
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+    const endpoint = `http://127.0.0.1:${apiPort}/api/apps/personal-memory`;
+
+    try {
+      const capabilities = await fetch(`http://127.0.0.1:${apiPort}/api/hermes/capabilities`, {
+        headers: { Authorization: "Bearer dashboard-token" }
+      });
+      expect(capabilities.status).toBe(200);
+      expect((await capabilities.json()).capabilities).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "propose_personal_memory",
+            endpoint: "/api/apps/personal-memory/proposals"
+          }),
+          expect.objectContaining({
+            id: "recall_personal_memory",
+            endpoint: "/api/apps/personal-memory/recall"
+          })
+        ])
+      );
+
+      const unauthorized = await fetch(`${endpoint}/proposals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "Do not write", content: "unauthorized" })
+      });
+      expect(unauthorized.status).toBe(401);
+
+      const hermesProposal = await fetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json",
+          "Idempotency-Key": `${memoryId}_hermes_proposal`
+        },
+        body: JSON.stringify({
+          capabilityId: "propose_personal_memory",
+          origin: "hermes",
+          payload: {
+            id: `${memoryId}_hermes`,
+            title: "Hermes personal-memory proposal",
+            content: "This verifies the manifest capability dispatches to the gateway.",
+            provenance: { sourceType: "hermes-run", sourceId: `${memoryId}_run` }
+          }
+        })
+      });
+      expect(hermesProposal.status).toBe(202);
+      expect(await hermesProposal.json()).toMatchObject({
+        accepted: true,
+        dispatch: {
+          dispatched: true,
+          target: "personal-memory",
+          response: { memory: { id: `${memoryId}_hermes`, status: "pending" } }
+        }
+      });
+
+      const proposal = await fetch(`${endpoint}/proposals`, {
+        method: "POST",
+        headers: { Authorization: "Bearer dashboard-token", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: memoryId,
+          title: "Call family on Sunday",
+          content: "A proposed personal reminder, pending review.",
+          kind: "fact",
+          sensitivity: "private",
+          provenance: { sourceType: "operator-note", sourceId: "manual_memory_test" }
+        })
+      });
+      expect(proposal.status).toBe(202);
+      expect(await proposal.json()).toMatchObject({ memory: { id: memoryId, status: "pending" } });
+
+      const duplicate = await fetch(`${endpoint}/proposals`, {
+        method: "POST",
+        headers: { Authorization: "Bearer dashboard-token", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: memoryId,
+          title: "Overwrite attempt",
+          content: "This must not overwrite a pending or reviewed memory.",
+          provenance: { sourceType: "operator-note", sourceId: "duplicate_test" }
+        })
+      });
+      expect(duplicate.status).toBe(409);
+      expect(await duplicate.json()).toMatchObject({ reason: "personal_memory_already_exists" });
+
+      const publicDashboard = await fetch(`http://127.0.0.1:${apiPort}/api/dashboard`);
+      expect(publicDashboard.status).toBe(200);
+      const publicDashboardBody = await publicDashboard.json();
+      expect(publicDashboardBody.apps.items).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ app: "personal-memory" })])
+      );
+      expect(JSON.stringify(publicDashboardBody)).not.toContain(
+        "A proposed personal reminder, pending review."
+      );
+
+      const privateItems = await fetch(`${endpoint}/items?type=memory`);
+      expect(privateItems.status).toBe(401);
+
+      const bypass = await fetch(`${endpoint}/events`, {
+        method: "POST",
+        headers: { Authorization: "Bearer dashboard-token", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: `${memoryId}_bypass`,
+          status: "active",
+          title: "Bypass approval",
+          payload: { status: "active" }
+        })
+      });
+      expect(bypass.status).toBe(400);
+      expect(await bypass.json()).toMatchObject({ error: "personal_memory_direct_event_rejected" });
+
+      const missingApproval = await fetch(`${endpoint}/decisions`, {
+        method: "POST",
+        headers: { Authorization: "Bearer dashboard-token", "Content-Type": "application/json" },
+        body: JSON.stringify({ memoryId, action: "approve" })
+      });
+      expect(missingApproval.status).toBe(409);
+
+      const approved = await fetch(`${endpoint}/decisions`, {
+        method: "POST",
+        headers: { Authorization: "Bearer dashboard-token", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          memoryId,
+          action: "approve",
+          approvedBy: "michaelmwu",
+          approvalId: `${memoryId}_approval`
+        })
+      });
+      expect(approved.status).toBe(202);
+
+      const missingRecallQuery = await fetch(`${endpoint}/recall`, {
+        method: "POST",
+        headers: { Authorization: "Bearer dashboard-token", "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "   " })
+      });
+      expect(missingRecallQuery.status).toBe(400);
+      expect(await missingRecallQuery.json()).toMatchObject({
+        reason: "missing_memory_recall_query"
+      });
+
+      const recalled = await fetch(`${endpoint}/recall`, {
+        method: "POST",
+        headers: { Authorization: "Bearer dashboard-token", "Content-Type": "application/json" },
+        body: JSON.stringify({ query: "family Sunday" })
+      });
+      expect(recalled.status).toBe(200);
+      const recallBody = await recalled.json();
+      const recalledMemory = recallBody.memories.find((memory) => memory.id === memoryId);
+      expect(recalledMemory).toMatchObject({
+        id: memoryId,
+        provenance: { sourceId: "manual_memory_test" }
+      });
+
+      const context = await fetch(`http://127.0.0.1:${apiPort}/api/hermes/memory/context`, {
+        headers: { Authorization: "Bearer dashboard-token" }
+      });
+      const contextText = await context.text();
+      expect(context.status).toBe(200);
+      expect(contextText).not.toContain("Call family on Sunday");
+      expect(JSON.parse(contextText)).toMatchObject({
+        policy: { approvalRequired: true, recall: "approved-unexpired-only" }
+      });
     } finally {
       await closeServer(apiServer);
     }
