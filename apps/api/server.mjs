@@ -1,56 +1,38 @@
-import http from "node:http";
 import { readFile } from "node:fs/promises";
+import http from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { hostDashboardSummary } from "../../packages/contracts/index.mjs";
 import { dashboardFixture } from "../../packages/fixtures/dashboard.mjs";
 import {
-  createHermesAction,
-  hermesCapabilities,
-  hermesContextFromDashboard,
-  normalizeHermesEvent
-} from "../../packages/integrations/hermes.mjs";
-import {
-  approveHermesBridgeRun,
-  bridgePromptForAction,
-  createHermesBridgeRun,
-  getHermesBridgeCapabilities,
-  getHermesBridgeRun,
-  hermesBridgeStatus,
-  HermesBridgeLoopError,
-  openHermesBridgeRunEvents,
-  startHermesBridgeRun,
-  stopHermesBridgeRun,
-  streamHermesBridgeRunEvents
-} from "../../packages/integrations/hermes-bridge.mjs";
-import {
-  applyPrStatus,
+  applyCodingTaskControl,
   applyCodingTaskReview,
   applyCodingTaskValidation,
-  applyCodingTaskControl,
+  applyPrStatus,
   archiveCodingTask,
   claimCodingAgentRunRequest,
+  classifyCodingAgentRisk,
   codingAgentCampaignItem,
   codingAgentDeliveryItem,
   codingAgentExecutorPayload,
   codingAgentGoalItem,
-  codingTaskMissionApproved,
   codingAgentPolicyFromEnv,
   codingAgentRunRequestItem,
   codingAgentScheduleItem,
-  codingTaskLatestRunId,
   codingTaskItem,
-  classifyCodingAgentRisk,
+  codingTaskLatestRunId,
+  codingTaskMissionApproved,
   completeCodingAgentRunRequest,
   enqueueCodingTaskItems,
-  normalizeCodingAgentSignal,
   normalizeCodingAgentFinding,
+  normalizeCodingAgentRegressionMemory,
+  normalizeCodingAgentSignal,
   normalizeCodingTaskMission,
   normalizeCodingTaskModelPolicy,
-  normalizeCodingAgentRegressionMemory,
   pickupExistingPrTask,
-  planCodingAgentGoalMutation,
   planCodingAgentAutomationTick,
+  planCodingAgentGoalMutation,
   planCodingTaskIntake,
   planCodingTaskQueue,
   planPrMaintenance,
@@ -66,10 +48,11 @@ import {
   visibleCodingTasks
 } from "../../packages/integrations/coding-agent.mjs";
 import {
-  integrationCatalog,
-  isSupportedSourceAdapter,
-  normalizeSourceEvent
-} from "../../packages/integrations/sources.mjs";
+  createHermesAction,
+  hermesCapabilities,
+  hermesContextFromDashboard,
+  normalizeHermesEvent
+} from "../../packages/integrations/hermes.mjs";
 import {
   applyPersonalMemoryDecision,
   PERSONAL_MEMORY_APP_ID,
@@ -78,15 +61,24 @@ import {
   recallPersonalMemories
 } from "../../packages/integrations/personal-memory.mjs";
 import {
-  genericAppItemsFromDashboard,
-  loadPluginRegistry
-} from "../../packages/integrations/registry.mjs";
+  approveHermesBridgeRun,
+  bridgePromptForAction,
+  createHermesBridgeRun,
+  getHermesBridgeCapabilities,
+  getHermesBridgeRun,
+  HermesBridgeLoopError,
+  hermesBridgeStatus,
+  openHermesBridgeRunEvents,
+  startHermesBridgeRun,
+  stopHermesBridgeRun,
+  streamHermesBridgeRunEvents
+} from "../../packages/integrations/hermes-bridge.mjs";
 import {
   createHotelSavedSearch,
   hotelRateDropAlert,
   hotelRateFailureAlert,
-  hotelRateWatchFromJobResponse,
   hotelRatesConfig,
+  hotelRateWatchFromJobResponse,
   hotelReservationIsWatchable,
   hotelSavedSearchName,
   hotelSearchRequestFromReservation,
@@ -105,6 +97,16 @@ import {
   verifyPlaidWebhook
 } from "../../packages/integrations/plaid.mjs";
 import {
+  genericAppItemsFromDashboard,
+  loadPluginRegistry
+} from "../../packages/integrations/registry.mjs";
+import {
+  integrationCatalog,
+  isSupportedSourceAdapter,
+  normalizeSourceEvent
+} from "../../packages/integrations/sources.mjs";
+import { createCodingAgentStore } from "../../packages/storage/coding-agent-store.mjs";
+import {
   applyHotelRateWatch,
   applyPlaidSync,
   dashboardStorePath,
@@ -115,13 +117,12 @@ import {
   patchHermesAction,
   patchHotelReservation,
   upsertAppItem,
-  upsertPlaidItem,
-  upsertHotelReservation,
   upsertHermesAction,
   upsertHermesEvent,
-  upsertNormalizedEvent
+  upsertHotelReservation,
+  upsertNormalizedEvent,
+  upsertPlaidItem
 } from "../../packages/storage/dashboard-store.mjs";
-import { createCodingAgentStore } from "../../packages/storage/coding-agent-store.mjs";
 import {
   appendRunEvidenceEvent,
   captureRunGitDiff,
@@ -1708,6 +1709,11 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
 
       if (request.method === "GET" && url.pathname === "/api/dashboard") {
         json(response, 200, await dashboardSnapshot());
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/host-dashboard/summary") {
+        json(response, 200, hostDashboardSummary(await dashboardSnapshot()));
         return;
       }
 
