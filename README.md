@@ -15,6 +15,8 @@ The first version is runnable with local fixtures. It models the dashboard you d
 - `packages/contracts`: shared dashboard contract builders.
 - `packages/integrations`: Hermes, OpenClaw, travel, finance, and intake adapter boundaries.
 - `packages/fixtures`: realistic development data.
+- `adapters/`: small native views for supported Hermes hosts; these do not
+  replace the standalone web application.
 - `scripts/`: Conductor-aware worktree ports, dev launch, archive, stop, and smoke-test scripts.
 - `dashboard.config.yaml`: enabled app registry and panel ordering.
 
@@ -58,6 +60,32 @@ The dashboard now has placeholder contracts for the next personal surfaces:
 These are fixture-backed today. Real provider code should land in
 `packages/integrations/` first, then flow through `/api/dashboard` without
 provider-specific parsing in the web app.
+
+## Host Dashboard Adapters
+
+The standalone dashboard remains the complete application. `adapters/` contains
+small, read-only native views for hosts that already own the user's session:
+
+- `adapters/hermes-dashboard`: an official Hermes Dashboard plugin. Its browser
+  code uses the Hermes SDK session path and its server-side plugin route reads
+  only the dashboard's loopback summary endpoint.
+- `adapters/hermes-webui`: an experimental Hermes WebUI extension. It renders a
+  native panel through WebUI's fixed, consented loopback-sidecar proxy rather
+  than embedding the standalone application.
+
+Both adapters consume `GET /api/host-dashboard/summary`, a
+`host-dashboard-summary.v1` projection containing health, metrics, alerts,
+travel, and task status. It deliberately excludes the raw transactions,
+accounts, Hermes actions, and provider payloads returned by `/api/dashboard`.
+The endpoint is intended for a same-host loopback adapter; it is not a new
+public API surface.
+
+The official Hermes adapter inherits the Hermes Dashboard login. Hermes WebUI
+is a separate application with separate authentication and requires explicit
+sidecar-proxy approval in WebUI Settings. Neither adapter exposes
+`PERSONAL_DASHBOARD_API_TOKEN`, Hermes cookies, or Bridge credentials to browser
+JavaScript. The first release is read-only; host-originated mutations remain
+out of scope until they have a dedicated scoped service identity and audit path.
 
 Plugin-facing endpoints:
 

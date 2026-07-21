@@ -1,0 +1,170 @@
+.personal-dashboard-hermes-page {
+  color: var(--color-foreground, inherit);
+  margin: 0 auto;
+  max-width: 1100px;
+  padding: calc(1.5rem * var(--spacing-mul, 1));
+}
+
+.personal-dashboard-hermes-header {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.personal-dashboard-hermes-title,
+.personal-dashboard-hermes-section-title {
+  color: var(--color-card-foreground, var(--color-foreground, inherit));
+  margin: 0;
+}
+
+.personal-dashboard-hermes-title {
+  font-size: 1.6rem;
+  letter-spacing: -0.02em;
+}
+
+.personal-dashboard-hermes-health {
+  align-items: baseline;
+  background: var(--color-card, transparent);
+  border: 1px solid var(--color-border, currentColor);
+  border-radius: var(--radius, 0.5rem);
+  display: flex;
+  gap: 0.5rem;
+  max-width: 34rem;
+  padding: 0.625rem 0.75rem;
+}
+
+.personal-dashboard-hermes-health[data-level="healthy"],
+.personal-dashboard-hermes-health[data-level="ok"] {
+  border-color: var(--color-success, var(--color-border, currentColor));
+}
+
+.personal-dashboard-hermes-health[data-level="warning"] {
+  border-color: var(--color-warning, var(--color-border, currentColor));
+}
+
+.personal-dashboard-hermes-health[data-level="critical"],
+.personal-dashboard-hermes-health[data-level="error"] {
+  border-color: var(--color-destructive, var(--color-border, currentColor));
+}
+
+.personal-dashboard-hermes-updated,
+.personal-dashboard-hermes-status,
+.personal-dashboard-hermes-empty,
+.personal-dashboard-hermes-item-detail,
+.personal-dashboard-hermes-metric-label,
+.personal-dashboard-hermes-metric-delta {
+  color: var(--color-muted-foreground, currentColor);
+}
+
+.personal-dashboard-hermes-updated {
+  font-size: 0.825rem;
+  margin: 0.4rem 0 1.25rem;
+}
+
+.personal-dashboard-hermes-status {
+  margin: 1rem 0;
+}
+
+.personal-dashboard-hermes-metrics {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  margin-bottom: 1.25rem;
+}
+
+.personal-dashboard-hermes-metric,
+.personal-dashboard-hermes-section {
+  background: var(--color-card, transparent);
+  border: 1px solid var(--color-border, currentColor);
+  border-radius: var(--radius, 0.5rem);
+}
+
+.personal-dashboard-hermes-metric {
+  display: grid;
+  gap: 0.25rem;
+  min-height: 5.75rem;
+  padding: 0.9rem;
+}
+
+.personal-dashboard-hermes-metric-label,
+.personal-dashboard-hermes-metric-delta {
+  font-size: 0.8rem;
+}
+
+.personal-dashboard-hermes-metric-value {
+  font-size: 1.35rem;
+}
+
+.personal-dashboard-hermes-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+}
+
+.personal-dashboard-hermes-section {
+  min-width: 0;
+  padding: 1rem;
+}
+
+.personal-dashboard-hermes-section-title {
+  font-size: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.personal-dashboard-hermes-list {
+  display: grid;
+  gap: 0.65rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.personal-dashboard-hermes-list-item {
+  border-top: 1px solid var(--color-border, currentColor);
+  display: grid;
+  gap: 0.2rem;
+  padding-top: 0.65rem;
+}
+
+.personal-dashboard-hermes-list-item:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.personal-dashboard-hermes-item-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.personal-dashboard-hermes-item-detail,
+.personal-dashboard-hermes-empty {
+  font-size: 0.825rem;
+  line-height: 1.35;
+}
+
+.personal-dashboard-hermes-empty {
+  margin: 0;
+}
+
+.personal-dashboard-hermes-retry {
+  background: var(--color-primary, transparent);
+  border: 1px solid var(--color-primary, currentColor);
+  border-radius: var(--radius, 0.5rem);
+  color: var(--color-primary-foreground, inherit);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.45rem 0.8rem;
+}
+
+@media (max-width: 640px) {
+  .personal-dashboard-hermes-page {
+    padding: 1rem;
+  }
+
+  .personal-dashboard-hermes-health {
+    max-width: none;
+    width: 100%;
+  }
+}

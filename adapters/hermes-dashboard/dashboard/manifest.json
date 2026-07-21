@@ -1,0 +1,14 @@
+{
+  "name": "personal-dashboard",
+  "label": "Personal Dashboard",
+  "description": "Read-only personal finance, travel, and operations summary.",
+  "icon": "BarChart3",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/personal-dashboard",
+    "position": "after:skills"
+  },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

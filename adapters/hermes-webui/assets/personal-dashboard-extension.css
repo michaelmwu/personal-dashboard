@@ -1,0 +1,205 @@
+.personal-dashboard-webui-toggle {
+  background: #0f766e;
+  border: 1px solid #2dd4bf;
+  border-radius: 999px;
+  bottom: 1rem;
+  color: #f0fdfa;
+  cursor: pointer;
+  font:
+    600 0.8rem / 1 system-ui,
+    sans-serif;
+  padding: 0.65rem 0.85rem;
+  position: fixed;
+  right: 1rem;
+  z-index: 1000;
+}
+
+.personal-dashboard-webui-toggle:hover,
+.personal-dashboard-webui-toggle:focus-visible {
+  background: #115e59;
+  outline: 2px solid #5eead4;
+  outline-offset: 2px;
+}
+
+.personal-dashboard-webui-panel[hidden] {
+  /* biome-ignore lint/complexity/noImportantStyles: Host styles can override the native hidden rule. */
+  display: none !important;
+}
+
+.personal-dashboard-webui-panel {
+  box-sizing: border-box;
+  color: var(--text-primary, #e5e7eb);
+  margin: 0 auto;
+  max-width: 1180px;
+  padding: 1.5rem;
+  width: 100%;
+}
+
+.personal-dashboard-webui-header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.personal-dashboard-webui-title,
+.personal-dashboard-webui-section-title {
+  color: inherit;
+  margin: 0;
+}
+
+.personal-dashboard-webui-title {
+  font-size: 1.65rem;
+}
+
+.personal-dashboard-webui-controls {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.personal-dashboard-webui-button {
+  background: var(--surface-secondary, #1f2937);
+  border: 1px solid var(--border-color, #475569);
+  border-radius: 0.45rem;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.45rem 0.7rem;
+}
+
+.personal-dashboard-webui-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.personal-dashboard-webui-status,
+.personal-dashboard-webui-empty,
+.personal-dashboard-webui-item-detail,
+.personal-dashboard-webui-metric-label,
+.personal-dashboard-webui-metric-delta {
+  color: var(--text-secondary, #a1a1aa);
+}
+
+.personal-dashboard-webui-status {
+  font-size: 0.875rem;
+  margin: 0.55rem 0 1.1rem;
+}
+
+.personal-dashboard-webui-content {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.personal-dashboard-webui-health,
+.personal-dashboard-webui-metric,
+.personal-dashboard-webui-section {
+  background: var(--surface-primary, #111827);
+  border: 1px solid var(--border-color, #334155);
+  border-radius: 0.6rem;
+}
+
+.personal-dashboard-webui-health {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  padding: 0.8rem 0.95rem;
+}
+
+.personal-dashboard-webui-health[data-level="healthy"],
+.personal-dashboard-webui-health[data-level="ok"] {
+  border-color: #34d399;
+}
+
+.personal-dashboard-webui-health[data-level="warning"] {
+  border-color: #fbbf24;
+}
+
+.personal-dashboard-webui-health[data-level="critical"],
+.personal-dashboard-webui-health[data-level="error"] {
+  border-color: #fb7185;
+}
+
+.personal-dashboard-webui-metrics {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.personal-dashboard-webui-metric {
+  display: grid;
+  gap: 0.3rem;
+  min-height: 5.75rem;
+  padding: 0.85rem;
+}
+
+.personal-dashboard-webui-metric-label,
+.personal-dashboard-webui-metric-delta {
+  font-size: 0.8rem;
+}
+
+.personal-dashboard-webui-metric-value {
+  font-size: 1.35rem;
+}
+
+.personal-dashboard-webui-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.personal-dashboard-webui-section {
+  min-width: 0;
+  padding: 0.95rem;
+}
+
+.personal-dashboard-webui-section-title {
+  font-size: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.personal-dashboard-webui-list {
+  display: grid;
+  gap: 0.65rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.personal-dashboard-webui-list-item {
+  border-top: 1px solid var(--border-color, #334155);
+  display: grid;
+  gap: 0.2rem;
+  padding-top: 0.65rem;
+}
+
+.personal-dashboard-webui-list-item:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.personal-dashboard-webui-item-title {
+  font-size: 0.9rem;
+}
+
+.personal-dashboard-webui-item-detail,
+.personal-dashboard-webui-empty {
+  font-size: 0.825rem;
+  line-height: 1.35;
+}
+
+.personal-dashboard-webui-empty {
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .personal-dashboard-webui-panel {
+    padding: 1rem;
+  }
+
+  .personal-dashboard-webui-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

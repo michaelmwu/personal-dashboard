@@ -7,6 +7,9 @@ npm-debug.log*
 !.env.example
 .sops.yaml
 dist/
+# Hermes Dashboard loads this plugin bundle directly; version it with the adapter.
+!adapters/hermes-dashboard/dashboard/dist/
+!adapters/hermes-dashboard/dashboard/dist/**
 build/
 coverage/
 *.log
