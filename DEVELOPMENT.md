@@ -47,7 +47,11 @@ scripts/archive-workspace.sh --dry-run
 
 ## Framework Endpoints
 
-- `GET /api/dashboard`: full fixture-backed dashboard contract.
+- `GET /api/dashboard`: full dashboard contract (fixtures are local-only by
+  default; production starts empty until live data arrives).
+- `GET /api/host-dashboard/overview`, `/hotel-rate-finder`, and
+  `/asia-travel-deals`: bounded read-only `host-dashboard-viewport.v1`
+  projections for the native Hermes plugin.
 - `GET /api/integrations/catalog`: adapter roadmap and source repo mapping.
 - `GET /api/travel`: travel watches, deal feed, and reservations.
 - `GET /api/finance`: Plaid placeholder account sync surface.

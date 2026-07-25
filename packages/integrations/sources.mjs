@@ -108,28 +108,80 @@ export function normalizeFlightSearchPayload(payload) {
   });
 }
 
+function objectPayload(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+/**
+ * Asia Travel Deals sends a versioned webhook envelope whose candidate lives
+ * under `candidate`.  The feed endpoint returns that same candidate shape
+ * directly.  Normalize both at this boundary so no application view needs to
+ * know about provider-specific webhook structure.
+ */
+function asiaTravelDealCandidate(payload) {
+  const envelope = objectPayload(payload);
+  const nestedData = objectPayload(envelope.data);
+  const explicitCandidate = objectPayload(envelope.candidate);
+  const nestedCandidate = objectPayload(nestedData.candidate);
+  const candidate = Object.keys(explicitCandidate).length
+    ? explicitCandidate
+    : Object.keys(nestedCandidate).length
+      ? nestedCandidate
+      : Object.keys(nestedData).length
+        ? nestedData
+        : envelope;
+  return {
+    ...candidate,
+    candidateId: candidate.candidateId ?? envelope.candidateId,
+    dealGroupId: candidate.dealGroupId ?? envelope.dealGroupId,
+    status: candidate.status ?? envelope.status,
+    score: candidate.score ?? envelope.score,
+    adminUrl: candidate.adminUrl ?? envelope.adminUrl,
+    updatedAt: candidate.updatedAt ?? envelope.occurredAt
+  };
+}
+
 export function normalizeAsiaDealPayload(payload) {
-  const originAirports = payload.originAirports ?? payload.origin_airports ?? [];
-  const destinationAirports = payload.destinationAirports ?? payload.destination_airports ?? [];
+  const candidate = asiaTravelDealCandidate(payload);
+  const originAirports = candidate.originAirports ?? candidate.origin_airports ?? [];
+  const destinationAirports = candidate.destinationAirports ?? candidate.destination_airports ?? [];
   const route =
-    payload.route ??
+    candidate.route ??
     `${originAirports.join(",") || "Asia"}-${destinationAirports.join(",") || "deal"}`;
-  const score = Number(payload.dealScore ?? payload.deal_score ?? payload.score ?? 0);
-  const status = payload.status ?? "candidate";
+  const score = Number(candidate.dealScore ?? candidate.deal_score ?? candidate.score ?? 0);
+  const status = candidate.status ?? candidate.reviewStatus ?? "candidate";
+  const priceUsd = candidate.priceUsd ?? candidate.price_usd;
+  const priceAmount = candidate.priceAmount ?? candidate.price_amount;
+  const hasUsdPrice = priceUsd !== undefined && priceUsd !== null;
 
   return travelDeal({
-    id: payload.id ?? payload.dealId ?? payload.deal_id ?? `deal_${Date.now()}`,
-    title: payload.title ?? payload.headline ?? "Untitled travel deal",
+    id:
+      candidate.id ??
+      candidate.candidateId ??
+      candidate.dealId ??
+      candidate.deal_id ??
+      `deal_${Date.now()}`,
+    title: candidate.title ?? candidate.headline ?? "Untitled travel deal",
     route,
-    price: Number(payload.price ?? payload.priceUsd ?? payload.price_usd ?? 0),
-    source: payload.source ?? "asia-travel-deals",
-    confidence: payload.confidence ?? (score ? `score ${score}` : "review"),
+    price: Number(candidate.price ?? priceUsd ?? priceAmount ?? 0),
+    currency: candidate.currency ?? (hasUsdPrice ? "USD" : (candidate.priceCurrency ?? "USD")),
+    source: candidate.source ?? "asia-travel-deals",
+    confidence: candidate.confidence ?? (score ? `score ${score}` : "review"),
     status,
-    dealGroupId: payload.dealGroupId ?? payload.deal_group_id,
+    dealGroupId: candidate.dealGroupId ?? candidate.deal_group_id,
     score,
-    verificationStatus: payload.verificationStatus ?? payload.verification_status ?? status,
-    sourceUrl: payload.sourceUrl ?? payload.source_url ?? payload.reviewUrl ?? payload.review_url,
-    updatedAt: payload.updatedAt ?? payload.updated_at
+    verificationStatus:
+      candidate.verificationStatus ??
+      candidate.verification_status ??
+      candidate.reviewStatus ??
+      status,
+    sourceUrl:
+      candidate.sourceUrl ??
+      candidate.source_url ??
+      candidate.reviewUrl ??
+      candidate.review_url ??
+      candidate.adminUrl,
+    updatedAt: candidate.updatedAt ?? candidate.updated_at
   });
 }
 
