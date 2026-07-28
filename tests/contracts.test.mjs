@@ -477,14 +477,21 @@ describe("contracts", () => {
 
   test("host adapter bundles keep browser auth at the host boundary", async () => {
     const adapterRoot = join(process.cwd(), "adapters");
-    const [hermesManifestRaw, hermesProxy, hermesScript, webuiManifestRaw, webuiScript] =
-      await Promise.all([
-        readFile(join(adapterRoot, "hermes-dashboard/dashboard/manifest.json"), "utf8"),
-        readFile(join(adapterRoot, "hermes-dashboard/dashboard/plugin_api.py"), "utf8"),
-        readFile(join(adapterRoot, "hermes-dashboard/dashboard/dist/index.js"), "utf8"),
-        readFile(join(adapterRoot, "hermes-webui/manifest.json"), "utf8"),
-        readFile(join(adapterRoot, "hermes-webui/assets/personal-dashboard-extension.js"), "utf8")
-      ]);
+    const [
+      hermesManifestRaw,
+      hermesProxy,
+      hermesScript,
+      hermesStyle,
+      webuiManifestRaw,
+      webuiScript
+    ] = await Promise.all([
+      readFile(join(adapterRoot, "hermes-dashboard/dashboard/manifest.json"), "utf8"),
+      readFile(join(adapterRoot, "hermes-dashboard/dashboard/plugin_api.py"), "utf8"),
+      readFile(join(adapterRoot, "hermes-dashboard/dashboard/dist/index.js"), "utf8"),
+      readFile(join(adapterRoot, "hermes-dashboard/dashboard/dist/style.css"), "utf8"),
+      readFile(join(adapterRoot, "hermes-webui/manifest.json"), "utf8"),
+      readFile(join(adapterRoot, "hermes-webui/assets/personal-dashboard-extension.js"), "utf8")
+    ]);
     const hermesManifest = JSON.parse(hermesManifestRaw);
     const webuiManifest = JSON.parse(webuiManifestRaw);
 
@@ -504,8 +511,12 @@ describe("contracts", () => {
     expect(hermesScript).toContain('"/api/plugins/personal-dashboard/overview"');
     expect(hermesScript).toContain('"/api/plugins/personal-dashboard/hotel-rate-finder"');
     expect(hermesScript).toContain('"/api/plugins/personal-dashboard/asia-travel-deals"');
+    expect(hermesScript).toContain("personal-dashboard-hermes-porthole");
     expect(hermesScript).not.toContain("PERSONAL_DASHBOARD_API_TOKEN");
     expect(hermesScript).not.toContain("iframe");
+    expect(hermesStyle).toContain("var(--font-sans");
+    expect(hermesStyle).toContain("var(--color-card");
+    expect(hermesStyle).not.toContain("Instrument Sans");
 
     expect(webuiManifest).toMatchObject({
       id: "personal-dashboard",

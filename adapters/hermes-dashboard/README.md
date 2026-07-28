@@ -1,6 +1,6 @@
 # Personal Dashboard Hermes Dashboard adapter
 
-This is a trusted, read-only [Hermes Dashboard plugin](https://hermes-agent.nousresearch.com/docs/user-guide/features/extending-the-dashboard). It renders native Overview, Hotel Rate Finder, and Asia Travel Deals tabs; it does not embed the standalone dashboard and it exposes no mutations.
+This is a trusted, read-only [Hermes Dashboard plugin](https://hermes-agent.nousresearch.com/docs/user-guide/features/extending-the-dashboard). It renders a Hermes-native MooHQ porthole home: an attention-first overview with small, read-only windows into Finance, Trips, Hotel Rate Finder, Asia Travel Deals, Coding, and Memory. It does not embed the standalone dashboard and it exposes no mutations.
 
 ## Install
 
@@ -13,7 +13,7 @@ mkdir -p "$plugin_dir"
 cp -R adapters/hermes-dashboard/. "$plugin_dir/"
 ```
 
-Set `PERSONAL_DASHBOARD_PLUGIN_API_BASE_URL` in the environment of `hermes dashboard` only when the dashboard API is not on its default `http://127.0.0.1:8810` origin. The adapter accepts only literal loopback addresses (or `localhost`), an `http`/`https` scheme, and an origin with no path, query, credentials, or fragment. It appends only a fixed allowlist of host paths itself: the legacy summary plus the three viewport endpoints.
+Set `PERSONAL_DASHBOARD_PLUGIN_API_BASE_URL` in the environment of `hermes dashboard` only when the dashboard API is not on its default `http://127.0.0.1:8810` origin. The adapter accepts only literal loopback addresses (or `localhost`), an `http`/`https` scheme, and an origin with no path, query, credentials, or fragment. It appends only a fixed allowlist of host paths itself: the legacy summary plus the three viewport endpoints. The browser loads those projections together so a failed source renders as a degraded porthole rather than appearing empty.
 
 Restart `hermes dashboard` after installation because Hermes mounts plugin API
 routes at startup. A UI-only rescan is not enough for `plugin_api.py`.
