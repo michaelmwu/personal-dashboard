@@ -489,6 +489,7 @@ describe("contracts", () => {
 
     expect(hermesManifest).toMatchObject({
       name: "personal-dashboard",
+      label: "MooHQ",
       entry: "dist/index.js",
       api: "plugin_api.py",
       tab: { path: "/personal-dashboard" }

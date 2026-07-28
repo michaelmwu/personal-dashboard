@@ -1,6 +1,6 @@
 {
   "name": "personal-dashboard",
-  "label": "Personal Dashboard",
+  "label": "MooHQ",
   "description": "Read-only overview, hotel rate, and Asia travel deal viewports.",
   "icon": "BarChart3",
   "version": "0.1.0",
