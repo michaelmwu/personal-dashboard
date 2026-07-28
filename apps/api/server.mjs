@@ -3,8 +3,8 @@ import http from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { hostDashboardSummary } from "../../packages/contracts/index.mjs";
-import { dashboardFixture } from "../../packages/fixtures/dashboard.mjs";
+import { hostDashboardSummary, hostDashboardViewport } from "../../packages/contracts/index.mjs";
+import { dashboardSeed } from "../../packages/fixtures/dashboard.mjs";
 import {
   applyCodingTaskControl,
   applyCodingTaskReview,
@@ -112,6 +112,7 @@ import {
   applyPlaidSync,
   dashboardStorePath,
   findHermesActionByIdempotencyKey,
+  getSourceState,
   listAppItems,
   listPlaidItems,
   loadDashboard,
@@ -122,7 +123,8 @@ import {
   upsertHermesEvent,
   upsertHotelReservation,
   upsertNormalizedEvent,
-  upsertPlaidItem
+  upsertPlaidItem,
+  upsertSourceState
 } from "../../packages/storage/dashboard-store.mjs";
 import {
   appendRunEvidenceEvent,
@@ -162,8 +164,26 @@ class CodingTaskExecutionLocationError extends Error {
   }
 }
 
+const ASIA_TRAVEL_DEALS_SOURCE_ID = "asia-travel-deals";
+const HOTEL_RATE_FINDER_SOURCE_ID = "hotel-rate-finder";
+
+function dashboardVisibleSourceStates(sourceStates = {}) {
+  const states =
+    sourceStates && typeof sourceStates === "object" && !Array.isArray(sourceStates)
+      ? sourceStates
+      : {};
+  return Object.fromEntries(
+    Object.entries(states)
+      .filter(([, state]) => state && typeof state === "object" && !Array.isArray(state))
+      .map(([source, state]) => {
+        const { cursor: _cursor, ...visibleState } = state;
+        return [source, visibleState];
+      })
+  );
+}
+
 async function dashboardSnapshot() {
-  const dashboard = await loadDashboard(dashboardFixture(), storePath);
+  const dashboard = await loadDashboard(dashboardSeed(), storePath);
   const transactionStats = transactionSummary(dashboard.transactions, dashboard.finance.accounts);
   const registry = await pluginRegistry();
   const registryItems = registry.apps.flatMap((app) =>
@@ -178,6 +198,7 @@ async function dashboardSnapshot() {
   ];
   return {
     ...dashboard,
+    sourceStates: dashboardVisibleSourceStates(dashboard.sourceStates),
     finance: {
       ...dashboard.finance,
       transactions: transactionStats
@@ -194,6 +215,52 @@ async function dashboardSnapshot() {
         : dashboard.hermes.capabilities
     }
   };
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function isoTimestamp(value) {
+  const timestamp = nonEmptyString(value);
+  return timestamp && !Number.isNaN(Date.parse(timestamp)) ? timestamp : undefined;
+}
+
+function asiaTravelDealsCursor(value) {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const cursor = value.trim();
+  return cursor && cursor.length <= 512 ? cursor : undefined;
+}
+
+function asiaTravelDealsSourceState(payload = {}) {
+  const statePayload =
+    payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
+  const status = nonEmptyString(statePayload.status)?.toLowerCase();
+  const state = {
+    ...(status && ["active", "empty", "error", "syncing"].includes(status) ? { status } : {}),
+    ...(isoTimestamp(statePayload.lastSuccessAt ?? statePayload.last_success_at)
+      ? { lastSuccessAt: isoTimestamp(statePayload.lastSuccessAt ?? statePayload.last_success_at) }
+      : {}),
+    ...(isoTimestamp(statePayload.lastAttemptAt ?? statePayload.last_attempt_at)
+      ? { lastAttemptAt: isoTimestamp(statePayload.lastAttemptAt ?? statePayload.last_attempt_at) }
+      : {}),
+    ...(isoTimestamp(statePayload.latestItemAt ?? statePayload.latest_item_at)
+      ? { latestItemAt: isoTimestamp(statePayload.latestItemAt ?? statePayload.latest_item_at) }
+      : {}),
+    ...(Number.isInteger(statePayload.itemCount) && statePayload.itemCount >= 0
+      ? { itemCount: statePayload.itemCount }
+      : {})
+  };
+  if (Object.hasOwn(statePayload, "cursor") && statePayload.cursor === null) {
+    return { ...state, cursor: null };
+  }
+  const cursor = asiaTravelDealsCursor(statePayload.cursor);
+  return cursor === undefined ? state : { ...state, cursor };
 }
 
 async function pluginRegistry() {
@@ -1415,7 +1482,12 @@ async function runHotelRateReservation(reservation, { forceRefresh } = {}) {
 }
 
 async function syncHotelRateReservations({ reservationId, forceRefresh } = {}) {
+  const attemptedAt = new Date().toISOString();
   if (!isHotelRatesConfigured(hotelRateFinderConfig)) {
+    await upsertSourceState(storePath, HOTEL_RATE_FINDER_SOURCE_ID, {
+      status: "error",
+      lastAttemptAt: attemptedAt
+    });
     return {
       synced: false,
       reason: "missing_hotel_rate_finder_api_base_url",
@@ -1426,6 +1498,12 @@ async function syncHotelRateReservations({ reservationId, forceRefresh } = {}) {
 
   const reservations = activeHotelRateReservations(await dashboardSnapshot(), { reservationId });
   if (reservations.length === 0) {
+    await upsertSourceState(storePath, HOTEL_RATE_FINDER_SOURCE_ID, {
+      status: "empty",
+      lastAttemptAt: attemptedAt,
+      lastSuccessAt: new Date().toISOString(),
+      itemCount: 0
+    });
     return {
       synced: false,
       reason: reservationId
@@ -1439,8 +1517,15 @@ async function syncHotelRateReservations({ reservationId, forceRefresh } = {}) {
   for (const reservation of reservations) {
     results.push(await runHotelRateReservation(reservation, { forceRefresh }));
   }
+  const synced = results.every((result) => result.synced);
+  await upsertSourceState(storePath, HOTEL_RATE_FINDER_SOURCE_ID, {
+    status: synced ? "active" : "error",
+    lastAttemptAt: attemptedAt,
+    ...(synced ? { lastSuccessAt: new Date().toISOString() } : {}),
+    itemCount: results.length
+  });
   return {
-    synced: results.every((result) => result.synced),
+    synced,
     reservationCount: reservations.length,
     results
   };
@@ -1718,7 +1803,7 @@ async function dispatchDeterministicCapability(action, capability) {
   }
 
   const response = await fetch(
-    `${asiaTravelDealsApiBaseUrl.replace(/\/$/, "")}/deals/${encodeURIComponent(dealId)}/verify`,
+    `${asiaTravelDealsApiBaseUrl.replace(/\/$/, "")}/private/dashboard/candidates/${encodeURIComponent(dealId)}/verify`,
     {
       method: "POST",
       headers: {
@@ -1918,6 +2003,21 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         return;
       }
 
+      if (request.method === "GET" && url.pathname === "/api/host-dashboard/overview") {
+        json(response, 200, hostDashboardViewport(await dashboardSnapshot(), "overview"));
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/host-dashboard/hotel-rate-finder") {
+        json(response, 200, hostDashboardViewport(await dashboardSnapshot(), "hotel-rate-finder"));
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/host-dashboard/asia-travel-deals") {
+        json(response, 200, hostDashboardViewport(await dashboardSnapshot(), "asia-travel-deals"));
+        return;
+      }
+
       if (request.method === "GET" && url.pathname === "/api/transactions") {
         const dashboard = await dashboardSnapshot();
         json(
@@ -1949,6 +2049,42 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
       if (request.method === "GET" && url.pathname === "/api/integrations/catalog") {
         const registry = await pluginRegistry();
         json(response, 200, { integrations: integrationCatalog(), apps: registry.apps });
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        url.pathname === "/api/integrations/asia-travel-deals/state"
+      ) {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const state = await getSourceState(storePath, ASIA_TRAVEL_DEALS_SOURCE_ID);
+        json(response, 200, {
+          source: ASIA_TRAVEL_DEALS_SOURCE_ID,
+          cursor: asiaTravelDealsCursor(state?.cursor) ?? null,
+          state: state ?? {}
+        });
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/integrations/asia-travel-deals/state"
+      ) {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const state = await upsertSourceState(
+          storePath,
+          ASIA_TRAVEL_DEALS_SOURCE_ID,
+          asiaTravelDealsSourceState(await readJson(request))
+        );
+        json(response, 202, {
+          accepted: true,
+          source: ASIA_TRAVEL_DEALS_SOURCE_ID,
+          cursor: asiaTravelDealsCursor(state?.cursor) ?? null
+        });
         return;
       }
 
@@ -2810,6 +2946,14 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
         const payload = await readJson(request);
         const normalized = normalizeSourceEvent(source, payload);
         await upsertNormalizedEvent(storePath, normalized);
+        if (source === ASIA_TRAVEL_DEALS_SOURCE_ID) {
+          const itemUpdatedAt = isoTimestamp(normalized.value?.updatedAt);
+          await upsertSourceState(storePath, source, {
+            status: "active",
+            lastSuccessAt: new Date().toISOString(),
+            ...(itemUpdatedAt ? { latestItemAt: itemUpdatedAt } : {})
+          });
+        }
         json(response, 202, {
           accepted: true,
           normalized

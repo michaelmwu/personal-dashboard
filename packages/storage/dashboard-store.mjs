@@ -24,6 +24,7 @@ function emptyOverlay() {
     apps: {
       items: []
     },
+    sourceStates: {},
     hermes: {
       actions: []
     }
@@ -130,6 +131,10 @@ export function mergeDashboardOverlay(baseDashboard, overlay) {
       ...baseDashboard.apps,
       items: mergeById(baseDashboard.apps?.items ?? [], overlay.apps?.items ?? [])
     },
+    sourceStates: {
+      ...(baseDashboard.sourceStates ?? {}),
+      ...(overlay.sourceStates ?? {})
+    },
     hermes: {
       ...baseDashboard.hermes,
       actions: mergeById(baseDashboard.hermes.actions, overlay.hermes?.actions ?? [])
@@ -169,6 +174,28 @@ export async function upsertNormalizedEvent(filePath, normalized) {
         break;
     }
     return overlay;
+  });
+}
+
+export async function getSourceState(filePath, source) {
+  const overlay = await readOverlay(filePath);
+  return overlay.sourceStates?.[source];
+}
+
+export async function upsertSourceState(filePath, source, state = {}) {
+  if (!source) {
+    return undefined;
+  }
+  return mutateOverlay(filePath, (overlay) => {
+    overlay.sourceStates = {
+      ...(overlay.sourceStates ?? {}),
+      [source]: {
+        ...(overlay.sourceStates?.[source] ?? {}),
+        ...state,
+        updatedAt: state.updatedAt ?? new Date().toISOString()
+      }
+    };
+    return overlay.sourceStates[source];
   });
 }
 

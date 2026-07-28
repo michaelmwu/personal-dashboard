@@ -316,3 +316,70 @@ export function dashboardFixture() {
     integrations: integrationCatalog()
   });
 }
+
+function envBoolean(value) {
+  return !["0", "false", "no", "off"].includes(String(value).trim().toLowerCase());
+}
+
+/**
+ * Fixture data is useful for local development, but it must never silently
+ * become production data.  A caller can explicitly opt in or out with
+ * DASHBOARD_FIXTURES_ENABLED; otherwise production-like environments start
+ * from an empty, honest dashboard state.
+ */
+export function dashboardFixturesEnabled(env = process.env) {
+  if (env.DASHBOARD_FIXTURES_ENABLED !== undefined && env.DASHBOARD_FIXTURES_ENABLED !== "") {
+    return envBoolean(env.DASHBOARD_FIXTURES_ENABLED);
+  }
+
+  return !["production", "prod"].includes(String(env.ENVIRONMENT ?? "local").toLowerCase());
+}
+
+export function emptyDashboard() {
+  return dashboardContract({
+    health: {
+      level: "unknown",
+      summary: "Waiting for live integration data."
+    },
+    metrics: [],
+    alerts: [],
+    transactions: [],
+    rewards: {
+      period: "Current period",
+      estimatedPoints: 0,
+      insights: []
+    },
+    openclaw: {
+      tasks: []
+    },
+    travel: {
+      hotelWatches: [],
+      flightWatches: [],
+      dealFeed: [],
+      reservations: []
+    },
+    finance: {
+      sync: {
+        provider: "Plaid",
+        state: "not-connected",
+        lastSync: null
+      },
+      accounts: []
+    },
+    intake: {
+      items: []
+    },
+    hermes: {
+      status: "not-configured",
+      contextEndpoint: "/api/hermes/context",
+      actionEndpoint: "/api/hermes/actions",
+      capabilities: [],
+      actions: []
+    },
+    integrations: integrationCatalog()
+  });
+}
+
+export function dashboardSeed(env = process.env) {
+  return dashboardFixturesEnabled(env) ? dashboardFixture() : emptyDashboard();
+}

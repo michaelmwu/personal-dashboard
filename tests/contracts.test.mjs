@@ -10,8 +10,12 @@ import { PassThrough, Writable } from "node:stream";
 
 import { createApiServer } from "../apps/api/server.mjs";
 import { createWebServer } from "../apps/web/server.mjs";
-import { hostDashboardSummary } from "../packages/contracts/index.mjs";
-import { dashboardFixture } from "../packages/fixtures/dashboard.mjs";
+import { hostDashboardSummary, hostDashboardViewport } from "../packages/contracts/index.mjs";
+import {
+  dashboardFixture,
+  dashboardSeed,
+  emptyDashboard
+} from "../packages/fixtures/dashboard.mjs";
 import {
   applyCodingTaskControl,
   applyCodingTaskReview,
@@ -113,6 +117,7 @@ import {
 import {
   applyHotelRateWatch,
   applyPlaidSync,
+  getSourceState,
   listAppItems,
   listPlaidItems,
   loadDashboard,
@@ -121,7 +126,8 @@ import {
   upsertHermesAction,
   upsertHotelReservation,
   upsertNormalizedEvent,
-  upsertPlaidItem
+  upsertPlaidItem,
+  upsertSourceState
 } from "../packages/storage/dashboard-store.mjs";
 import {
   appendRunEvidenceEvent,
@@ -145,6 +151,7 @@ import {
   discoverCodingAgentPrPickups,
   fetchCodingTaskPrSnapshot,
   pollCodingAgentPrs,
+  pollAsiaTravelDeals,
   processCodingAgentRuns,
   publishReadyCodingAgentPrs,
   reviewCodingAgentTasks,
@@ -389,6 +396,59 @@ describe("contracts", () => {
     expect(summary).not.toHaveProperty("hermes");
   });
 
+  test("production dashboard seed never fills a deployed dashboard with fixtures", () => {
+    const production = dashboardSeed({ ENVIRONMENT: "production" });
+    const explicitLocal = dashboardSeed({
+      ENVIRONMENT: "production",
+      DASHBOARD_FIXTURES_ENABLED: "true"
+    });
+
+    expect(production).toMatchObject({
+      health: { level: "unknown", summary: "Waiting for live integration data." },
+      travel: { hotelWatches: [], dealFeed: [] },
+      transactions: [],
+      alerts: []
+    });
+    expect(production.hermes.actions).toEqual([]);
+    expect(explicitLocal.travel.hotelWatches).toHaveLength(2);
+  });
+
+  test("host dashboard viewports expose only bounded native-view data", () => {
+    const dashboard = dashboardFixture();
+    dashboard.sourceStates = {
+      "asia-travel-deals": {
+        status: "active",
+        lastSuccessAt: "2026-07-25T01:02:03.000Z"
+      }
+    };
+    const overview = hostDashboardViewport(dashboard, "overview");
+    const hotels = hostDashboardViewport(dashboard, "hotel-rate-finder");
+    const deals = hostDashboardViewport(dashboard, "asia-travel-deals");
+    const emptyDeals = hostDashboardViewport(emptyDashboard(), "asia-travel-deals");
+
+    expect(overview).toMatchObject({
+      version: "host-dashboard-viewport.v1",
+      viewport: "overview",
+      source: { id: "personal-dashboard", status: "active" }
+    });
+    expect(hotels.viewport).toBe("hotel-rate-finder");
+    expect(hotels.source.status).toBe("active");
+    expect(hotels.items[0]).toMatchObject({ property: "Andaz Tokyo Toranomon Hills" });
+    expect(deals.viewport).toBe("asia-travel-deals");
+    expect(deals.source).toMatchObject({
+      status: "active",
+      updatedAt: "2026-07-25T01:02:03.000Z"
+    });
+    expect(deals.items[0]).toMatchObject({
+      title: "Taipei to Bangkok business class fare window"
+    });
+    expect(deals.items[0]).not.toHaveProperty("sourceUrl");
+    expect(emptyDeals).toMatchObject({
+      source: { status: "empty" },
+      items: []
+    });
+  });
+
   test("host dashboard summary endpoint remains loopback-friendly and read-only", async () => {
     const apiServer = createApiServer({ apiToken: "dashboard-token" });
     const apiPort = await listen(apiServer);
@@ -399,6 +459,16 @@ describe("contracts", () => {
       expect(await response.json()).toMatchObject({
         version: "host-dashboard-summary.v1",
         health: { level: "warning" }
+      });
+
+      const viewport = await fetch(
+        `http://127.0.0.1:${apiPort}/api/host-dashboard/asia-travel-deals`
+      );
+      expect(viewport.status).toBe(200);
+      expect(await viewport.json()).toMatchObject({
+        version: "host-dashboard-viewport.v1",
+        viewport: "asia-travel-deals",
+        source: { id: "asia-travel-deals" }
       });
     } finally {
       await closeServer(apiServer);
@@ -425,10 +495,16 @@ describe("contracts", () => {
       tab: { path: "/personal-dashboard" }
     });
     expect(hermesProxy).toContain('SUMMARY_PATH = "/api/host-dashboard/summary"');
+    expect(hermesProxy).toContain('"overview": "/api/host-dashboard/overview"');
+    expect(hermesProxy).toContain('@router.get("/hotel-rate-finder")');
+    expect(hermesProxy).toContain('@router.get("/asia-travel-deals")');
     expect(hermesProxy).toContain('@router.get("/summary")');
     expect(hermesProxy).not.toContain("PERSONAL_DASHBOARD_API_TOKEN");
-    expect(hermesScript).toContain('SDK.fetchJSON("/api/plugins/personal-dashboard/summary")');
+    expect(hermesScript).toContain('"/api/plugins/personal-dashboard/overview"');
+    expect(hermesScript).toContain('"/api/plugins/personal-dashboard/hotel-rate-finder"');
+    expect(hermesScript).toContain('"/api/plugins/personal-dashboard/asia-travel-deals"');
     expect(hermesScript).not.toContain("PERSONAL_DASHBOARD_API_TOKEN");
+    expect(hermesScript).not.toContain("iframe");
 
     expect(webuiManifest).toMatchObject({
       id: "personal-dashboard",
@@ -1239,6 +1315,7 @@ describe("contracts", () => {
       "/api/integrations/plaid/exchange-public-token",
       "/api/integrations/plaid/sync",
       "/api/integrations/plaid/webhook",
+      "/api/integrations/asia-travel-deals/state",
       "/api/integrations/hotel-rate-finder/sync",
       "/api/hermes/bridge/runs",
       "/api/hermes/bridge/runs/run_auth/approval",
@@ -7439,6 +7516,42 @@ describe("contracts", () => {
     });
 
     expect(
+      normalizeSourceEvent("asia-travel-deals", {
+        schemaVersion: "asia-travel-deals.event.v1",
+        eventId: "event_123",
+        eventType: "candidate_upsert",
+        candidateId: "deal_candidate_camel_123",
+        status: "needs_verification",
+        score: 91,
+        candidate: {
+          candidateId: "deal_candidate_camel_123",
+          dealGroupId: "deal_group_camel_123",
+          headline: "Tokyo to Seoul business class",
+          originAirports: ["TYO"],
+          destinationAirports: ["SEL"],
+          priceAmount: 900,
+          priceCurrency: "USD",
+          priceUsd: 900,
+          score: 91,
+          status: "needs_verification",
+          reviewStatus: "needs_verification",
+          updatedAt: "2026-07-25T00:00:00.000Z"
+        }
+      })
+    ).toMatchObject({
+      kind: "travelDeal",
+      value: {
+        id: "deal_candidate_camel_123",
+        dealGroupId: "deal_group_camel_123",
+        route: "TYO-SEL",
+        price: 900,
+        currency: "USD",
+        score: 91,
+        updatedAt: "2026-07-25T00:00:00.000Z"
+      }
+    });
+
+    expect(
       normalizeSourceEvent("plaid", {
         transactionId: "plaid_txn_001",
         merchant: "Hyatt",
@@ -7519,6 +7632,28 @@ describe("contracts", () => {
         })
       ])
     );
+  });
+
+  test("dashboard store retains integration cursors and source freshness separately from fixtures", async () => {
+    const filePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-source-state-${Date.now()}.json`;
+
+    await upsertSourceState(filePath, "asia-travel-deals", {
+      status: "active",
+      cursor: "eyJ1cGRhdGVkQXQiOiIyMDI2LTA3LTI1VDAwOjAwOjAwLjAwMFoifQ",
+      lastSuccessAt: "2026-07-25T01:00:00.000Z"
+    });
+
+    const state = await getSourceState(filePath, "asia-travel-deals");
+    const dashboard = await loadDashboard(emptyDashboard(), filePath);
+    expect(state).toMatchObject({
+      status: "active",
+      cursor: "eyJ1cGRhdGVkQXQiOiIyMDI2LTA3LTI1VDAwOjAwOjAwLjAwMFoifQ"
+    });
+    expect(dashboard.sourceStates).toMatchObject({
+      "asia-travel-deals": { lastSuccessAt: "2026-07-25T01:00:00.000Z" }
+    });
+
+    await rm(filePath, { force: true });
   });
 
   test("dashboard store persists Plaid item cursors and synced transactions", async () => {
@@ -8205,6 +8340,151 @@ describe("contracts", () => {
       error: true,
       message: "upstream 500"
     });
+  });
+
+  test("integration worker paginates the canonical Asia Travel Deals dashboard feed", async () => {
+    const previousBaseUrl = process.env.ASIA_TRAVEL_DEALS_API_BASE_URL;
+    const previousToken = process.env.ASIA_TRAVEL_DEALS_API_TOKEN;
+    const requests = [];
+    const published = [];
+    const persisted = [];
+    const pages = [
+      {
+        schemaVersion: "asia-travel-deals.dashboard-feed.v1",
+        generatedAt: "2026-07-25T00:00:00.000Z",
+        candidates: [
+          {
+            candidateId: "candidate_001",
+            dealGroupId: "group_001",
+            headline: "Taipei to Bangkok business",
+            originAirports: ["TPE"],
+            destinationAirports: ["BKK"],
+            priceUsd: 812,
+            priceCurrency: "USD",
+            status: "needs_verification",
+            score: 91,
+            updatedAt: "2026-07-25T00:00:00.000Z"
+          }
+        ],
+        hasMore: true,
+        nextCursor:
+          "eyJ1cGRhdGVkQXQiOiIyMDI2LTA3LTI1VDAwOjAwOjAwLjAwMFoiLCJpZCI6ImNhbmRpZGF0ZV8wMDEifQ"
+      },
+      {
+        schemaVersion: "asia-travel-deals.dashboard-feed.v1",
+        generatedAt: "2026-07-25T00:01:00.000Z",
+        candidates: [
+          {
+            candidateId: "candidate_002",
+            dealGroupId: "group_001",
+            headline: "Tokyo to Singapore premium economy",
+            originAirports: ["TYO"],
+            destinationAirports: ["SIN"],
+            priceUsd: 690,
+            priceCurrency: "USD",
+            status: "candidate",
+            score: 88,
+            updatedAt: "2026-07-25T00:01:00.000Z"
+          }
+        ],
+        hasMore: false,
+        nextCursor:
+          "eyJ1cGRhdGVkQXQiOiIyMDI2LTA3LTI1VDAwOjAxOjAwLjAwMFoiLCJpZCI6ImNhbmRpZGF0ZV8wMDIifQ"
+      }
+    ];
+
+    try {
+      process.env.ASIA_TRAVEL_DEALS_API_BASE_URL = "https://atd.tailnet.test";
+      process.env.ASIA_TRAVEL_DEALS_API_TOKEN = "atd-token";
+      const result = await pollAsiaTravelDeals({
+        getDashboardState: async () => ({
+          cursor:
+            "eyJ1cGRhdGVkQXQiOiIyMDI2LTA3LTI0VDAwOjAwOjAwLjAwMFoiLCJpZCI6ImNhbmRpZGF0ZV9iZWZvcmUifQ",
+          state: { itemCount: 4 }
+        }),
+        persistDashboardState: async (state) => persisted.push(state),
+        fetch: async (url, options = {}) => {
+          requests.push({ url: new URL(url), authorization: options.headers?.Authorization });
+          return Response.json(pages.shift(), { status: 200 });
+        },
+        publishCandidate: async (candidate) => published.push(candidate),
+        maxPages: 3,
+        pageSize: 25
+      });
+
+      expect(result).toMatchObject({ fetched: 2, upserts: 2, pageCount: 2 });
+      expect(requests.map((request) => request.url.pathname)).toEqual([
+        "/private/dashboard/feed",
+        "/private/dashboard/feed"
+      ]);
+      expect(requests[0].url.searchParams.get("cursor")).toBe(
+        "eyJ1cGRhdGVkQXQiOiIyMDI2LTA3LTI0VDAwOjAwOjAwLjAwMFoiLCJpZCI6ImNhbmRpZGF0ZV9iZWZvcmUifQ"
+      );
+      expect(requests[1].url.searchParams.get("cursor")).toBe(
+        "eyJ1cGRhdGVkQXQiOiIyMDI2LTA3LTI1VDAwOjAwOjAwLjAwMFoiLCJpZCI6ImNhbmRpZGF0ZV8wMDEifQ"
+      );
+      expect(requests[0].authorization).toBe("Bearer atd-token");
+      expect(published.map((candidate) => candidate.candidateId)).toEqual([
+        "candidate_001",
+        "candidate_002"
+      ]);
+      expect(persisted).toEqual([
+        expect.objectContaining({
+          status: "active",
+          cursor:
+            "eyJ1cGRhdGVkQXQiOiIyMDI2LTA3LTI1VDAwOjAxOjAwLjAwMFoiLCJpZCI6ImNhbmRpZGF0ZV8wMDIifQ"
+        })
+      ]);
+    } finally {
+      if (previousBaseUrl === undefined) {
+        delete process.env.ASIA_TRAVEL_DEALS_API_BASE_URL;
+      } else {
+        process.env.ASIA_TRAVEL_DEALS_API_BASE_URL = previousBaseUrl;
+      }
+      if (previousToken === undefined) {
+        delete process.env.ASIA_TRAVEL_DEALS_API_TOKEN;
+      } else {
+        process.env.ASIA_TRAVEL_DEALS_API_TOKEN = previousToken;
+      }
+    }
+  });
+
+  test("integration worker preserves an existing Asia Travel Deals cursor on an empty incremental page", async () => {
+    const previousBaseUrl = process.env.ASIA_TRAVEL_DEALS_API_BASE_URL;
+    const priorCursor =
+      "eyJ1cGRhdGVkQXQiOiIyMDI2LTA3LTI1VDAwOjAxOjAwLjAwMFoiLCJpZCI6ImNhbmRpZGF0ZV8wMDIifQ";
+    const persisted = [];
+
+    try {
+      process.env.ASIA_TRAVEL_DEALS_API_BASE_URL = "https://atd.tailnet.test";
+      const result = await pollAsiaTravelDeals({
+        getDashboardState: async () => ({ cursor: priorCursor, state: { itemCount: 2 } }),
+        persistDashboardState: async (state) => persisted.push(state),
+        fetch: async () =>
+          Response.json(
+            {
+              schemaVersion: "asia-travel-deals.dashboard-feed.v1",
+              generatedAt: "2026-07-25T00:02:00.000Z",
+              candidates: [],
+              hasMore: false,
+              nextCursor: null
+            },
+            { status: 200 }
+          ),
+        publishCandidate: async () => {
+          throw new Error("empty feed must not publish a candidate");
+        }
+      });
+
+      expect(result).toMatchObject({ fetched: 0, upserts: 0, cursor: priorCursor });
+      expect(persisted[0]).toMatchObject({ status: "active", cursor: priorCursor });
+    } finally {
+      if (previousBaseUrl === undefined) {
+        delete process.env.ASIA_TRAVEL_DEALS_API_BASE_URL;
+      } else {
+        process.env.ASIA_TRAVEL_DEALS_API_BASE_URL = previousBaseUrl;
+      }
+    }
   });
 
   test("integration worker accepts legacy flight-searcher event file env", async () => {

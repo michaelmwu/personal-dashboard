@@ -103,7 +103,11 @@ Telegram / Discord
   -> idempotent Hermes final-result delivery
 ```
 
-The API currently uses local fixtures. The boundary is intentional: replacing fixtures with real Hermes and OpenClaw clients should not require rewriting dashboard rendering code.
+Local development uses fixtures by default. Production-like environments start
+with an empty dashboard unless `DASHBOARD_FIXTURES_ENABLED=true` is explicitly
+set, so representative data cannot be mistaken for live data. The boundary is
+intentional: replacing fixtures with real Hermes and OpenClaw clients should
+not require rewriting dashboard rendering code.
 
 ## Data Model
 
@@ -231,12 +235,14 @@ dispatcher does not forward them back into Hermes.
 The standalone `apps/web` application is the canonical complete dashboard. A
 host adapter must not iframe or proxy that app wholesale: it has its own shell,
 relative assets, and browser-side control surfaces. Instead, the API projects a
-small `host-dashboard-summary.v1` at `GET /api/host-dashboard/summary`:
+small `host-dashboard-summary.v1` at `GET /api/host-dashboard/summary` for
+legacy consumers, plus fixed `host-dashboard-viewport.v1` projections for the
+native Hermes tabs:
 
 ```text
 Dashboard state (dashboard.v1)
-  -> hostDashboardSummary()
-  -> loopback-only /api/host-dashboard/summary
+  -> hostDashboardSummary() or hostDashboardViewport()
+  -> loopback-only summary, overview, hotel-rate-finder, or asia-travel-deals path
   -> host-authenticated Hermes Dashboard plugin route
      or consented Hermes WebUI sidecar proxy
   -> native read-only host panel
@@ -250,8 +256,8 @@ or a direct route to the loopback API.
 
 The official Hermes Dashboard adapter is a user plugin and uses
 `SDK.fetchJSON()` to inherit the existing Dashboard session. Its Python plugin
-backend proxies exactly one fixed, read-only loopback endpoint and does not
-forward browser cookies or authorization headers. The Hermes WebUI adapter is
+backend proxies only a fixed allowlist of read-only loopback endpoints and does
+not forward browser cookies or authorization headers. The Hermes WebUI adapter is
 an optional separate deployment. Its extension calls only WebUI's fixed
 sidecar-proxy path after the owner approves that proxy in Settings; WebUI strips
 browser credentials before forwarding. Both adapters are read-only in this

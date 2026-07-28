@@ -6,7 +6,10 @@ The dashboard is the context and control plane. Hermes can pull dashboard
 context, see available capabilities, and submit action envelopes that later
 dispatch into the source apps.
 
-The first version is runnable with local fixtures. It models the dashboard you described: fast bank-email signals, slow source-of-truth transaction state, reward calculations, suspicious charge alerts, and OpenClaw actions in one place.
+Local development starts with representative fixtures. Production-like
+environments (`ENVIRONMENT=production`) start from an empty, honest dashboard
+until live sources report data; `DASHBOARD_FIXTURES_ENABLED=true` is an
+explicit development-only override.
 
 ## What Is Included
 
@@ -57,9 +60,9 @@ The dashboard now has placeholder contracts for the next personal surfaces:
 - Plaid account/transaction sync through the official Plaid Node SDK.
 - Gmail intake for reservations, statements, and important email.
 
-These are fixture-backed today. Real provider code should land in
-`packages/integrations/` first, then flow through `/api/dashboard` without
-provider-specific parsing in the web app.
+Fixtures remain available for local development. Live provider data is
+normalized in `packages/integrations/` before flowing through `/api/dashboard`,
+so the web app and host viewports do not need provider-specific parsing.
 
 ## Host Dashboard Adapters
 
@@ -73,12 +76,14 @@ small, read-only native views for hosts that already own the user's session:
   native panel through WebUI's fixed, consented loopback-sidecar proxy rather
   than embedding the standalone application.
 
-Both adapters consume `GET /api/host-dashboard/summary`, a
-`host-dashboard-summary.v1` projection containing health, metrics, alerts,
-travel, and task status. It deliberately excludes the raw transactions,
-accounts, Hermes actions, and provider payloads returned by `/api/dashboard`.
-The endpoint is intended for a same-host loopback adapter; it is not a new
-public API surface.
+The legacy `GET /api/host-dashboard/summary` remains available for existing
+adapters. The Hermes Dashboard plugin uses three fixed loopback-only native
+viewports instead: `GET /api/host-dashboard/overview`,
+`/hotel-rate-finder`, and `/asia-travel-deals`. Their
+`host-dashboard-viewport.v1` projections carry only bounded health, freshness,
+and display fields; they deliberately exclude raw transactions, accounts,
+Hermes actions, provider payloads, and credentials. They are not a public API
+surface.
 
 The official Hermes adapter inherits the Hermes Dashboard login. Hermes WebUI
 is a separate application with separate authentication and requires explicit
@@ -332,3 +337,17 @@ Set `HOTEL_RATE_FINDER_API_BASE_URL` to the local or tailnet FastAPI service.
 The dashboard never imports provider internals or runs browser scrapes; failed
 or stale hotel jobs become dashboard alerts so a broken scraper does not look
 like "no price drop."
+
+Asia Travel Deals ingestion:
+
+- The worker polls the token-protected canonical
+  `GET /private/dashboard/feed` endpoint with `Authorization: Bearer
+  <ASIA_TRAVEL_DEALS_API_TOKEN>`.
+- It persists ATD's opaque `nextCursor` and sends it back as the `cursor`
+  query parameter. Cursor contents are never interpreted by the dashboard.
+- The worker normalizes the feed's camelCase candidate contract and the nested
+  `asia-travel-deals.event.v1` webhook envelope at the integration boundary.
+
+Set `ASIA_TRAVEL_DEALS_API_BASE_URL` and `ASIA_TRAVEL_DEALS_API_TOKEN` on the
+dashboard worker. `ASIA_TRAVEL_DEALS_PAGE_SIZE` and
+`ASIA_TRAVEL_DEALS_MAX_PAGES` bound each reconciliation run.

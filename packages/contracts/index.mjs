@@ -2,6 +2,7 @@ export const DASHBOARD_CONTRACT_VERSION = "dashboard.v1";
 export const HERMES_ACTION_VERSION = "hermes-action.v1";
 export const DASHBOARD_APP_MANIFEST_VERSION = "dashboard-app.v1";
 export const HOST_DASHBOARD_SUMMARY_VERSION = "host-dashboard-summary.v1";
+export const HOST_DASHBOARD_VIEWPORT_VERSION = "host-dashboard-viewport.v1";
 
 const HOST_DASHBOARD_DEFAULT_LIMIT = 6;
 
@@ -165,6 +166,160 @@ export function hostDashboardSummary(
     travel: travelItems,
     tasks: taskItems
   };
+}
+
+function hostDashboardTimestamp(value) {
+  return hostDashboardString(value);
+}
+
+function hostDashboardLatestTimestamp(items, fields) {
+  const timestamps = hostDashboardList(items)
+    .map(hostDashboardObject)
+    .flatMap((item) => fields.map((field) => hostDashboardTimestamp(item[field])))
+    .filter(Boolean)
+    .sort();
+  return timestamps.at(-1) ?? "";
+}
+
+function hostDashboardSourceState(dashboard, sourceId, items, { emptySummary, activeSummary }) {
+  const sourceStates = hostDashboardObject(dashboard.sourceStates);
+  const configured = hostDashboardObject(sourceStates[sourceId]);
+  const configuredStatus = hostDashboardString(configured.status).toLowerCase();
+  const hasFailure = ["error", "failed", "unavailable"].includes(configuredStatus);
+  const hasItems = hostDashboardList(items).length > 0;
+  const status = hasFailure
+    ? "error"
+    : hasItems
+      ? "active"
+      : configuredStatus === "syncing"
+        ? "syncing"
+        : "empty";
+  const updatedAt =
+    hostDashboardTimestamp(configured.lastSuccessAt) ||
+    hostDashboardTimestamp(configured.updatedAt) ||
+    hostDashboardLatestTimestamp(items, ["updatedAt", "lastCheckedAt"]);
+
+  return {
+    id: sourceId,
+    status,
+    updatedAt,
+    summary: hasFailure
+      ? "The latest source sync failed. Check the dashboard integration service."
+      : hasItems
+        ? activeSummary(hostDashboardList(items).length)
+        : emptySummary
+  };
+}
+
+function hostDashboardViewportHealth(source) {
+  if (source.status === "error") {
+    return { level: "error", summary: source.summary };
+  }
+  if (source.status === "active") {
+    return { level: "ok", summary: source.summary };
+  }
+  return { level: "unknown", summary: source.summary };
+}
+
+function hostHotelRateItem(rawWatch) {
+  const watch = hostDashboardObject(rawWatch);
+  return {
+    id: hostDashboardString(watch.id, "hotel-watch-unknown"),
+    property: hostDashboardString(watch.property, "Unknown hotel"),
+    location: hostDashboardString(watch.location),
+    checkIn: hostDashboardString(watch.checkIn),
+    checkOut: hostDashboardString(watch.checkOut),
+    targetRate: Number.isFinite(Number(watch.targetRate)) ? Number(watch.targetRate) : null,
+    bestRate: Number.isFinite(Number(watch.bestRate)) ? Number(watch.bestRate) : null,
+    currency: hostDashboardString(watch.currency, "USD"),
+    status: hostDashboardString(watch.status, "unknown"),
+    updatedAt: hostDashboardTimestamp(watch.updatedAt || watch.lastCheckedAt)
+  };
+}
+
+function hostAsiaTravelDealItem(rawDeal) {
+  const deal = hostDashboardObject(rawDeal);
+  return {
+    id: hostDashboardString(deal.id, "travel-deal-unknown"),
+    title: hostDashboardString(deal.title, "Untitled travel deal"),
+    route: hostDashboardString(deal.route),
+    price: Number.isFinite(Number(deal.price)) ? Number(deal.price) : null,
+    currency: hostDashboardString(deal.currency, "USD"),
+    score: Number.isFinite(Number(deal.score)) ? Number(deal.score) : null,
+    status: hostDashboardString(deal.status, "unknown"),
+    verificationStatus: hostDashboardString(deal.verificationStatus),
+    updatedAt: hostDashboardTimestamp(deal.updatedAt)
+  };
+}
+
+/**
+ * Read-only, bounded projections for native host dashboards.  These are kept
+ * intentionally separate from dashboard.v1 so a host plugin never needs raw
+ * provider payloads, action queues, transactions, or browser credentials.
+ */
+export function hostDashboardViewport(
+  dashboard = {},
+  viewport,
+  { limit = HOST_DASHBOARD_DEFAULT_LIMIT } = {}
+) {
+  const sourceDashboard = hostDashboardObject(dashboard);
+  const itemLimit = Number.isInteger(limit) && limit > 0 ? limit : HOST_DASHBOARD_DEFAULT_LIMIT;
+  const generatedAt = hostDashboardString(sourceDashboard.generatedAt, new Date().toISOString());
+
+  if (viewport === "overview") {
+    const summary = hostDashboardSummary(sourceDashboard, { limit: itemLimit });
+    return {
+      version: HOST_DASHBOARD_VIEWPORT_VERSION,
+      viewport,
+      generatedAt,
+      health: summary.health,
+      source: {
+        id: "personal-dashboard",
+        status: "active",
+        updatedAt: generatedAt,
+        summary: "Personal Dashboard overview."
+      },
+      metrics: summary.metrics,
+      alerts: summary.alerts,
+      travel: summary.travel,
+      tasks: summary.tasks
+    };
+  }
+
+  if (viewport === "hotel-rate-finder") {
+    const watches = hostDashboardList(sourceDashboard.travel?.hotelWatches).slice(0, itemLimit);
+    const source = hostDashboardSourceState(sourceDashboard, viewport, watches, {
+      emptySummary: "No hotel rate watches have been received yet.",
+      activeSummary: (count) => `${count} hotel rate watch${count === 1 ? "" : "es"} available.`
+    });
+    return {
+      version: HOST_DASHBOARD_VIEWPORT_VERSION,
+      viewport,
+      generatedAt,
+      health: hostDashboardViewportHealth(source),
+      source,
+      items: watches.map(hostHotelRateItem)
+    };
+  }
+
+  if (viewport === "asia-travel-deals") {
+    const deals = hostDashboardList(sourceDashboard.travel?.dealFeed).slice(0, itemLimit);
+    const source = hostDashboardSourceState(sourceDashboard, viewport, deals, {
+      emptySummary: "No Asia Travel Deals candidates have been received yet.",
+      activeSummary: (count) =>
+        `${count} Asia Travel Deals candidate${count === 1 ? "" : "s"} available.`
+    });
+    return {
+      version: HOST_DASHBOARD_VIEWPORT_VERSION,
+      viewport,
+      generatedAt,
+      health: hostDashboardViewportHealth(source),
+      source,
+      items: deals.map(hostAsiaTravelDealItem)
+    };
+  }
+
+  throw new Error(`Unsupported host dashboard viewport: ${viewport}`);
 }
 
 export function metric(label, value, delta) {
@@ -342,7 +497,8 @@ export function travelDeal({
   score,
   verificationStatus,
   sourceUrl,
-  updatedAt
+  updatedAt,
+  currency
 }) {
   return {
     id,
@@ -356,7 +512,8 @@ export function travelDeal({
     score,
     verificationStatus,
     sourceUrl,
-    updatedAt
+    updatedAt,
+    currency
   };
 }
 

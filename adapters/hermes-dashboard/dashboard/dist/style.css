@@ -63,6 +63,57 @@
   margin: 0.4rem 0 1.25rem;
 }
 
+.personal-dashboard-hermes-tabs {
+  border-bottom: 1px solid var(--color-border, currentColor);
+  display: flex;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+  overflow-x: auto;
+}
+
+.personal-dashboard-hermes-tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--color-muted-foreground, currentColor);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.55rem 0.7rem;
+  white-space: nowrap;
+}
+
+.personal-dashboard-hermes-tab[aria-selected="true"] {
+  border-bottom-color: var(--color-primary, currentColor);
+  color: var(--color-foreground, inherit);
+  font-weight: 600;
+}
+
+.personal-dashboard-hermes-source {
+  align-items: baseline;
+  background: var(--color-card, transparent);
+  border: 1px solid var(--color-border, currentColor);
+  border-radius: var(--radius, 0.5rem);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.65rem;
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+}
+
+.personal-dashboard-hermes-source[data-status="active"] {
+  border-color: var(--color-success, var(--color-border, currentColor));
+}
+
+.personal-dashboard-hermes-source[data-status="error"] {
+  border-color: var(--color-destructive, var(--color-border, currentColor));
+}
+
+.personal-dashboard-hermes-source-updated {
+  color: var(--color-muted-foreground, currentColor);
+  flex-basis: 100%;
+  font-size: 0.775rem;
+}
+
 .personal-dashboard-hermes-status {
   margin: 1rem 0;
 }

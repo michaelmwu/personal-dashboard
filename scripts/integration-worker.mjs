@@ -130,27 +130,74 @@ function envList(name, env = process.env) {
     .filter(Boolean);
 }
 
-function asiaDealsUrl() {
+function asiaDealsUrl(cursor, { pageSize = envNumber("ASIA_TRAVEL_DEALS_PAGE_SIZE", 100) } = {}) {
   const baseUrl = process.env.ASIA_TRAVEL_DEALS_API_BASE_URL;
   if (!baseUrl) {
     throw new Error("ASIA_TRAVEL_DEALS_API_BASE_URL is required for Asia deal polling.");
   }
-  return `${baseUrl.replace(/\/$/, "")}/deals`;
+  const url = new URL(`${baseUrl.replace(/\/$/, "")}/private/dashboard/feed`);
+  url.searchParams.set("limit", String(Math.min(Math.max(pageSize, 1), 500)));
+  if (cursor) {
+    url.searchParams.set("cursor", cursor);
+  }
+  return url.toString();
 }
 
 function asiaDealPayload(deal) {
   return {
-    id: deal.id,
-    dealGroupId: deal.deal_group_id,
+    id: deal.candidateId ?? deal.id,
+    candidateId: deal.candidateId,
+    dealGroupId: deal.dealGroupId ?? deal.deal_group_id,
     headline: deal.headline,
-    originAirports: deal.origin_airports,
-    destinationAirports: deal.destination_airports,
+    originAirports: deal.originAirports ?? deal.origin_airports,
+    destinationAirports: deal.destinationAirports ?? deal.destination_airports,
     cabin: deal.cabin,
-    priceUsd: deal.price_usd,
-    dealScore: deal.deal_score,
+    priceAmount: deal.priceAmount ?? deal.price_amount,
+    priceCurrency: deal.priceCurrency ?? deal.price_currency,
+    priceUsd: deal.priceUsd ?? deal.price_usd,
+    dealScore: deal.score ?? deal.dealScore ?? deal.deal_score,
     status: deal.status,
-    updatedAt: deal.updated_at
+    reviewStatus: deal.reviewStatus,
+    sourceUrl: deal.sourceUrl ?? deal.source_url,
+    updatedAt: deal.updatedAt ?? deal.updated_at
   };
+}
+
+function asiaTravelDealsCursor(value) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const cursor = value.trim();
+  return cursor && cursor.length <= 512 ? cursor : undefined;
+}
+
+function asiaTravelDealsFeed(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("AsiaTravelDeals dashboard feed returned an invalid envelope.");
+  }
+  if (payload.schemaVersion !== "asia-travel-deals.dashboard-feed.v1") {
+    throw new Error("AsiaTravelDeals dashboard feed returned an unsupported schema version.");
+  }
+  if (!Array.isArray(payload.candidates) || typeof payload.hasMore !== "boolean") {
+    throw new Error("AsiaTravelDeals dashboard feed returned an invalid page.");
+  }
+  const nextCursor = payload.nextCursor === null ? null : asiaTravelDealsCursor(payload.nextCursor);
+  if (payload.nextCursor !== null && !nextCursor) {
+    throw new Error("AsiaTravelDeals dashboard feed returned an invalid cursor.");
+  }
+  if (payload.hasMore && !nextCursor) {
+    throw new Error("AsiaTravelDeals dashboard feed has more results without a cursor.");
+  }
+  return {
+    candidates: payload.candidates,
+    hasMore: payload.hasMore,
+    nextCursor,
+    generatedAt: typeof payload.generatedAt === "string" ? payload.generatedAt : undefined
+  };
+}
+
+function sameAsiaTravelDealsCursor(left, right) {
+  return left === right;
 }
 
 async function postDashboardEvent(source, payload) {
@@ -617,21 +664,86 @@ export async function runIngestion(source, task) {
   }
 }
 
-export async function pollAsiaTravelDeals() {
-  const response = await fetch(asiaDealsUrl(), {
-    headers: authHeaders(process.env.ASIA_TRAVEL_DEALS_API_TOKEN)
-  });
-  if (!response.ok) {
-    throw new Error(`AsiaTravelDeals /deals poll failed with HTTP ${response.status}`);
-  }
-
-  const deals = await response.json();
+export async function pollAsiaTravelDeals(options = {}) {
+  const getDashboardState =
+    options.getDashboardState ??
+    (() => getDashboardJson("/api/integrations/asia-travel-deals/state"));
+  const persistDashboardState =
+    options.persistDashboardState ??
+    ((payload) => postDashboardAction("/api/integrations/asia-travel-deals/state", payload));
+  const fetchImpl = options.fetch ?? fetch;
+  const publishCandidate =
+    options.publishCandidate ??
+    ((candidate) => postDashboardEvent("asia-travel-deals", asiaDealPayload(candidate)));
+  const maxPages = Math.max(options.maxPages ?? envNumber("ASIA_TRAVEL_DEALS_MAX_PAGES", 10), 1);
+  const pageSize = Math.min(
+    Math.max(options.pageSize ?? envNumber("ASIA_TRAVEL_DEALS_PAGE_SIZE", 100), 1),
+    500
+  );
+  const attemptedAt = new Date().toISOString();
+  const state = await getDashboardState();
+  let cursor = asiaTravelDealsCursor(state?.cursor);
+  let pageCount = 0;
+  let fetched = 0;
   let upserts = 0;
-  for (const deal of deals) {
-    await postDashboardEvent("asia-travel-deals", asiaDealPayload(deal));
-    upserts += 1;
+  let latestItemAt;
+
+  try {
+    while (pageCount < maxPages) {
+      const response = await fetchImpl(asiaDealsUrl(cursor, { pageSize }), {
+        headers: authHeaders(process.env.ASIA_TRAVEL_DEALS_API_TOKEN)
+      });
+      if (!response.ok) {
+        throw new Error(`AsiaTravelDeals dashboard feed poll failed with HTTP ${response.status}`);
+      }
+
+      const page = asiaTravelDealsFeed(await response.json());
+      pageCount += 1;
+      fetched += page.candidates.length;
+      for (const candidate of page.candidates) {
+        await publishCandidate(candidate);
+        upserts += 1;
+        const updatedAt = candidate?.updatedAt ?? candidate?.updated_at;
+        if (typeof updatedAt === "string" && (!latestItemAt || updatedAt > latestItemAt)) {
+          latestItemAt = updatedAt;
+        }
+      }
+
+      if (!page.hasMore) {
+        const nextCursor = page.nextCursor ?? cursor;
+        const priorItemCount = Number.isInteger(state?.state?.itemCount)
+          ? state.state.itemCount
+          : 0;
+        await persistDashboardState({
+          status: fetched || priorItemCount ? "active" : "empty",
+          cursor: nextCursor ?? null,
+          lastAttemptAt: attemptedAt,
+          lastSuccessAt: new Date().toISOString(),
+          ...(latestItemAt ? { latestItemAt } : {}),
+          itemCount: Math.max(fetched, priorItemCount)
+        });
+        return { fetched, upserts, pageCount, cursor: nextCursor ?? null };
+      }
+
+      if (sameAsiaTravelDealsCursor(cursor, page.nextCursor)) {
+        throw new Error("AsiaTravelDeals dashboard feed cursor did not advance.");
+      }
+      cursor = page.nextCursor;
+    }
+
+    throw new Error(`AsiaTravelDeals dashboard feed exceeded ${maxPages} pages in one poll.`);
+  } catch (error) {
+    try {
+      await persistDashboardState({
+        status: "error",
+        lastAttemptAt: attemptedAt,
+        cursor: cursor ?? null
+      });
+    } catch {
+      // Preserve the primary upstream error; state reporting must not mask it.
+    }
+    throw error;
   }
-  return { fetched: deals.length, upserts };
 }
 
 function githubRepoForTask(task, env = process.env) {
