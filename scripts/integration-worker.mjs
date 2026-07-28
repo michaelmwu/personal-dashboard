@@ -104,6 +104,10 @@ function envBoolean(name, fallback) {
   return !["0", "false", "no", "off"].includes(value.toLowerCase());
 }
 
+function workingDirectoryForTask(task = {}) {
+  return task.workingDirectory ?? task.working_directory ?? task.worktreeDir ?? task.worktree_dir;
+}
+
 function authHeaders(token) {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
@@ -242,13 +246,14 @@ function validationCommandsForTask(task) {
 
 async function runValidationCommand(command, task, options = {}) {
   const startedAt = Date.now();
+  const workingDirectory = workingDirectoryForTask(task);
   let parsed;
   try {
     parsed = splitValidationCommand(command);
   } catch (error) {
     return {
       command,
-      cwd: task.worktreeDir,
+      cwd: workingDirectory,
       exitCode: 127,
       durationMs: Date.now() - startedAt,
       error: error instanceof Error ? error.message : String(error)
@@ -257,7 +262,7 @@ async function runValidationCommand(command, task, options = {}) {
 
   try {
     const result = await (options.command ?? execFileAsync)(parsed.executable, parsed.args, {
-      cwd: task.worktreeDir,
+      cwd: workingDirectory,
       timeout: options.timeoutMs ?? envNumber("CODING_AGENT_VALIDATION_TIMEOUT_MS", 120000),
       maxBuffer: options.maxBuffer ?? 1024 * 1024
     });
@@ -265,7 +270,7 @@ async function runValidationCommand(command, task, options = {}) {
       command,
       executable: parsed.executable,
       args: parsed.args,
-      cwd: task.worktreeDir,
+      cwd: workingDirectory,
       exitCode: 0,
       durationMs: Date.now() - startedAt,
       stdoutTail: outputTail(result.stdout),
@@ -276,7 +281,7 @@ async function runValidationCommand(command, task, options = {}) {
       command,
       executable: parsed.executable,
       args: parsed.args,
-      cwd: task.worktreeDir,
+      cwd: workingDirectory,
       exitCode: Number.isFinite(error?.code) ? error.code : 1,
       signal: error?.signal,
       durationMs: Date.now() - startedAt,
@@ -290,7 +295,8 @@ async function runValidationCommand(command, task, options = {}) {
 export async function runCodingTaskValidation(task, options = {}) {
   const commands = validationCommandsForTask(task);
   const attempt = (Number.parseInt(task.validationAttempts ?? 0, 10) || 0) + 1;
-  if (!task.worktreeDir) {
+  const workingDirectory = workingDirectoryForTask(task);
+  if (!workingDirectory) {
     return {
       taskId: task.id,
       status: "failed",
@@ -298,12 +304,12 @@ export async function runCodingTaskValidation(task, options = {}) {
       runId: codingTaskLatestRunId(task),
       commands: [
         {
-          command: "(resolve task worktree)",
+          command: "(resolve task working directory)",
           exitCode: 1,
-          error: "missing_worktree_dir"
+          error: "missing_working_directory"
         }
       ],
-      summary: "Validation failed because the task has no worktreeDir."
+      summary: "Validation failed because the task has no workingDirectory."
     };
   }
   if (!commands.length) {
@@ -330,7 +336,7 @@ export async function runCodingTaskValidation(task, options = {}) {
     const stateCommand = options.stateCommand ?? options.command ?? execFileAsync;
     try {
       const status = await stateCommand("git", ["status", "--porcelain=v1"], {
-        cwd: task.worktreeDir,
+        cwd: workingDirectory,
         timeout: options.timeoutMs ?? envNumber("CODING_AGENT_VALIDATION_TIMEOUT_MS", 120000),
         maxBuffer: options.maxBuffer ?? 1024 * 1024
       });
@@ -339,14 +345,14 @@ export async function runCodingTaskValidation(task, options = {}) {
           command: "git status --porcelain=v1",
           executable: "git",
           args: ["status", "--porcelain=v1"],
-          cwd: task.worktreeDir,
+          cwd: workingDirectory,
           exitCode: 1,
           error: "validation_left_worktree_dirty",
           stdoutTail: outputTail(status.stdout)
         });
       } else {
         const head = await stateCommand("git", ["rev-parse", "HEAD"], {
-          cwd: task.worktreeDir,
+          cwd: workingDirectory,
           timeout: options.timeoutMs ?? envNumber("CODING_AGENT_VALIDATION_TIMEOUT_MS", 120000),
           maxBuffer: options.maxBuffer ?? 1024 * 1024
         });
@@ -358,7 +364,7 @@ export async function runCodingTaskValidation(task, options = {}) {
         command: "git worktree state",
         executable: "git",
         args: ["status", "--porcelain=v1"],
-        cwd: task.worktreeDir,
+        cwd: workingDirectory,
         exitCode: Number.isFinite(error?.code) ? error.code : 1,
         error: error instanceof Error ? error.message : String(error),
         stdoutTail: outputTail(error?.stdout),
@@ -376,6 +382,7 @@ export async function runCodingTaskValidation(task, options = {}) {
     attempt,
     runId: codingTaskLatestRunId(task),
     headSha,
+    workingDirectory,
     commands: results,
     summary: passed ? "All validation commands passed." : "One or more validation commands failed."
   };
@@ -396,6 +403,7 @@ function reviewGatewayConfig(env = process.env, task = {}) {
 async function runHarnessReview(input, config, task, options = {}) {
   const command = options.command ?? execFileAsync;
   const prompt = JSON.stringify(input);
+  const workingDirectory = workingDirectoryForTask(task);
   const harness = codingAgentReviewHarness(config.reviewer?.harness);
   if (!harness) {
     throw new Error(`unsupported_review_harness_${config.reviewer?.harness ?? "unknown"}`);
@@ -407,19 +415,21 @@ async function runHarnessReview(input, config, task, options = {}) {
   }
   if (harness.id === "omp") {
     const env = options.env ?? process.env;
-    const workRoot = env.CODING_AGENT_WORK_ROOT;
-    if (!workRoot) throw new Error("CODING_AGENT_WORK_ROOT is required for OMP review");
+    const stateWorkRoot = env.CODING_AGENT_WORK_ROOT;
+    if (!stateWorkRoot) throw new Error("CODING_AGENT_WORK_ROOT is required for OMP review");
+    const workRoot = task.workspaceMode === "root" ? task.repositoryRoot : stateWorkRoot;
+    if (!workRoot) throw new Error("coding_task_repository_root_required");
     if (!env.PI_CODING_AGENT_DIR) {
       throw new Error("PI_CODING_AGENT_DIR is required for OMP review");
     }
-    const stateRoot = resolve(env.CODING_AGENT_OMP_RUN_ROOT ?? join(workRoot, ".omp-state"));
+    const stateRoot = resolve(env.CODING_AGENT_OMP_RUN_ROOT ?? join(stateWorkRoot, ".omp-state"));
     const taskSegment = String(task.id ?? "review")
       .replace(/[^a-zA-Z0-9_.-]+/g, "-")
       .slice(0, 120);
     const reviewSegment = `${taskSegment}-${input.headSha?.slice(0, 16) ?? input.attempt ?? "current"}`;
     const reviewed = await (options.runOmpReview ?? runOmpRpcSession)({
       command: env.CODING_AGENT_OMP_BIN ?? "omp",
-      worktreeDir: task.worktreeDir,
+      workingDirectory,
       workRoot,
       sessionDir: join(stateRoot, "review-sessions", reviewSegment),
       homeDir: join(stateRoot, "review-homes", reviewSegment),
@@ -446,9 +456,9 @@ async function runHarnessReview(input, config, task, options = {}) {
   if (harness.id === "codex") {
     const result = await command(
       "codex",
-      ["exec", "--sandbox", "read-only", "--cd", task.worktreeDir, "--model", config.model, prompt],
+      ["exec", "--sandbox", "read-only", "--cd", workingDirectory, "--model", config.model, prompt],
       {
-        cwd: task.worktreeDir,
+        cwd: workingDirectory,
         timeout: options.timeoutMs ?? envNumber("CODING_AGENT_REVIEW_TIMEOUT_MS", 120000),
         maxBuffer: 2 * 1024 * 1024
       }
@@ -460,7 +470,7 @@ async function runHarnessReview(input, config, task, options = {}) {
       "claude",
       ["--print", "--permission-mode", "plan", "--model", config.model, prompt],
       {
-        cwd: task.worktreeDir,
+        cwd: workingDirectory,
         timeout: options.timeoutMs ?? envNumber("CODING_AGENT_REVIEW_TIMEOUT_MS", 120000),
         maxBuffer: 2 * 1024 * 1024
       }
@@ -503,6 +513,7 @@ export async function runCodingTaskReview(task, options = {}) {
     });
   const attempt = (Number.parseInt(task.reviewAttempts ?? 0, 10) || 0) + 1;
   const baseBranch = task.baseBranch ?? "origin/main";
+  const workingDirectory = workingDirectoryForTask(task);
   const reviewerConfig = reviewGatewayConfig(options.env ?? process.env, task);
   const reviewBase = {
     taskId: task.id,
@@ -511,13 +522,13 @@ export async function runCodingTaskReview(task, options = {}) {
     riskTier: risk.level,
     model: reviewerConfig.reviewer
   };
-  if (!task.worktreeDir || !task.mission) {
+  if (!workingDirectory || !task.mission) {
     return {
       ...reviewBase,
       status: "failed",
       findings: [],
       definitionOfDone: [],
-      summary: "Missing task worktree or approved mission."
+      summary: "Missing task working directory or approved mission."
     };
   }
   if (
@@ -536,7 +547,7 @@ export async function runCodingTaskReview(task, options = {}) {
   try {
     const command = options.command ?? execFileAsync;
     const statusResult = await command("git", ["status", "--porcelain=v1"], {
-      cwd: task.worktreeDir,
+      cwd: workingDirectory,
       timeout: options.timeoutMs ?? envNumber("CODING_AGENT_REVIEW_TIMEOUT_MS", 120000),
       maxBuffer: 2 * 1024 * 1024
     });
@@ -544,7 +555,7 @@ export async function runCodingTaskReview(task, options = {}) {
       throw new Error("review_requires_clean_worktree");
     }
     const headResult = await command("git", ["rev-parse", "HEAD"], {
-      cwd: task.worktreeDir,
+      cwd: workingDirectory,
       timeout: options.timeoutMs ?? envNumber("CODING_AGENT_REVIEW_TIMEOUT_MS", 120000),
       maxBuffer: 2 * 1024 * 1024
     });
@@ -555,7 +566,7 @@ export async function runCodingTaskReview(task, options = {}) {
     }
     reviewBase.headSha = headSha;
     const diffResult = await command("git", ["diff", "--no-ext-diff", `${baseBranch}...HEAD`], {
-      cwd: task.worktreeDir,
+      cwd: workingDirectory,
       timeout: options.timeoutMs ?? envNumber("CODING_AGENT_REVIEW_TIMEOUT_MS", 120000),
       maxBuffer: 2 * 1024 * 1024
     });
@@ -1301,7 +1312,7 @@ async function dispatchCodingTaskDeepReview(task, review, _options = {}) {
   const prompt = [
     "You are the high-risk coding-task reviewer, not an executor.",
     "Do not edit files, run mutating commands, commit, push, or create a PR.",
-    `Review only the registered worktree: ${task.worktreeDir ?? "(missing)"}.`,
+    `Review only the registered working directory: ${workingDirectoryForTask(task) ?? "(missing)"}.`,
     "Inspect the approved mission and current diff, then return concise blocker/non-blocker findings with file, line, and failure scenario.",
     "The deterministic review result remains the PR gate; this session is an adversarial deep-dive evidence source."
   ].join("\n");
@@ -1313,7 +1324,7 @@ async function dispatchCodingTaskDeepReview(task, review, _options = {}) {
       taskId: task.id,
       repo: task.repo,
       githubRepo: task.githubRepo,
-      worktreeDir: task.worktreeDir,
+      workingDirectory: workingDirectoryForTask(task),
       mission: task.mission,
       modelPolicy: task.modelPolicy,
       riskTier: "high",
@@ -1524,12 +1535,21 @@ function codingAgentRepoMap(env = process.env) {
 }
 
 function sourceRepoForTask(task, env = process.env) {
+  if (task.repositoryRoot) return task.repositoryRoot;
+  if (task.repository_root) return task.repository_root;
   if (task.sourceRepoDir) return task.sourceRepoDir;
   const repoMap = codingAgentRepoMap(env);
   const short = shortRepoName(task.githubRepo ?? task.repo);
-  if (repoMap[task.repo]) return repoMap[task.repo];
-  if (repoMap[task.githubRepo]) return repoMap[task.githubRepo];
-  if (repoMap[short]) return repoMap[short];
+  const configured = repoMap[task.repo] ?? repoMap[task.githubRepo] ?? repoMap[short];
+  if (typeof configured === "string") return configured;
+  if (configured && typeof configured === "object") {
+    const repositoryRoot =
+      configured.repositoryRoot ??
+      configured.repository_root ??
+      configured.sourceRepoDir ??
+      configured.root;
+    if (repositoryRoot) return repositoryRoot;
+  }
   if (env.CODING_AGENT_REPO_ROOT) return join(env.CODING_AGENT_REPO_ROOT, short);
   if (basename(process.cwd()) === short) return process.cwd();
   throw new Error(`coding_agent_source_repo_not_configured:${task.repo}`);
@@ -1564,44 +1584,53 @@ async function runCommandResult(executable, args, options = {}) {
 export async function prepareCodingAgentWorktree(task, options = {}) {
   const env = options.env ?? process.env;
   const policy = options.policy ?? codingAgentPolicyFromEnv(env);
-  const workRoot = resolve(env.CODING_AGENT_WORK_ROOT ?? options.workRoot ?? "");
-  if (!env.CODING_AGENT_WORK_ROOT && !options.workRoot) {
+  const configuredWorkRoot = env.CODING_AGENT_WORK_ROOT ?? options.workRoot;
+  if (!configuredWorkRoot) {
     throw new Error("CODING_AGENT_WORK_ROOT is required");
   }
+  const workRoot = resolve(configuredWorkRoot);
   await mkdir(workRoot, { recursive: true, mode: 0o700 });
   const canonicalRoot = await realpath(workRoot);
   const sourceRepoDir = await realpath(sourceRepoForTask(task, env));
-  const worktreeDir = resolve(
-    task.worktreeDir ?? join(canonicalRoot, shortRepoName(task.repo), task.id)
-  );
-  if (!pathWithin(worktreeDir, canonicalRoot)) {
-    throw new Error("coding_agent_worktree_outside_allowed_root");
-  }
-  if (!task.branch?.startsWith(`${policy.branchPrefix}/`)) {
-    throw new Error("coding_agent_branch_not_allowed");
-  }
   const repository = await runCommandResult("git", ["rev-parse", "--show-toplevel"], {
     ...options,
     cwd: sourceRepoDir
   });
   if (!repository.ok) throw new Error("coding_agent_source_repo_invalid");
-  await mkdir(dirname(worktreeDir), { recursive: true, mode: 0o700 });
+  const repositoryRoot = await realpath(repository.stdout.trim());
+  const workspaceMode = task.workspaceMode ?? "worktree";
+  const requestedDirectory = workingDirectoryForTask(task);
+  if (!requestedDirectory) throw new Error("coding_task_working_directory_required");
+  let workingDirectory = resolve(requestedDirectory);
+  if (workspaceMode === "root") {
+    workingDirectory = await realpath(workingDirectory);
+  }
+  if (workspaceMode === "root" && workingDirectory !== repositoryRoot) {
+    throw new Error("coding_task_root_directory_mismatch");
+  }
+  if (workspaceMode !== "root" && !pathWithin(workingDirectory, canonicalRoot)) {
+    throw new Error("coding_agent_worktree_outside_allowed_root");
+  }
+  if (workspaceMode !== "root" && !task.branch?.startsWith(`${policy.branchPrefix}/`)) {
+    throw new Error("coding_agent_branch_not_allowed");
+  }
   let created = false;
-  if (!(await pathExists(worktreeDir))) {
+  if (workspaceMode !== "root" && !(await pathExists(workingDirectory))) {
+    await mkdir(dirname(workingDirectory), { recursive: true, mode: 0o700 });
     const baseBranch = task.baseBranch ?? policy.defaultBaseBranch;
     if (task.executionMode === "auto") {
       await runCommandResult("git", ["fetch", "origin"], { ...options, cwd: sourceRepoDir });
     }
     let added = await runCommandResult(
       "git",
-      ["worktree", "add", "-b", task.branch, worktreeDir, baseBranch],
+      ["worktree", "add", "-b", task.branch, workingDirectory, baseBranch],
       { ...options, cwd: sourceRepoDir }
     );
     if (
       !added.ok &&
       /already exists|already checked out/i.test(`${added.stderr}\n${added.stdout}`)
     ) {
-      added = await runCommandResult("git", ["worktree", "add", worktreeDir, task.branch], {
+      added = await runCommandResult("git", ["worktree", "add", workingDirectory, task.branch], {
         ...options,
         cwd: sourceRepoDir
       });
@@ -1619,16 +1648,16 @@ export async function prepareCodingAgentWorktree(task, options = {}) {
     const baseBranch = task.baseBranch ?? policy.defaultBaseBranch;
     const fetched = await runCommandResult("git", ["fetch", "origin"], {
       ...options,
-      cwd: worktreeDir
+      cwd: workingDirectory
     });
     if (!fetched.ok) throw new Error(`coding_agent_fetch_failed:${outputTail(fetched.stderr)}`);
     const merged = await runCommandResult("git", ["merge", "--no-edit", baseBranch], {
       ...options,
-      cwd: worktreeDir
+      cwd: workingDirectory
     });
     const unresolved = await runCommandResult("git", ["diff", "--name-only", "--diff-filter=U"], {
       ...options,
-      cwd: worktreeDir
+      cwd: workingDirectory
     });
     const conflicts = unresolved.stdout
       .split("\n")
@@ -1639,7 +1668,18 @@ export async function prepareCodingAgentWorktree(task, options = {}) {
     }
     baseSync = { attempted: true, merged: merged.ok, conflicts };
   }
-  return { worktreeDir, sourceRepoDir, workRoot: canonicalRoot, created, baseSync };
+  return {
+    workspaceMode,
+    repositoryRoot,
+    workingDirectory,
+    // Compatibility aliases for the existing worker-facing protocol.
+    worktreeDir: workingDirectory,
+    sourceRepoDir: repositoryRoot,
+    workRoot: workspaceMode === "root" ? repositoryRoot : canonicalRoot,
+    stateWorkRoot: canonicalRoot,
+    created,
+    baseSync
+  };
 }
 
 const PERSISTED_OMP_EVENT_TYPES = new Set([
@@ -1657,9 +1697,10 @@ const PERSISTED_OMP_EVENT_TYPES = new Set([
 ]);
 
 async function checkpointCodingAgentWorktree(task, options = {}) {
+  const workingDirectory = workingDirectoryForTask(task);
   const unresolved = await runCommandResult("git", ["diff", "--name-only", "--diff-filter=U"], {
     ...options,
-    cwd: task.worktreeDir
+    cwd: workingDirectory
   });
   if (!unresolved.ok) {
     throw new Error(`coding_agent_conflict_check_failed:${outputTail(unresolved.stderr)}`);
@@ -1669,12 +1710,12 @@ async function checkpointCodingAgentWorktree(task, options = {}) {
   }
   const staged = await runCommandResult("git", ["add", "-A"], {
     ...options,
-    cwd: task.worktreeDir
+    cwd: workingDirectory
   });
   if (!staged.ok) throw new Error(`coding_agent_git_add_failed:${outputTail(staged.stderr)}`);
   const diff = await runCommandResult("git", ["diff", "--cached", "--quiet"], {
     ...options,
-    cwd: task.worktreeDir
+    cwd: workingDirectory
   });
   let committed = false;
   if (diff.exitCode === 1) {
@@ -1689,7 +1730,7 @@ async function checkpointCodingAgentWorktree(task, options = {}) {
         "-m",
         `coding-agent: ${task.title ?? task.id}`
       ],
-      { ...options, cwd: task.worktreeDir }
+      { ...options, cwd: workingDirectory }
     );
     if (!commit.ok) throw new Error(`coding_agent_commit_failed:${outputTail(commit.stderr)}`);
     committed = true;
@@ -1698,7 +1739,7 @@ async function checkpointCodingAgentWorktree(task, options = {}) {
   }
   const status = await runCommandResult("git", ["status", "--porcelain=v1"], {
     ...options,
-    cwd: task.worktreeDir
+    cwd: workingDirectory
   });
   if (!status.ok || status.stdout.trim()) {
     throw new Error(
@@ -1707,7 +1748,7 @@ async function checkpointCodingAgentWorktree(task, options = {}) {
   }
   const head = await runCommandResult("git", ["rev-parse", "HEAD"], {
     ...options,
-    cwd: task.worktreeDir
+    cwd: workingDirectory
   });
   if (!head.ok || !head.stdout.trim()) {
     throw new Error(`coding_agent_head_sha_missing:${outputTail(head.stderr)}`);
@@ -1767,9 +1808,13 @@ export async function processCodingAgentRuns(options = {}) {
         command: options.command,
         workRoot: options.workRoot
       });
+      const workingDirectory = workspace.workingDirectory ?? workspace.worktreeDir;
+      if (!workingDirectory) throw new Error("coding_task_working_directory_required");
       const currentTask = {
         ...task,
-        worktreeDir: workspace.worktreeDir,
+        workingDirectory,
+        worktreeDir: workingDirectory,
+        repositoryRoot: workspace.repositoryRoot ?? task.repositoryRoot,
         sourceRepoDir: workspace.sourceRepoDir
       };
       await (
@@ -1777,7 +1822,8 @@ export async function processCodingAgentRuns(options = {}) {
         ((payload) => postDashboardAction("/api/apps/coding-agent/tasks", payload))
       )(currentTask);
       const stateRoot = resolve(
-        env.CODING_AGENT_OMP_RUN_ROOT ?? join(workspace.workRoot, ".omp-state")
+        env.CODING_AGENT_OMP_RUN_ROOT ??
+          join(workspace.stateWorkRoot ?? workspace.workRoot, ".omp-state")
       );
       const sessionDir = join(stateRoot, "sessions", task.id);
       const homeDir = join(stateRoot, "homes", task.id);
@@ -1810,7 +1856,7 @@ export async function processCodingAgentRuns(options = {}) {
       try {
         result = await (options.runOmp ?? runOmpRpcSession)({
           command: env.CODING_AGENT_OMP_BIN ?? "omp",
-          worktreeDir: workspace.worktreeDir,
+          workingDirectory,
           workRoot: workspace.workRoot,
           sessionDir,
           homeDir,
@@ -1922,9 +1968,21 @@ export async function publishReadyCodingAgentPrs(options = {}) {
         results.push({ taskId: task.id, status: "blocked", reason: "host_policy_rejected" });
         continue;
       }
+      const workingDirectory = workingDirectoryForTask(task);
       const workRoot = env.CODING_AGENT_WORK_ROOT ?? options.workRoot;
-      if (!workRoot || !task.worktreeDir || !pathWithin(task.worktreeDir, workRoot)) {
-        results.push({ taskId: task.id, status: "blocked", reason: "worktree_not_allowed" });
+      const rootModeDirectory =
+        task.workspaceMode === "root" &&
+        task.repositoryRoot &&
+        workingDirectory &&
+        resolve(workingDirectory) === resolve(task.repositoryRoot);
+      const worktreeDirectory =
+        workRoot && workingDirectory && pathWithin(workingDirectory, workRoot);
+      if (!rootModeDirectory && !worktreeDirectory) {
+        results.push({
+          taskId: task.id,
+          status: "blocked",
+          reason: "working_directory_not_allowed"
+        });
         continue;
       }
       const approvedItem = (task.queue ?? []).find(
@@ -1949,7 +2007,7 @@ export async function publishReadyCodingAgentPrs(options = {}) {
       }
       const status = await runCommandResult("git", ["status", "--porcelain=v1"], {
         ...options,
-        cwd: task.worktreeDir
+        cwd: workingDirectory
       });
       if (!status.ok || status.stdout.trim()) {
         results.push({
@@ -1961,7 +2019,7 @@ export async function publishReadyCodingAgentPrs(options = {}) {
       }
       const head = await runCommandResult("git", ["rev-parse", "HEAD"], {
         ...options,
-        cwd: task.worktreeDir
+        cwd: workingDirectory
       });
       if (!head.ok || head.stdout.trim() !== task.latestValidation.headSha) {
         results.push({ taskId: task.id, status: "blocked", reason: "head_changed_after_review" });
@@ -1970,7 +2028,7 @@ export async function publishReadyCodingAgentPrs(options = {}) {
       const pushed = await runCommandResult(
         "git",
         ["push", "--set-upstream", "origin", task.branch],
-        { ...options, cwd: task.worktreeDir, timeoutMs: 5 * 60_000 }
+        { ...options, cwd: workingDirectory, timeoutMs: 5 * 60_000 }
       );
       if (!pushed.ok) throw new Error(`coding_agent_push_failed:${outputTail(pushed.stderr)}`);
 
@@ -1979,7 +2037,7 @@ export async function publishReadyCodingAgentPrs(options = {}) {
       let pr = await runCommandResult(
         "gh",
         ["pr", "view", task.branch, "--repo", githubRepo, "--json", "number,url,state"],
-        { ...options, cwd: task.worktreeDir }
+        { ...options, cwd: workingDirectory }
       );
       if (!pr.ok) {
         const baseBranch = String(task.baseBranch ?? policy.defaultBaseBranch)
@@ -2010,14 +2068,14 @@ export async function publishReadyCodingAgentPrs(options = {}) {
             "--body",
             body
           ],
-          { ...options, cwd: task.worktreeDir }
+          { ...options, cwd: workingDirectory }
         );
         if (!created.ok)
           throw new Error(`coding_agent_pr_create_failed:${outputTail(created.stderr)}`);
         pr = await runCommandResult(
           "gh",
           ["pr", "view", task.branch, "--repo", githubRepo, "--json", "number,url,state"],
-          { ...options, cwd: task.worktreeDir }
+          { ...options, cwd: workingDirectory }
         );
       }
       if (!pr.ok) throw new Error(`coding_agent_pr_lookup_failed:${outputTail(pr.stderr)}`);

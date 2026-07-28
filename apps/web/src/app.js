@@ -713,6 +713,7 @@ async function submitPrPickup() {
       prNumber,
       title: optionalField("pickup-title"),
       branch: optionalField("pickup-branch"),
+      workspaceMode: byId("pickup-workspace-mode").value || undefined,
       pickupSource: "dashboard"
     })
   });

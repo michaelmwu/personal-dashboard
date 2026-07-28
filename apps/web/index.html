@@ -188,6 +188,14 @@
                   <span>Branch</span>
                   <input id="pickup-branch" type="text" autocomplete="off">
                 </label>
+                <label>
+                  <span>Workspace</span>
+                  <select id="pickup-workspace-mode">
+                    <option value="">Repository default</option>
+                    <option value="worktree">Isolated worktree</option>
+                    <option value="root">Root checkout (exclusive)</option>
+                  </select>
+                </label>
                 <button type="button" id="pickup-submit">Pick Up</button>
               </fieldset>
               <fieldset>

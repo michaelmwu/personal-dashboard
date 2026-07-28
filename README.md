@@ -151,8 +151,11 @@ for complete mode, scheduler, campaign, recovery, and delivery examples):
 - `GET /api/apps/coding-agent/tasks`: list active coding tasks. Pass
   `includeArchived=true` to include archived records.
 - `POST /api/apps/coding-agent/tasks`: register the durable task anchor
-  `{id, repo, branch, worktreeDir, executionMode, ompSessionId, prNumber,
-  previewUrl}`.
+  `{id, repo, branch, workspaceMode, repositoryRoot, workingDirectory,
+  executionMode, ompSessionId, prNumber, previewUrl}`. Infrastructure repos
+  default to an exclusive root checkout; application repos default to a
+  task-named worktree. Root mode is rejected while another active task targets
+  the same repository root.
 - `POST /api/apps/coding-agent/runs/claim`, `/runs/events`, and
   `/runs/complete`: lease queued OMP RPC runs and persist their lifecycle. A
   prompt acknowledgement is not completion; the worker waits for `agent_end`.
@@ -170,7 +173,7 @@ for complete mode, scheduler, campaign, recovery, and delivery examples):
   intake plan with clarification questions, proposed surfaces, and risk
   classification before execution.
 - `POST /api/apps/coding-agent/queue-plan`: plan priority, duplicate
-  candidates, and one-task-one-worktree allocation before execution.
+  candidates, and repository-policy execution location before execution.
 - `POST /api/apps/coding-agent/pr-pickup`: register an existing PR as a
   managed coding task from the dashboard or an explicit pickup comment.
 - `POST /api/apps/coding-agent/coordination`: attach Telegram, dashboard, or

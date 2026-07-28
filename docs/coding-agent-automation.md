@@ -8,6 +8,7 @@ Telegram/Discord delivery.
 
 ```text
 Hermes/API request
+  -> dashboard resolves repository root + working directory
   -> dashboard task + run request
   -> worker lease
   -> repo-specific worktree
@@ -31,6 +32,7 @@ CODING_AGENT_OMP_ENABLED=true
 CODING_AGENT_WORK_ROOT=/srv/coding-agent/worktrees
 PI_CODING_AGENT_DIR=/home/dashboard/.omp/agent
 CODING_AGENT_REPO_MAP_JSON={"personal-dashboard":"/srv/personal-dashboard","moo-infra":"/srv/moo-infra"}
+CODING_AGENT_INFRASTRUCTURE_REPOS=moo-infra
 
 CODING_AGENT_AUTOMATION_ENABLED=true
 CODING_AGENT_VALIDATION_ENABLED=true
@@ -47,6 +49,24 @@ Leave `CODING_AGENT_OMP_MODEL` blank to use the model/provider selected in OMP's
 owner-only config. Provider login is performed with OMP itself; existing Codex,
 Claude, or Cursor CLI login state is not assumed. `CODING_AGENT_REPO_MAP_JSON`
 is preferred when source checkouts do not share one parent.
+
+## Execution locations
+
+Each coding task stores `workspaceMode`, `repositoryRoot`, and
+`workingDirectory`. The dashboard resolves and persists those values before it
+queues a run; OMP receives only the resolved working directory.
+
+- Repositories listed in `CODING_AGENT_INFRASTRUCTURE_REPOS` (default:
+  `moo-infra`) use their root checkout by default and are serial.
+- Other repositories use a task-named worktree under `CODING_AGENT_WORK_ROOT`
+  by default, allowing parallel tasks.
+- A task can explicitly set `workspaceMode` to `root` or `worktree`. A root
+  choice is rejected while any other active task targets the same repository
+  root.
+
+`worktreeDir` and `sourceRepoDir` remain compatibility aliases for existing
+workers and historical task records. New integrations should use
+`workingDirectory` and `repositoryRoot`.
 
 The default reviewer policy starts a fresh OMP process/session in
 `always-ask`, supplies the committed diff directly, and fails the gate if the

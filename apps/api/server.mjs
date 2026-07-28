@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import http from "node:http";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { hostDashboardSummary, hostDashboardViewport } from "../../packages/contracts/index.mjs";
@@ -38,6 +38,7 @@ import {
   planPrMaintenance,
   proposeCodingAgentGoalMutations,
   reconcileCodingAgentTasks,
+  resolveCodingTaskExecutionLocation,
   reviewCodingAgentRisk,
   shortRepoName,
   summarizeCodingTaskHandoff,
@@ -152,6 +153,17 @@ const asiaTravelDealsApiBaseUrl = process.env.ASIA_TRAVEL_DEALS_API_BASE_URL ?? 
 const asiaTravelDealsApiToken = process.env.ASIA_TRAVEL_DEALS_API_TOKEN ?? "";
 const hotelRateFinderConfig = hotelRatesConfig();
 const codingAgentPolicy = codingAgentPolicyFromEnv();
+let codingTaskWriteTail = Promise.resolve();
+
+class CodingTaskExecutionLocationError extends Error {
+  constructor(result) {
+    super(result.reason);
+    this.name = "CodingTaskExecutionLocationError";
+    this.reason = result.reason;
+    this.statusCode = result.statusCode ?? 409;
+  }
+}
+
 const ASIA_TRAVEL_DEALS_SOURCE_ID = "asia-travel-deals";
 const HOTEL_RATE_FINDER_SOURCE_ID = "hotel-rate-finder";
 
@@ -361,12 +373,159 @@ async function findCodingFinding(payload) {
   return (await codingFindingItems()).find((item) => item.id === findingId);
 }
 
-async function persistCodingTaskItem(item) {
-  await codingAgentStore.upsertItem(item);
+function codingAgentRepoMap() {
+  const raw = process.env.CODING_AGENT_REPO_MAP_JSON;
+  if (!raw) return {};
+  const parsed = JSON.parse(raw);
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+    throw new Error("CODING_AGENT_REPO_MAP_JSON must be a JSON object");
+  }
+  return parsed;
+}
+
+function repositoryMapEntry(task = {}) {
+  const map = codingAgentRepoMap();
+  const repo = task.repo ?? task.githubRepo ?? task.github_repo;
+  const short = shortRepoName(repo);
+  return map[task.repo] ?? map[task.githubRepo] ?? map[task.github_repo] ?? map[short];
+}
+
+function resolvedDirectory(value) {
+  return typeof value === "string" && value.trim() ? resolve(value.trim()) : undefined;
+}
+
+function repositoryRootForTask(task = {}) {
+  const explicit =
+    task.repositoryRoot ?? task.repository_root ?? task.sourceRepoDir ?? task.source_repo_dir;
+  if (explicit) return resolvedDirectory(explicit);
+  const configured = repositoryMapEntry(task);
+  if (typeof configured === "string") return resolvedDirectory(configured);
+  if (configured && typeof configured === "object") {
+    const configuredRoot =
+      configured.repositoryRoot ??
+      configured.repository_root ??
+      configured.sourceRepoDir ??
+      configured.root;
+    if (configuredRoot) return resolvedDirectory(configuredRoot);
+  }
+  const repoRoot = resolvedDirectory(process.env.CODING_AGENT_REPO_ROOT);
+  if (repoRoot) return join(repoRoot, shortRepoName(task.repo ?? task.githubRepo));
+
+  // Local development can operate on the dashboard checkout without requiring
+  // a repo map. Other repositories retain a distinct unresolved anchor until
+  // production config supplies CODING_AGENT_REPO_MAP_JSON.
+  const short = shortRepoName(task.repo ?? task.githubRepo);
+  return short === "personal-dashboard"
+    ? root
+    : join(root, ".data", "unconfigured-repositories", short || "repo");
+}
+
+function repositoryKindForTask(task = {}) {
+  const explicit =
+    task.repositoryKind ??
+    task.repository_kind ??
+    task.repositoryType ??
+    task.repository_type ??
+    task.repoKind ??
+    task.repo_kind;
+  if (explicit) return explicit;
+  const configured = repositoryMapEntry(task);
+  if (configured && typeof configured === "object") {
+    return (
+      configured.repositoryKind ??
+      configured.repository_kind ??
+      configured.repositoryType ??
+      configured.repository_type ??
+      configured.kind
+    );
+  }
+  return undefined;
+}
+
+function taskDirectorySegment(task = {}) {
+  return (
+    String(task.id ?? task.taskId ?? task.task_id ?? "task")
+      .replace(/[^a-zA-Z0-9_.-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "task"
+  );
+}
+
+function defaultWorkingDirectory(task = {}) {
+  const workRoot = resolve(
+    process.env.CODING_AGENT_WORK_ROOT ?? join(root, ".data", "coding-agent-worktrees")
+  );
+  return join(
+    workRoot,
+    shortRepoName(task.repo ?? task.githubRepo) || "repo",
+    taskDirectorySegment(task)
+  );
+}
+
+function comparableCodingTask(item) {
+  const task = item.payload ?? item ?? {};
+  return {
+    ...task,
+    id: task.id ?? item.id,
+    repositoryRoot: repositoryRootForTask(task)
+  };
+}
+
+async function resolveCodingTaskItemLocation(item) {
+  const existingTasks = await codingTaskItems();
+  const existing = existingTasks.find((candidate) => candidate.id === item.id);
+  const task = {
+    ...(existing?.payload ?? {}),
+    ...(item.payload ?? {}),
+    id: item.payload?.id ?? item.id
+  };
+  const result = resolveCodingTaskExecutionLocation(
+    {
+      ...task,
+      repositoryRoot: repositoryRootForTask(task),
+      repositoryKind: repositoryKindForTask(task)
+    },
+    existingTasks.map(comparableCodingTask),
+    {
+      existing,
+      policy: codingAgentPolicy,
+      workingDirectoryForTask: defaultWorkingDirectory
+    }
+  );
+  if (!result.ok) throw new CodingTaskExecutionLocationError(result);
+  Object.assign(item.payload, {
+    workspaceMode: result.workspaceMode,
+    repositoryKind: result.repositoryKind,
+    repositoryRoot: result.repositoryRoot,
+    workingDirectory: result.workingDirectory,
+    // Compatibility fields remain derived aliases; they are not policy inputs
+    // for Hermes or Paseo.
+    sourceRepoDir: result.repositoryRoot,
+    worktreeDir: result.workingDirectory
+  });
   return item;
 }
 
+async function persistCodingTaskItem(item) {
+  const persistence = codingTaskWriteTail.then(
+    async () => {
+      await resolveCodingTaskItemLocation(item);
+      await codingAgentStore.upsertItem(item);
+      return item;
+    },
+    async () => {
+      await resolveCodingTaskItemLocation(item);
+      await codingAgentStore.upsertItem(item);
+      return item;
+    }
+  );
+  codingTaskWriteTail = persistence.catch(() => undefined);
+  return persistence;
+}
+
 async function persistCodingAgentItem(item) {
+  if (item.type === "coding-task") {
+    return persistCodingTaskItem(item);
+  }
   await codingAgentStore.upsertItem(item);
   return item;
 }
@@ -376,13 +535,13 @@ async function codingAgentModelPolicy() {
 }
 
 async function registerCodingTask(payload) {
-  if (!payload.repo) {
-    return { ok: false, statusCode: 400, reason: "missing_repo" };
-  }
   const requestedId = payload.id ?? payload.taskId ?? payload.task_id;
   const existing = requestedId
     ? await findCodingAgentItem("coding-task", requestedId)
     : await findCodingTask(payload);
+  if (!payload.repo && !existing?.payload?.repo) {
+    return { ok: false, statusCode: 400, reason: "missing_repo" };
+  }
   const item = codingTaskItem(payload, existing, {
     modelPolicy: await codingAgentModelPolicy()
   });
@@ -419,6 +578,16 @@ async function enqueueOmpCodingRun(action, mission) {
     }
     await persistCodingTaskItem(item);
     existing = item;
+  } else {
+    existing = await persistCodingTaskItem(
+      codingTaskItem(
+        {
+          ...payload,
+          repo: payload.repo ?? existing.payload.repo
+        },
+        existing
+      )
+    );
   }
 
   const task = existing.payload;
@@ -474,12 +643,14 @@ async function enqueueOmpCodingRun(action, mission) {
       ]
         .filter(Boolean)
         .join("\n\n"),
+      workingDirectory: executorPayload.workingDirectory,
       model: task.modelPolicy?.executor?.model,
       status: prior?.payload?.status ?? "queued"
     },
     prior
   );
   await persistCodingAgentItem(runItem);
+  let persistedTask = existing;
   if (action.capabilityId !== "deep-review-coding-task") {
     const taskItem = codingTaskItem(
       {
@@ -498,7 +669,7 @@ async function enqueueOmpCodingRun(action, mission) {
       },
       existing
     );
-    await persistCodingTaskItem(taskItem);
+    persistedTask = await persistCodingTaskItem(taskItem);
   }
   return {
     dispatched: true,
@@ -507,7 +678,7 @@ async function enqueueOmpCodingRun(action, mission) {
     runtime: "omp",
     runId: runItem.id,
     taskId: existing.id,
-    response: { run: runItem.payload, task: existing.payload }
+    response: { run: runItem.payload, task: persistedTask.payload }
   };
 }
 
@@ -672,7 +843,28 @@ async function tickCodingAutomations(payload = {}) {
     now: payload.now,
     policy: codingAgentPolicy
   });
-  for (const item of [...result.taskItems, ...result.runItems, ...result.automationItems]) {
+  const resolvedTasks = new Map();
+  for (const item of result.taskItems) {
+    const persisted = await persistCodingTaskItem(item);
+    resolvedTasks.set(persisted.id, persisted.payload);
+  }
+  for (const item of result.runItems) {
+    const task =
+      resolvedTasks.get(item.payload?.taskId) ??
+      (await findCodingTask({ taskId: item.payload?.taskId }))?.payload;
+    if (task) {
+      const executor = codingAgentExecutorPayload(task, {
+        mode: item.payload?.mode,
+        executionMode: item.payload?.executionMode
+      });
+      Object.assign(item.payload, {
+        workingDirectory: executor.workingDirectory,
+        prompt: [executor.instructions, executor.prompt].join("\n\n")
+      });
+    }
+    await persistCodingAgentItem(item);
+  }
+  for (const item of result.automationItems) {
     await persistCodingAgentItem(item);
   }
   return { ...result, statusCode: 202 };
@@ -687,14 +879,20 @@ async function upsertCodingDelivery(payload = {}) {
 }
 
 async function planCodingTask(payload) {
-  const result = planCodingTaskIntake(payload, { modelPolicy: await codingAgentModelPolicy() });
+  const result = planCodingTaskIntake(payload, {
+    modelPolicy: await codingAgentModelPolicy(),
+    policy: codingAgentPolicy
+  });
   await persistCodingTaskItem(result.taskItem);
   return result;
 }
 
 async function planCodingQueue(payload) {
   const result = planCodingTaskQueue(payload, await codingTaskItems(), {
-    modelPolicy: await codingAgentModelPolicy()
+    modelPolicy: await codingAgentModelPolicy(),
+    policy: codingAgentPolicy,
+    repositoryRoot: repositoryRootForTask(payload),
+    workingDirectoryForTask: defaultWorkingDirectory
   });
   await persistCodingTaskItem(result.taskItem);
   return result;
@@ -1008,8 +1206,12 @@ function codingTaskIdFromAction(action) {
 
 function codingTaskWorktreeFromAction(action) {
   return (
+    action.payload?.workingDirectory ??
+    action.payload?.working_directory ??
     action.payload?.worktreeDir ??
     action.payload?.worktree_dir ??
+    action.payload?.metadata?.workingDirectory ??
+    action.payload?.metadata?.working_directory ??
     action.payload?.metadata?.worktreeDir ??
     action.payload?.metadata?.worktree_dir
   );
@@ -2760,10 +2962,19 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
       }
 
       json(response, 404, { error: "not_found", path: url.pathname });
-    } catch (error) {
+    } catch (caughtError) {
+      if (caughtError instanceof CodingTaskExecutionLocationError) {
+        error(
+          response,
+          caughtError.statusCode,
+          caughtError.reason,
+          caughtError.reason.replaceAll("_", " ")
+        );
+        return;
+      }
       json(response, 500, {
         error: "internal_error",
-        message: error instanceof Error ? error.message : String(error)
+        message: caughtError instanceof Error ? caughtError.message : String(caughtError)
       });
     }
   });

@@ -54,6 +54,7 @@ import {
   proposeCodingAgentGoalMutations,
   reconcileCodingAgentTasks,
   relevantCodingAgentRegressionMemory,
+  resolveCodingTaskExecutionLocation,
   summarizeCodingTaskHandoff,
   synthesizeCodingAgentFindings,
   triageCodingAgentIssue,
@@ -2629,7 +2630,8 @@ describe("contracts", () => {
         priority: "urgent",
         duplicateOf: "coding_existing_duplicate",
         workspacePolicy: {
-          mode: "one-task-one-worktree",
+          mode: "repository-location-policy",
+          defaultWorkspaceMode: "worktree",
           portRangeSize: 10
         },
         portRange: {
@@ -2746,6 +2748,141 @@ describe("contracts", () => {
       expect(queuePayload.task).toMatchObject({
         id: "coding_queue_api",
         duplicateOf: "coding_existing_duplicate"
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
+  test("coding task execution locations apply defaults, overrides, and root safety", () => {
+    const repositoryRoot = "/srv/repos/dashboard-app";
+    const activeWorktree = codingTaskItem({
+      id: "coding_active_worktree",
+      repo: "dashboard-app",
+      status: "running",
+      repositoryRoot,
+      workingDirectory: "/srv/coding-agent/worktrees/dashboard-app/coding_active_worktree"
+    });
+
+    const applicationDefault = resolveCodingTaskExecutionLocation(
+      {
+        id: "coding_application_default",
+        repo: "dashboard-app",
+        repositoryRoot
+      },
+      [],
+      {
+        policy: { infrastructureRepos: ["moo-infra"] },
+        workingDirectoryForTask: (task) => `/srv/coding-agent/worktrees/${task.repo}/${task.id}`
+      }
+    );
+    expect(applicationDefault).toEqual({
+      ok: true,
+      workspaceMode: "worktree",
+      repositoryKind: "application",
+      repositoryRoot,
+      workingDirectory: "/srv/coding-agent/worktrees/dashboard-app/coding_application_default"
+    });
+
+    const infrastructureDefault = resolveCodingTaskExecutionLocation(
+      {
+        id: "coding_infrastructure_default",
+        repo: "moo-infra",
+        repositoryRoot: "/srv/repos/moo-infra"
+      },
+      [],
+      { policy: { infrastructureRepos: ["moo-infra"] } }
+    );
+    expect(infrastructureDefault).toEqual({
+      ok: true,
+      workspaceMode: "root",
+      repositoryKind: "infrastructure",
+      repositoryRoot: "/srv/repos/moo-infra",
+      workingDirectory: "/srv/repos/moo-infra"
+    });
+
+    const explicitInfrastructureWorktree = resolveCodingTaskExecutionLocation(
+      {
+        id: "coding_infrastructure_worktree",
+        repo: "moo-infra",
+        workspaceMode: "worktree",
+        repositoryRoot: "/srv/repos/moo-infra"
+      },
+      [],
+      {
+        policy: { infrastructureRepos: ["moo-infra"] },
+        workingDirectoryForTask: (task) => `/srv/coding-agent/worktrees/${task.repo}/${task.id}`
+      }
+    );
+    expect(explicitInfrastructureWorktree).toMatchObject({
+      ok: true,
+      workspaceMode: "worktree",
+      workingDirectory: "/srv/coding-agent/worktrees/moo-infra/coding_infrastructure_worktree"
+    });
+
+    expect(
+      resolveCodingTaskExecutionLocation(
+        {
+          id: "coding_unsafe_root",
+          repo: "dashboard-app",
+          workspaceMode: "root",
+          repositoryRoot
+        },
+        [activeWorktree],
+        { policy: { infrastructureRepos: ["moo-infra"] } }
+      )
+    ).toMatchObject({
+      ok: false,
+      statusCode: 409,
+      reason: "root_workspace_requires_exclusive_repository"
+    });
+  });
+
+  test("coding task API persists execution locations and rejects unsafe root mode", async () => {
+    const taskId = `coding_workspace_root_${Date.now()}`;
+    const apiRepositoryRoot = `/srv/repos/dashboard-app-${Date.now()}`;
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+    try {
+      const worktree = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          id: taskId,
+          repo: "workspace-policy-app",
+          title: "Parallel task",
+          repositoryRoot: apiRepositoryRoot
+        })
+      });
+      expect(worktree.status).toBe(202);
+      expect(await worktree.json()).toMatchObject({
+        task: {
+          workspaceMode: "worktree",
+          repositoryRoot: apiRepositoryRoot,
+          workingDirectory: expect.stringContaining(taskId)
+        }
+      });
+
+      const rootMode = await fetch(`http://127.0.0.1:${apiPort}/api/apps/coding-agent/tasks`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          id: `${taskId}_root`,
+          repo: "workspace-policy-app",
+          title: "Unsafe root task",
+          workspaceMode: "root",
+          repositoryRoot: apiRepositoryRoot
+        })
+      });
+      expect(rootMode.status).toBe(409);
+      expect(await rootMode.json()).toMatchObject({
+        error: "root_workspace_requires_exclusive_repository"
       });
     } finally {
       await closeServer(apiServer);
@@ -5194,7 +5331,7 @@ describe("contracts", () => {
       expect.objectContaining({
         executionMode: "manual",
         model: undefined,
-        worktreeDir: "/tmp/coding-omp-review",
+        workingDirectory: "/tmp/coding-omp-review",
         workRoot: "/tmp/coding-work"
       })
     ]);
@@ -5875,7 +6012,7 @@ describe("contracts", () => {
       title: "Fix review feedback",
       prompt: "Implement the coding agent loop.",
       branch: "hermes/executor",
-      worktreeDir: "/Users/michaelwu/agents/work/personal-dashboard/executor",
+      workingDirectory: "/Users/michaelwu/agents/work/personal-dashboard/executor",
       portRange: {
         base: 15000,
         start: 15000,
@@ -5916,6 +6053,7 @@ describe("contracts", () => {
         actionId: "update-coding-task",
         taskId: "coding_executor_001",
         mode: "test-fix",
+        workingDirectory: "/Users/michaelwu/agents/work/personal-dashboard/executor",
         worktreeDir: "/Users/michaelwu/agents/work/personal-dashboard/executor",
         conductorPort: 15000,
         portRange: {
@@ -5925,12 +6063,14 @@ describe("contracts", () => {
         }
       }
     });
-    expect(testFix.instructions).toContain("change into this task worktree");
+    expect(testFix.instructions).toContain("change into this task working directory");
     expect(testFix.instructions).toContain("export CONDUCTOR_PORT=15000");
     expect(testFix.instructions).toContain("Do not push, create PRs, merge, or clean up worktrees");
     expect(testFix.prompt).toContain("Mode: test-fix");
     expect(testFix.prompt).toContain("Port block: 15000-15009");
     expect(testFix.prompt).toContain("unit-contract-tests");
+    expect(testFix).not.toHaveProperty("workspaceMode");
+    expect(testFix).not.toHaveProperty("repositoryRoot");
 
     expect(
       codingAgentExecutorPayload(task, {
