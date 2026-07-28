@@ -159,15 +159,15 @@ export function sanitizeOmpRpcFrame(frame = {}) {
   return result;
 }
 
-async function canonicalWorktree(worktreeDir, workRoot) {
-  if (!worktreeDir || !workRoot) {
-    throw new Error("coding_agent_worktree_and_root_required");
+async function canonicalWorkingDirectory(workingDirectory, workRoot) {
+  if (!workingDirectory || !workRoot) {
+    throw new Error("coding_agent_working_directory_and_root_required");
   }
-  const [worktree, root] = await Promise.all([realpath(worktreeDir), realpath(workRoot)]);
-  if (!safePath(worktree, root)) {
-    throw new Error("coding_agent_worktree_outside_allowed_root");
+  const [directory, root] = await Promise.all([realpath(workingDirectory), realpath(workRoot)]);
+  if (!safePath(directory, root)) {
+    throw new Error("coding_agent_working_directory_outside_allowed_root");
   }
-  return worktree;
+  return directory;
 }
 
 function processError(message, stderr) {
@@ -175,7 +175,10 @@ function processError(message, stderr) {
 }
 
 export async function runOmpRpcSession(options = {}) {
-  const worktreeDir = await canonicalWorktree(options.worktreeDir, options.workRoot);
+  const workingDirectory = await canonicalWorkingDirectory(
+    options.workingDirectory ?? options.worktreeDir,
+    options.workRoot
+  );
   const executionMode = normalizeOmpExecutionMode(options.executionMode);
   const sessionDir = resolve(options.sessionDir);
   const homeDir = resolve(options.homeDir);
@@ -202,7 +205,7 @@ export async function runOmpRpcSession(options = {}) {
     noLsp: options.noLsp
   });
   const child = (options.spawn ?? nodeSpawn)(command, args, {
-    cwd: worktreeDir,
+    cwd: workingDirectory,
     env: ompChildEnvironment({
       env: options.env,
       homeDir,

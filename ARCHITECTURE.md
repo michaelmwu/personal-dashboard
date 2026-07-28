@@ -123,8 +123,9 @@ Core entities:
 - `HermesCapability`: action Hermes is allowed to trigger.
 - `HermesAction`: versioned, idempotent, dashboard-visible request envelope for
   Hermes/app work.
-- `CodingTask`: canonical repo, branch, worktree, mission, execution mode,
-  current run, validation/review, PR, repair budget, and delivery anchors.
+- `CodingTask`: canonical repo, branch, resolved `workspaceMode`,
+  `repositoryRoot`, and `workingDirectory`, mission, execution mode, current
+  run, validation/review, PR, repair budget, and delivery anchors.
 - `CodingRunRequest`: leased OMP RPC execution with immutable manual/auto mode,
   sanitized events, session identity, approvals, and terminal result.
 - `CodingSchedule`, `CodingGoal`, `CodingCampaign`: durable automation parents
