@@ -325,7 +325,7 @@
         create(
           "div",
           null,
-          create("h1", { className: "personal-dashboard-hermes-title" }, "Personal Dashboard"),
+          create("h1", { className: "personal-dashboard-hermes-title" }, "MooHQ"),
           create(
             "p",
             { className: "personal-dashboard-hermes-updated" },
