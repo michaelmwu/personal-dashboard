@@ -1,7 +1,7 @@
 {
   "name": "personal-dashboard",
   "label": "Personal Dashboard",
-  "description": "Read-only personal finance, travel, and operations summary.",
+  "description": "Read-only overview, hotel rate, and Asia travel deal viewports.",
   "icon": "BarChart3",
   "version": "0.1.0",
   "tab": {
