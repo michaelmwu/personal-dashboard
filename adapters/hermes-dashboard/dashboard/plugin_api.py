@@ -19,6 +19,8 @@ from fastapi import APIRouter, HTTPException
 
 
 DEFAULT_DASHBOARD_API_BASE_URL = "http://127.0.0.1:8810"
+HOTEL_RATE_FINDER_UI_URL_ENV = "PERSONAL_DASHBOARD_HOTEL_RATE_FINDER_UI_URL"
+APP_LINKS_VERSION = "personal-dashboard-app-links.v1"
 SUMMARY_PATH = "/api/host-dashboard/summary"
 VIEWPORT_PATHS = {
     "overview": "/api/host-dashboard/overview",
@@ -59,6 +61,44 @@ def _is_loopback_host(host: str | None) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def _hotel_rate_finder_ui_url(env: dict[str, str] | None = None) -> str | None:
+    """Return only a configured, private HTTPS URL for the full rates app.
+
+    This is deliberately independent from the loopback dashboard proxy: it is
+    a browser navigation target, not an upstream request.  Keeping it to a
+    literal Tailscale HTTPS origin prevents an environment mistake from
+    turning the authenticated Hermes tab into an arbitrary-link relay.
+    """
+
+    environment = os.environ if env is None else env
+    configured = environment.get(HOTEL_RATE_FINDER_UI_URL_ENV, "").strip()
+    if not configured:
+        return None
+
+    try:
+        parsed = urlsplit(configured)
+        port = parsed.port
+    except ValueError:
+        return None
+
+    hostname = parsed.hostname.lower() if parsed.hostname else ""
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+        or not hostname.endswith(".ts.net")
+        or (port is not None and not 1 <= port <= 65535)
+    ):
+        return None
+
+    authority = hostname if port is None else f"{hostname}:{port}"
+    return urlunsplit(("https", authority, "/", "", ""))
 
 
 def _upstream_url(path: str, env: dict[str, str] | None = None) -> str:
@@ -257,3 +297,15 @@ async def get_asia_travel_deals() -> dict[str, Any]:
     """Return the fixed Asia Travel Deals viewport."""
 
     return await _get_viewport("asia-travel-deals")
+
+
+@router.get("/app-links")
+async def get_app_links() -> dict[str, Any]:
+    """Return fixed, validated browser destinations for the portholes."""
+
+    return {
+        "version": APP_LINKS_VERSION,
+        "apps": {
+            "hotel-rate-finder": _hotel_rate_finder_ui_url(),
+        },
+    }

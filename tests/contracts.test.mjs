@@ -506,15 +506,21 @@ describe("contracts", () => {
     expect(hermesProxy).toContain('"overview": "/api/host-dashboard/overview"');
     expect(hermesProxy).toContain('@router.get("/hotel-rate-finder")');
     expect(hermesProxy).toContain('@router.get("/asia-travel-deals")');
+    expect(hermesProxy).toContain('@router.get("/app-links")');
+    expect(hermesProxy).toContain("PERSONAL_DASHBOARD_HOTEL_RATE_FINDER_UI_URL");
     expect(hermesProxy).toContain('@router.get("/summary")');
     expect(hermesProxy).not.toContain("PERSONAL_DASHBOARD_API_TOKEN");
     expect(hermesScript).toContain('"/api/plugins/personal-dashboard/overview"');
     expect(hermesScript).toContain('"/api/plugins/personal-dashboard/hotel-rate-finder"');
     expect(hermesScript).toContain('"/api/plugins/personal-dashboard/asia-travel-deals"');
+    expect(hermesScript).toContain('"/api/plugins/personal-dashboard/app-links"');
+    expect(hermesScript).toContain("window.open(porthole.externalUrl");
     expect(hermesScript).toContain("personal-dashboard-hermes-porthole");
     expect(hermesScript).not.toContain("PERSONAL_DASHBOARD_API_TOKEN");
     expect(hermesScript).not.toContain("iframe");
-    expect(hermesStyle).toContain("var(--font-sans");
+    expect(hermesStyle).toContain("var(--theme-font-sans");
+    expect(hermesStyle).toContain("var(--theme-font-mono");
+    expect(hermesStyle).toContain("var(--font-mondwest");
     expect(hermesStyle).toContain("var(--color-card");
     expect(hermesStyle).not.toContain("Instrument Sans");
 

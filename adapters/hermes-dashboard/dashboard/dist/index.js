@@ -14,6 +14,7 @@
   const { React } = SDK;
   const { useCallback, useEffect, useState } = SDK.hooks;
   const create = React.createElement;
+  const APP_LINKS_ENDPOINT = "/api/plugins/personal-dashboard/app-links";
   const VIEWPORTS = [
     {
       id: "overview",
@@ -72,6 +73,37 @@
       return ["metrics", "alerts", "travel", "tasks"].every((key) => Array.isArray(value[key]));
     }
     return Array.isArray(value.items);
+  }
+
+  function isTailnetAppUrl(value) {
+    if (typeof value !== "string" || !value.trim()) {
+      return false;
+    }
+    try {
+      const url = new URL(value);
+      const port = url.port ? Number(url.port) : null;
+      return (
+        url.protocol === "https:" &&
+        !url.username &&
+        !url.password &&
+        url.pathname === "/" &&
+        !url.search &&
+        !url.hash &&
+        url.hostname.endsWith(".ts.net") &&
+        (port === null || (Number.isInteger(port) && port >= 1 && port <= 65535))
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function isAppLinks(value) {
+    return (
+      isRecord(value) &&
+      value.version === "personal-dashboard-app-links.v1" &&
+      isRecord(value.apps) &&
+      (value.apps["hotel-rate-finder"] === null || isTailnetAppUrl(value.apps["hotel-rate-finder"]))
+    );
   }
 
   function normalizedStatus(value) {
@@ -170,6 +202,7 @@
     highlight,
     items,
     action,
+    externalUrl,
     featured
   }) {
     return {
@@ -183,6 +216,7 @@
       highlight,
       items: Array.isArray(items) ? items.slice(0, 3) : [],
       action,
+      externalUrl: isTailnetAppUrl(externalUrl) ? externalUrl : "",
       featured: Boolean(featured)
     };
   }
@@ -273,7 +307,7 @@
     });
   }
 
-  function ratesPorthole(viewport, unavailable) {
+  function ratesPorthole(viewport, unavailable, externalUrl) {
     if (unavailable || sourceFailed(viewport)) {
       return unavailablePorthole({ id: "rates", label: "Rates", icon: "↓", action: "Retry rates" });
     }
@@ -313,7 +347,8 @@
             .join(" · ")
         };
       }),
-      action: lowerRate ? "Review lower rate" : "Open rates",
+      action: externalUrl ? "Open full Hotel Rate Finder" : "View rate summary",
+      externalUrl,
       featured: Boolean(lowerRate)
     });
   }
@@ -396,10 +431,14 @@
     });
   }
 
-  function buildPortholes(viewports, failed) {
+  function buildPortholes(viewports, failed, appLinks) {
     const overview = viewports.overview;
     return [
-      ratesPorthole(viewports["hotel-rate-finder"], failed["hotel-rate-finder"]),
+      ratesPorthole(
+        viewports["hotel-rate-finder"],
+        failed["hotel-rate-finder"],
+        appLinks?.apps?.["hotel-rate-finder"]
+      ),
       codingPorthole(overview, failed.overview),
       financePorthole(overview, failed.overview),
       tripsPorthole(overview, failed.overview),
@@ -484,8 +523,15 @@
       {
         className: classes,
         type: "button",
-        onClick: () =>
-          porthole.state === "degraded" ? props.onRefresh() : props.onOpen(porthole.id),
+        onClick: () => {
+          if (porthole.state === "degraded") {
+            props.onRefresh();
+          } else if (porthole.externalUrl) {
+            window.open(porthole.externalUrl, "_blank", "noopener,noreferrer");
+          } else {
+            props.onOpen(porthole.id);
+          }
+        },
         "aria-label": `${porthole.label}. ${porthole.summary}. ${action}.`
       },
       create(
@@ -616,24 +662,35 @@
   function MooHQPage() {
     const [viewports, setViewports] = useState({});
     const [failed, setFailed] = useState({});
+    const [appLinks, setAppLinks] = useState(null);
     const [loading, setLoading] = useState(true);
     const [screen, setScreen] = useState("home");
 
     const load = useCallback(async () => {
       setLoading(true);
-      const responses = await Promise.all(
-        VIEWPORTS.map(async (viewport) => {
-          try {
-            const response = await SDK.fetchJSON(viewport.endpoint);
-            if (!isViewport(response, viewport.id)) {
-              throw new Error("invalid_viewport_contract");
+      const [responses, nextAppLinks] = await Promise.all([
+        Promise.all(
+          VIEWPORTS.map(async (viewport) => {
+            try {
+              const response = await SDK.fetchJSON(viewport.endpoint);
+              if (!isViewport(response, viewport.id)) {
+                throw new Error("invalid_viewport_contract");
+              }
+              return { id: viewport.id, response };
+            } catch {
+              return { id: viewport.id, failed: true };
             }
-            return { id: viewport.id, response };
+          })
+        ),
+        (async () => {
+          try {
+            const response = await SDK.fetchJSON(APP_LINKS_ENDPOINT);
+            return isAppLinks(response) ? response : null;
           } catch {
-            return { id: viewport.id, failed: true };
+            return null;
           }
-        })
-      );
+        })()
+      ]);
 
       const nextViewports = {};
       const nextFailed = {};
@@ -646,6 +703,7 @@
       }
       setViewports(nextViewports);
       setFailed(nextFailed);
+      setAppLinks(nextAppLinks);
       setLoading(false);
     }, []);
 
@@ -654,7 +712,7 @@
     }, [load]);
 
     const hasResponse = Object.keys(viewports).length > 0 || Object.keys(failed).length > 0;
-    const portholes = buildPortholes(viewports, failed);
+    const portholes = buildPortholes(viewports, failed, appLinks);
     const attentionCount = portholes.filter((porthole) => porthole.state === "attention").length;
     const newest = latestTimestamp(portholes);
 
