@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Personal Dashboard</title>
+    <title>Finance Tracker · Personal Dashboard</title>
     <link rel="stylesheet" href="/src/styles.css">
   </head>
   <body>
     <main class="shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">Plaid Ledger / Hermes Oracle</p>
-          <h1>Transaction Dashboard</h1>
+          <p class="eyebrow">Personal Dashboard / Finance Tracker</p>
+          <h1>Cards, banks, and credits</h1>
         </div>
         <div class="status-strip" id="status-strip">
           <span class="status-dot"></span>
@@ -37,17 +37,36 @@
                 <h2>Transactions</h2>
                 <span id="transaction-count">Loading</span>
               </div>
-              <div class="sort-toolbar" aria-label="Sort transactions">
-                <button type="button" data-sort="date">Date</button>
-                <button type="button" data-sort="merchant">Merchant</button>
-                <button type="button" data-sort="amount">Amount</button>
-                <button type="button" data-sort="category">Category</button>
+              <div class="finance-toolbar">
+                <div class="scope-tabs" aria-label="Account type view" role="group">
+                  <button type="button" data-finance-scope="credit" aria-pressed="true">Credit cards</button>
+                  <button type="button" data-finance-scope="depository" aria-pressed="false">Bank accounts</button>
+                  <button type="button" data-finance-scope="all" aria-pressed="false">All</button>
+                </div>
+                <div class="plaid-actions">
+                  <button type="button" id="plaid-connect">Connect Plaid</button>
+                  <button type="button" id="plaid-sync">Sync now</button>
+                </div>
+                <div class="sort-toolbar" aria-label="Sort transactions">
+                  <button type="button" data-sort="date">Date</button>
+                  <button type="button" data-sort="merchant">Merchant</button>
+                  <button type="button" data-sort="amount">Amount</button>
+                  <button type="button" data-sort="category">Category</button>
+                </div>
               </div>
+            </div>
+            <div class="finance-notice" id="plaid-status" aria-live="polite">Connect Plaid to load live accounts and transactions.</div>
+            <div class="date-presets" aria-label="Transaction date range">
+              <span>Range</span>
+              <button type="button" data-date-range="30" aria-pressed="false">30 days</button>
+              <button type="button" data-date-range="90" aria-pressed="false">90 days</button>
+              <button type="button" data-date-range="365" aria-pressed="true">Past year</button>
+              <button type="button" data-date-range="730" aria-pressed="false">2 years</button>
             </div>
             <div class="filter-bar" aria-label="Transaction filters">
               <label>
                 <span>Search</span>
-                <input id="transaction-search" type="search" placeholder="Merchant, category, card">
+                <input id="transaction-search" type="search" placeholder="Merchant, description, account, category">
               </label>
               <label>
                 <span>Account</span>
@@ -94,9 +113,89 @@
           <section class="panel">
             <div class="panel-header">
               <h2>Accounts</h2>
-              <span id="finance-sync"></span>
+              <span id="finance-summary"></span>
             </div>
+            <div class="finance-status"><span id="finance-sync"></span></div>
             <div class="compact-list" id="finance"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Fee Watch</h2>
+              <span id="fee-count"></span>
+            </div>
+            <div class="compact-list" id="fee-watch"></div>
+          </section>
+
+          <section class="panel benefit-panel">
+            <div class="panel-header">
+              <h2>Benefit Credits</h2>
+              <span id="benefit-count"></span>
+            </div>
+            <div class="compact-list" id="benefits"></div>
+            <div class="recent-credit-section">
+              <div class="recent-credit-header">
+                <h3>Recent posted credits</h3>
+                <span id="recent-credit-count"></span>
+              </div>
+              <div class="compact-list" id="recent-credits"></div>
+            </div>
+            <form class="benefit-form" id="benefit-form">
+              <h3>Track a card benefit</h3>
+              <label>
+                <span>Benefit</span>
+                <input id="benefit-name" type="text" maxlength="120" placeholder="e.g. Airline incidental credit">
+              </label>
+              <label>
+                <span>Credit card</span>
+                <select id="benefit-account"></select>
+              </label>
+              <div class="benefit-form-row">
+                <label>
+                  <span>Value</span>
+                  <input id="benefit-amount" type="number" min="0.01" step="0.01" inputmode="decimal" placeholder="200">
+                </label>
+                <label>
+                  <span>Currency</span>
+                  <input id="benefit-currency" type="text" maxlength="3" value="USD">
+                </label>
+              </div>
+              <div class="benefit-form-row">
+                <label>
+                  <span>Reset</span>
+                  <select id="benefit-period">
+                    <option value="monthly">Monthly</option>
+                    <option value="quarterly">Quarterly</option>
+                    <option value="annual" selected>Calendar year</option>
+                    <option value="cardmember-year">Cardmember year</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Start month</span>
+                  <select id="benefit-start-month">
+                    <option value="1">January</option>
+                    <option value="2">February</option>
+                    <option value="3">March</option>
+                    <option value="4">April</option>
+                    <option value="5">May</option>
+                    <option value="6">June</option>
+                    <option value="7">July</option>
+                    <option value="8">August</option>
+                    <option value="9">September</option>
+                    <option value="10">October</option>
+                    <option value="11">November</option>
+                    <option value="12">December</option>
+                  </select>
+                </label>
+              </div>
+              <label>
+                <span>Credit descriptors</span>
+                <textarea id="benefit-patterns" rows="2" placeholder="e.g. airline fee reimbursement, incidental credit"></textarea>
+              </label>
+              <p>Use issuer credit wording, not the merchant charge. Matching is only against posted credits on this card.</p>
+              <button type="button" id="benefit-submit">Save benefit</button>
+              <output id="benefit-status" aria-live="polite"></output>
+            </form>
           </section>
         </aside>
       </section>
@@ -264,6 +363,7 @@
       </section>
     </main>
 
+    <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
     <script type="module" src="/src/app.js"></script>
   </body>
 </html>

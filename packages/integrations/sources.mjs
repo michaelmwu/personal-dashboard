@@ -200,8 +200,22 @@ export function normalizePlaidPayload(payload) {
       merchant: payload.merchant ?? payload.name ?? "Unknown merchant",
       amount: Number(payload.amount ?? 0),
       category: payload.category ?? "Unclassified",
+      categoryDetailed: payload.categoryDetailed ?? payload.category_detailed,
       card: payload.card ?? payload.accountName ?? payload.account_name ?? "Unknown card",
-      status: payload.status ?? (payload.pending ? "pending" : "posted")
+      status: payload.status ?? (payload.pending ? "pending" : "posted"),
+      accountId: payload.accountId ?? payload.account_id,
+      accountType: payload.accountType ?? payload.account_type,
+      accountSubtype: payload.accountSubtype ?? payload.account_subtype,
+      institutionName: payload.institutionName ?? payload.institution_name,
+      originalDescription: payload.originalDescription ?? payload.original_description,
+      transactionCode: payload.transactionCode ?? payload.transaction_code,
+      isoCurrencyCode: payload.isoCurrencyCode ?? payload.iso_currency_code,
+      originalAmount: payload.originalAmount ?? payload.original_amount,
+      originalCurrencyCode: payload.originalCurrencyCode ?? payload.original_currency_code,
+      exchangeRate: payload.exchangeRate ?? payload.exchange_rate,
+      date: payload.date,
+      authorizedDate: payload.authorizedDate ?? payload.authorized_date,
+      source: "plaid"
     });
   }
 
@@ -209,6 +223,8 @@ export function normalizePlaidPayload(payload) {
     id: payload.id ?? payload.account_id ?? `acct_${Date.now()}`,
     name: payload.name ?? "Unknown account",
     kind: payload.kind ?? payload.type ?? "credit",
+    type: payload.type,
+    subtype: payload.subtype,
     last4: payload.last4 ?? payload.mask ?? "----",
     syncStatus: payload.syncStatus ?? "pending"
   });

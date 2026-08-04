@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
 import { dirname, join, resolve } from "node:path";
@@ -98,6 +99,11 @@ import {
   verifyPlaidWebhook
 } from "../../packages/integrations/plaid.mjs";
 import {
+  financeAccountType,
+  financeOverview,
+  oneYearAgoDate
+} from "../../packages/finance/index.mjs";
+import {
   genericAppItemsFromDashboard,
   loadPluginRegistry
 } from "../../packages/integrations/registry.mjs";
@@ -118,7 +124,9 @@ import {
   loadDashboard,
   patchHermesAction,
   patchHotelReservation,
+  removeFinanceBenefit,
   upsertAppItem,
+  upsertFinanceBenefit,
   upsertHermesAction,
   upsertHermesEvent,
   upsertHotelReservation,
@@ -136,6 +144,7 @@ import {
 } from "../../packages/storage/run-evidence.mjs";
 import {
   aggregateTransactions,
+  filterTransactions,
   queryTransactions,
   transactionAggregateQueryFromSearchParams,
   transactionQueryFromSearchParams,
@@ -213,6 +222,90 @@ async function dashboardSnapshot() {
       capabilities: registry.capabilities.length
         ? registry.capabilities
         : dashboard.hermes.capabilities
+    }
+  };
+}
+
+function financeTransactionQuery(searchParams) {
+  const query = transactionQueryFromSearchParams(searchParams);
+  if (!query.startDate && searchParams.get("range") !== "all") {
+    query.startDate = oneYearAgoDate();
+  }
+  return query;
+}
+
+function financeAggregateQuery(searchParams) {
+  const query = transactionAggregateQueryFromSearchParams(searchParams);
+  if (!query.startDate && searchParams.get("range") !== "all") {
+    query.startDate = oneYearAgoDate();
+  }
+  return query;
+}
+
+function benefitDescriptorPatterns(value) {
+  const values = Array.isArray(value) ? value : String(value ?? "").split(/[\n,]/);
+  return values
+    .map((pattern) => String(pattern).trim())
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function financeBenefitInput(payload, accounts) {
+  const accountId = String(payload.accountId ?? payload.account_id ?? "").trim();
+  const account = accounts.find((candidate) => candidate.id === accountId);
+  const name = String(payload.name ?? "").trim();
+  const amount = Number(payload.amount);
+  const period = String(payload.period ?? "annual").trim();
+  const descriptorPatterns = benefitDescriptorPatterns(
+    payload.descriptorPatterns ?? payload.descriptor_patterns ?? payload.patterns
+  );
+  const periodStartMonth = Number.parseInt(
+    payload.periodStartMonth ?? payload.period_start_month ?? "1",
+    10
+  );
+
+  if (!account || financeAccountType(account) !== "credit") {
+    return { error: "invalid_credit_account", message: "Choose a connected credit card account." };
+  }
+  if (!name || name.length > 120) {
+    return {
+      error: "invalid_benefit_name",
+      message: "Benefit name is required and must be concise."
+    };
+  }
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 100000) {
+    return { error: "invalid_benefit_amount", message: "Benefit value must be a positive amount." };
+  }
+  if (!new Set(["monthly", "quarterly", "annual", "cardmember-year"]).has(period)) {
+    return { error: "invalid_benefit_period", message: "Benefit period is not supported." };
+  }
+  if (descriptorPatterns.length === 0) {
+    return {
+      error: "missing_benefit_patterns",
+      message: "Add one or more credit-descriptor patterns so credits are not guessed."
+    };
+  }
+  if (!Number.isInteger(periodStartMonth) || periodStartMonth < 1 || periodStartMonth > 12) {
+    return {
+      error: "invalid_benefit_start_month",
+      message: "Start month must be between 1 and 12."
+    };
+  }
+
+  const currency = String(payload.currency ?? account.isoCurrencyCode ?? "USD")
+    .trim()
+    .toUpperCase();
+  return {
+    value: {
+      id: `benefit_${randomUUID()}`,
+      accountId,
+      name,
+      amount,
+      currency: /^[A-Z]{3}$/.test(currency) ? currency : "USD",
+      period,
+      periodStartMonth,
+      descriptorPatterns,
+      enabled: payload.enabled !== false
     }
   };
 }
@@ -1536,13 +1629,32 @@ async function syncPlaidItem(item) {
     accessToken: item.accessToken,
     cursor: item.cursor
   });
-  const accountById = new Map(sync.accounts.map((account) => [account.account_id, account]));
+  const persistedDashboard = await loadDashboard(dashboardSeed(), storePath);
+  const accountById = new Map(
+    persistedDashboard.finance.accounts.map((account) => [account.id, account])
+  );
+  for (const account of sync.accounts) {
+    accountById.set(account.account_id, account);
+  }
+  const normalizationOptions = {
+    accountById,
+    itemId: item.id,
+    institutionName: item.institutionName,
+    personalFinanceCategoryVersion: sync.personalFinanceCategoryVersion
+  };
   const normalizedSync = {
     ...sync,
-    accounts: sync.accounts.map(normalizePlaidAccount),
-    added: sync.added.map((transaction) => normalizePlaidTransaction(transaction, { accountById })),
+    accounts: sync.accounts.map((account) =>
+      normalizePlaidAccount(account, {
+        itemId: item.id,
+        institutionName: item.institutionName
+      })
+    ),
+    added: sync.added.map((transaction) =>
+      normalizePlaidTransaction(transaction, normalizationOptions)
+    ),
     modified: sync.modified.map((transaction) =>
-      normalizePlaidTransaction(transaction, { accountById })
+      normalizePlaidTransaction(transaction, normalizationOptions)
     ),
     removed: sync.removed.map(normalizeRemovedPlaidTransaction)
   };
@@ -1831,7 +1943,7 @@ function json(response, statusCode, payload) {
     "Access-Control-Allow-Origin": `http://127.0.0.1:${webPort}`,
     "Access-Control-Allow-Headers":
       "Authorization, Content-Type, Idempotency-Key, X-Hermes-Signature",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS"
   });
   response.end(body);
 }
@@ -1888,7 +2000,7 @@ async function pipeBridgeEventStream(response, runId) {
     "Access-Control-Allow-Origin": `http://127.0.0.1:${webPort}`,
     "Access-Control-Allow-Headers":
       "Authorization, Content-Type, Idempotency-Key, X-Hermes-Signature",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS"
+    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS"
   });
 
   try {
@@ -2025,7 +2137,7 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
           200,
           queryTransactions(
             dashboard.transactions,
-            transactionQueryFromSearchParams(url.searchParams),
+            financeTransactionQuery(url.searchParams),
             dashboard.finance.accounts
           )
         );
@@ -2039,7 +2151,7 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
           200,
           aggregateTransactions(
             dashboard.transactions,
-            transactionAggregateQueryFromSearchParams(url.searchParams),
+            financeAggregateQuery(url.searchParams),
             dashboard.finance.accounts
           )
         );
@@ -2609,6 +2721,70 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
           accepted: true,
           reservation
         });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/finance/overview") {
+        const dashboard = await dashboardSnapshot();
+        const query = financeTransactionQuery(url.searchParams);
+        const transactions = filterTransactions(
+          dashboard.transactions,
+          query,
+          dashboard.finance.accounts
+        );
+        json(
+          response,
+          200,
+          financeOverview(
+            {
+              accounts: dashboard.finance.accounts,
+              transactions,
+              benefits: dashboard.finance.benefits ?? [],
+              sync: dashboard.finance.sync
+            },
+            query
+          )
+        );
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/finance/benefits") {
+        const dashboard = await dashboardSnapshot();
+        json(response, 200, { items: dashboard.finance.benefits ?? [] });
+        return;
+      }
+
+      if (request.method === "POST" && url.pathname === "/api/finance/benefits") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const payload = await readJson(request);
+        const dashboard = await dashboardSnapshot();
+        const result = financeBenefitInput(payload, dashboard.finance.accounts);
+        if (result.error) {
+          error(response, 400, result.error, result.message);
+          return;
+        }
+        const benefit = await upsertFinanceBenefit(storePath, result.value);
+        json(response, 201, { benefit });
+        return;
+      }
+
+      if (request.method === "DELETE" && url.pathname.startsWith("/api/finance/benefits/")) {
+        if (!requireAuth(request, response)) {
+          return;
+        }
+        const benefitId = decodeURIComponent(url.pathname.slice("/api/finance/benefits/".length));
+        if (!benefitId) {
+          error(response, 400, "missing_benefit_id", "Benefit id is required.");
+          return;
+        }
+        const benefit = await removeFinanceBenefit(storePath, benefitId);
+        if (!benefit) {
+          error(response, 404, "benefit_not_found", "No matching benefit configuration exists.");
+          return;
+        }
+        json(response, 200, { deleted: true, benefit });
         return;
       }
 

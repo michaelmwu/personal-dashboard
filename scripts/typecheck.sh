@@ -8,6 +8,7 @@ bun build \
   apps/web/server.mjs \
   scripts/dev.mjs \
   packages/contracts/index.mjs \
+  packages/finance/index.mjs \
   packages/fixtures/dashboard.mjs \
   packages/integrations/coding-agent.mjs \
   packages/integrations/hermes-bridge.mjs \

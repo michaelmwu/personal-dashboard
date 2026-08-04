@@ -8,12 +8,21 @@ const bridgeTokenStorageKey = "personal-dashboard:bridge-token";
 const bridgeRunStorageKey = "personal-dashboard:bridge-run-id";
 let appConfig = { apiBaseUrl: "" };
 let bridgeEventStream = null;
+let currentDashboard = null;
+
+function oneYearAgoInputValue(now = new Date()) {
+  const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  date.setUTCFullYear(date.getUTCFullYear() - 1);
+  return date.toISOString().slice(0, 10);
+}
+
 let transactionState = {
   q: "",
   accountId: "",
+  accountType: "credit",
   category: "",
   status: "",
-  startDate: "",
+  startDate: oneYearAgoInputValue(),
   endDate: "",
   sort: "date",
   direction: "desc",
@@ -54,7 +63,15 @@ async function loadTransactions(apiBaseUrl, query = transactionState) {
 
 async function loadTransactionAggregate(apiBaseUrl, groupBy, query = transactionState) {
   const params = new URLSearchParams({ groupBy });
-  for (const key of ["q", "accountId", "category", "status", "startDate", "endDate"]) {
+  for (const key of [
+    "q",
+    "accountId",
+    "accountType",
+    "category",
+    "status",
+    "startDate",
+    "endDate"
+  ]) {
     const value = query[key];
     if (value !== undefined && value !== null && value !== "") {
       params.set(key, value);
@@ -63,6 +80,21 @@ async function loadTransactionAggregate(apiBaseUrl, groupBy, query = transaction
   const response = await fetch(`${apiBaseUrl}/api/transactions/aggregate?${params}`);
   if (!response.ok) {
     throw new Error(`Transaction aggregate API returned ${response.status}`);
+  }
+  return response.json();
+}
+
+async function loadFinanceOverview(apiBaseUrl, query = transactionState) {
+  const params = new URLSearchParams();
+  for (const key of ["accountType", "startDate", "endDate"]) {
+    const value = query[key];
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, value);
+    }
+  }
+  const response = await fetch(`${apiBaseUrl}/api/finance/overview?${params}`);
+  if (!response.ok) {
+    throw new Error(`Finance API returned ${response.status}`);
   }
   return response.json();
 }
@@ -166,14 +198,18 @@ function renderAlerts(alerts) {
 }
 
 function signedMoney(amount, currency = "USD") {
-  const formatter =
-    currency === "USD"
-      ? money
-      : new Intl.NumberFormat("en-US", {
-          style: "currency",
-          currency
-        });
-  return formatter.format(amount);
+  try {
+    const formatter =
+      currency === "USD"
+        ? money
+        : new Intl.NumberFormat("en-US", {
+            style: "currency",
+            currency
+          });
+    return formatter.format(amount);
+  } catch {
+    return `${currency} ${Number(amount ?? 0).toFixed(2)}`;
+  }
 }
 
 function compactDate(value) {
@@ -192,9 +228,20 @@ function categoryLabel(transaction) {
 }
 
 function localTransactionResult(dashboard) {
-  const transactions = [...(dashboard.transactions ?? [])].sort((left, right) =>
-    String(right.date ?? "").localeCompare(String(left.date ?? ""))
+  const scopedAccountIds = new Set(
+    (dashboard.finance?.accounts ?? [])
+      .filter((account) => matchesFinanceAccountScope(account, transactionState.accountType))
+      .map((account) => account.id)
   );
+  const transactions = [...(dashboard.transactions ?? [])]
+    .filter(
+      (transaction) =>
+        (!transactionState.accountType || scopedAccountIds.has(transaction.accountId)) &&
+        (!transactionState.startDate ||
+          String(transaction.date ?? "") >= transactionState.startDate) &&
+        (!transactionState.endDate || String(transaction.date ?? "") <= transactionState.endDate)
+    )
+    .sort((left, right) => String(right.date ?? "").localeCompare(String(left.date ?? "")));
   const countBy = (items, valueFor) => {
     const counts = new Map();
     for (const item of items) {
@@ -225,9 +272,22 @@ function localTransactionResult(dashboard) {
   };
 }
 
+function localFinanceOverview(dashboard) {
+  const accounts = (dashboard.finance?.accounts ?? []).filter((account) =>
+    matchesFinanceAccountScope(account, transactionState.accountType)
+  );
+  return {
+    accounts,
+    sync: dashboard.finance?.sync ?? {},
+    summary: { spend: 0, feeCount: 0 },
+    feeWatch: [],
+    benefits: []
+  };
+}
+
 function localAggregate(dashboard, groupBy) {
   const groups = new Map();
-  for (const transaction of dashboard.transactions ?? []) {
+  for (const transaction of localTransactionResult(dashboard).items) {
     const key =
       groupBy === "month"
         ? String(transaction.date ?? "").slice(0, 7) || "Unknown month"
@@ -270,9 +330,28 @@ function renderSelectOptions(select, options, placeholder) {
 }
 
 function renderTransactionFilters(facets) {
-  renderSelectOptions(byId("transaction-account"), facets.accounts ?? [], "All accounts");
-  renderSelectOptions(byId("transaction-category"), facets.categories ?? [], "All categories");
-  renderSelectOptions(byId("transaction-status"), facets.statuses ?? [], "Any status");
+  const account = byId("transaction-account");
+  const category = byId("transaction-category");
+  const status = byId("transaction-status");
+  renderSelectOptions(account, facets.accounts ?? [], "All accounts");
+  renderSelectOptions(category, facets.categories ?? [], "All categories");
+  renderSelectOptions(status, facets.statuses ?? [], "Any status");
+  account.value = transactionState.accountId;
+  category.value = transactionState.category;
+  status.value = transactionState.status;
+  byId("transaction-start").value = transactionState.startDate;
+  byId("transaction-end").value = transactionState.endDate;
+}
+
+function accountDisplay(transaction) {
+  const account = transaction.account;
+  const name = account?.name ?? transaction.accountLabel ?? transaction.card ?? "Unknown account";
+  const last4 = account?.last4 && account.last4 !== "----" ? ` • ${account.last4}` : "";
+  const institution = account?.institutionName ?? transaction.institutionName ?? "";
+  return {
+    name: `${name}${last4}`,
+    detail: institution || account?.type || transaction.accountType || ""
+  };
 }
 
 function renderTransactions(result) {
@@ -284,13 +363,16 @@ function renderTransactions(result) {
     <div class="table-row table-head">
       <span>Date</span>
       <span>Merchant</span>
-      <span>Card</span>
+      <span>Account</span>
       <span>Category</span>
+      <span>Type</span>
       <span>Amount</span>
     </div>
     ${transactions
-      .map(
-        (transaction) => `
+      .map((transaction) => {
+        const account = accountDisplay(transaction);
+        const classification = transaction.classification ?? {};
+        return `
           <div class="table-row ${transaction.amount < 0 ? "credit-row" : ""}">
             <span>
               <strong>${escapeHtml(compactDate(transaction.date))}</strong>
@@ -300,12 +382,16 @@ function renderTransactions(result) {
               <strong>${escapeHtml(transaction.merchant)}</strong>
               <small>${escapeHtml(transaction.paymentChannel ?? transaction.source ?? "")}</small>
             </span>
-            <span>${escapeHtml(transaction.card)}</span>
+            <span>
+              <strong>${escapeHtml(account.name)}</strong>
+              <small>${escapeHtml(account.detail)}</small>
+            </span>
             <span>${escapeHtml(categoryLabel(transaction))}</span>
+            <span><span class="pill transaction-kind">${escapeHtml(classification.kind ?? "transaction")}</span></span>
             <span>${signedMoney(transaction.amount, transaction.isoCurrencyCode ?? "USD")}</span>
           </div>
-        `
-      )
+        `;
+      })
       .join("")}
   `;
 }
@@ -423,22 +509,178 @@ function renderTravel(travel) {
     .join("");
 }
 
-function renderFinance(finance) {
-  byId("finance-sync").textContent = finance.sync?.state ?? "not-connected";
-  byId("finance").innerHTML = finance.accounts
-    .map(
-      (account) => `
-        <article class="compact-card">
-          <span class="pill">${escapeHtml(account.kind)}</span>
-          <div>
-            <strong>${escapeHtml(account.name)}</strong>
-            <p>ending ${escapeHtml(account.last4)}</p>
-          </div>
-          <small>${escapeHtml(account.syncStatus)}</small>
-        </article>
-      `
+function financeAccountScope(account) {
+  if (account?.type === "credit" || /credit|charge card/i.test(account?.kind ?? "")) {
+    return "credit";
+  }
+  if (
+    account?.type === "depository" ||
+    /checking|savings|depository|cash|money market|prepaid/i.test(
+      `${account?.kind ?? ""} ${account?.subtype ?? ""}`
     )
-    .join("");
+  ) {
+    return "depository";
+  }
+  return "other";
+}
+
+function matchesFinanceAccountScope(account, scope) {
+  return !scope || financeAccountScope(account) === scope;
+}
+
+function financeAccountTypeLabel(account) {
+  const type = financeAccountScope(account);
+  if (type === "credit") {
+    return "credit card";
+  }
+  if (type === "depository") {
+    return account.subtype ?? "bank account";
+  }
+  return account.subtype ?? account.kind ?? "account";
+}
+
+function financeAccountBalance(account) {
+  const currency = account.isoCurrencyCode ?? "USD";
+  const current = account.currentBalance ?? account.balance;
+  const available = account.availableBalance;
+  const limit = account.creditLimit;
+  if (current === undefined || current === null) {
+    return account.syncStatus ?? "unknown";
+  }
+  if (financeAccountTypeLabel(account) === "credit card" && (available ?? limit) !== undefined) {
+    const remaining = available ?? limit - current;
+    return `${signedMoney(current, currency)} owed · ${signedMoney(remaining, currency)} left`;
+  }
+  if (available !== undefined && available !== null && available !== current) {
+    return `${signedMoney(current, currency)} current · ${signedMoney(available, currency)} available`;
+  }
+  return signedMoney(current, currency);
+}
+
+function renderFinance(finance) {
+  const accounts = finance.accounts ?? [];
+  byId("finance-sync").textContent = finance.sync?.state ?? "not-connected";
+  byId("finance").innerHTML =
+    accounts
+      .map(
+        (account) => `
+          <article class="compact-card finance-account-card">
+            <span class="pill">${escapeHtml(financeAccountTypeLabel(account))}</span>
+            <div>
+              <strong>${escapeHtml(account.name)}</strong>
+              <p>${escapeHtml(account.institutionName ? `${account.institutionName} · ` : "")}ending ${escapeHtml(account.last4 ?? "----")}</p>
+            </div>
+            <small>${escapeHtml(financeAccountBalance(account))}</small>
+          </article>
+        `
+      )
+      .join("") || `<p class="empty-state">No accounts in this view yet.</p>`;
+}
+
+function renderFeeWatch(fees = []) {
+  byId("fee-count").textContent = `${number.format(fees.length)} found`;
+  byId("fee-watch").innerHTML =
+    fees
+      .map(
+        (fee) => `
+          <article class="compact-card fee-card ${escapeHtml(fee.classification?.severity ?? "low")}">
+            <span class="pill">${escapeHtml(fee.classification?.feeType ?? "fee")}</span>
+            <div>
+              <strong>${escapeHtml(fee.merchant)}</strong>
+              <p>${escapeHtml(fee.account)} · ${escapeHtml(compactDate(fee.date))}</p>
+            </div>
+            <small>${signedMoney(fee.amount, fee.currency)}</small>
+          </article>
+        `
+      )
+      .join("") || `<p class="empty-state">No posted fees in this period.</p>`;
+}
+
+function benefitPeriodLabel(benefit) {
+  const period = benefit.period ?? {};
+  return period.startDate && period.endDate
+    ? `${compactDate(period.startDate)} – ${compactDate(period.endDate)}`
+    : "Current period";
+}
+
+function renderBenefits(benefits = []) {
+  byId("benefit-count").textContent = `${number.format(benefits.length)} tracked`;
+  byId("benefits").innerHTML =
+    benefits
+      .map((benefit) => {
+        const match = benefit.matches?.at(-1);
+        const total = signedMoney(benefit.amount, benefit.currency);
+        const credited = signedMoney(benefit.creditedAmount, benefit.currency);
+        return `
+          <article class="benefit-card ${escapeHtml(benefit.status)}">
+            <div class="benefit-heading">
+              <span class="pill">${escapeHtml(benefit.status)}</span>
+              <button type="button" class="quiet-button" data-benefit-delete="${escapeHtml(benefit.id)}">Remove</button>
+            </div>
+            <strong>${escapeHtml(benefit.name)}</strong>
+            <p>${escapeHtml(benefit.account)} · ${escapeHtml(benefitPeriodLabel(benefit))}</p>
+            <p>${credited} credited of ${total}${benefit.remainingAmount > 0 ? ` · ${signedMoney(benefit.remainingAmount, benefit.currency)} remaining` : ""}</p>
+            <small>${match ? `Matched ${escapeHtml(match.merchant)} on ${escapeHtml(compactDate(match.date))}` : "Waiting for a matching posted credit"}</small>
+          </article>
+        `;
+      })
+      .join("") ||
+    `<p class="empty-state">Add a card benefit to verify its statement credits automatically.</p>`;
+
+  for (const button of document.querySelectorAll("[data-benefit-delete]")) {
+    button.addEventListener("click", () => {
+      deleteFinanceBenefit(button.dataset.benefitDelete).catch((error) => {
+        byId("benefit-status").textContent = error instanceof Error ? error.message : String(error);
+      });
+    });
+  }
+}
+
+function renderRecentCredits(credits = []) {
+  byId("recent-credit-count").textContent = `${number.format(credits.length)} found`;
+  byId("recent-credits").innerHTML =
+    credits
+      .map(
+        (credit) => `
+          <article class="compact-card credit-card">
+            <span class="pill">${escapeHtml(credit.classification?.kind ?? "credit")}</span>
+            <div>
+              <strong>${escapeHtml(credit.merchant)}</strong>
+              <p>${escapeHtml(compactDate(credit.date))}</p>
+            </div>
+            <small>+${signedMoney(credit.amount, credit.currency)}</small>
+          </article>
+        `
+      )
+      .join("") || `<p class="empty-state">No posted credits in this view.</p>`;
+}
+
+function renderBenefitAccountOptions(accounts = []) {
+  const select = byId("benefit-account");
+  const selected = select.value;
+  const creditAccounts = accounts.filter((account) => financeAccountScope(account) === "credit");
+  select.innerHTML = [
+    `<option value="">Choose a credit card</option>`,
+    ...creditAccounts.map(
+      (account) =>
+        `<option value="${escapeHtml(account.id)}">${escapeHtml(account.name)}${account.last4 && account.last4 !== "----" ? ` • ${escapeHtml(account.last4)}` : ""}</option>`
+    )
+  ].join("");
+  select.value = [...select.options].some((option) => option.value === selected) ? selected : "";
+}
+
+function renderFinanceOverview(overview) {
+  renderFinance({ accounts: overview.accounts, sync: overview.sync });
+  renderFeeWatch(overview.feeWatch);
+  renderBenefits(overview.benefits);
+  renderRecentCredits(overview.recentCredits);
+  renderBenefitAccountOptions(currentDashboard?.finance?.accounts ?? overview.accounts);
+  byId("finance-summary").textContent =
+    `${signedMoney(overview.summary?.spend ?? 0)} spend · ${number.format(overview.summary?.feeCount ?? 0)} fees`;
+  if (overview.sync?.state === "synced") {
+    byId("plaid-status").textContent =
+      `Plaid synced · ${number.format(overview.accounts?.length ?? 0)} account${overview.accounts?.length === 1 ? "" : "s"} in this view.`;
+  }
 }
 
 function renderIntake(intake) {
@@ -742,6 +984,153 @@ async function submitIssueTriage() {
   renderOperatorResult(payload);
 }
 
+function dateInputDaysAgo(days) {
+  const now = new Date();
+  const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  if (days === 365) {
+    date.setUTCFullYear(date.getUTCFullYear() - 1);
+    return date.toISOString().slice(0, 10);
+  }
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10);
+}
+
+function markActiveFinanceScope() {
+  const activeScope = transactionState.accountType || "all";
+  for (const button of document.querySelectorAll("[data-finance-scope]")) {
+    const active = button.dataset.financeScope === activeScope;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+}
+
+function markActiveDatePreset() {
+  for (const button of document.querySelectorAll("[data-date-range]")) {
+    const days = Number(button.dataset.dateRange);
+    const active = Number.isFinite(days) && transactionState.startDate === dateInputDaysAgo(days);
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+}
+
+async function refreshFinanceAfterMutation() {
+  currentDashboard = await loadDashboard(appConfig.apiBaseUrl);
+  renderStatus(currentDashboard);
+  renderMetrics(financeMetrics(currentDashboard));
+  await refreshTransactionView();
+}
+
+async function submitFinanceBenefit() {
+  const name = byId("benefit-name").value.trim();
+  const amount = Number(byId("benefit-amount").value);
+  const accountId = byId("benefit-account").value;
+  const patterns = byId("benefit-patterns").value.trim();
+  const status = byId("benefit-status");
+  if (!name || !accountId || !Number.isFinite(amount) || amount <= 0 || !patterns) {
+    status.textContent = "Name, credit card, positive value, and credit descriptors are required.";
+    return;
+  }
+  status.textContent = "Saving benefit…";
+  const response = await apiFetch("/api/finance/benefits", {
+    method: "POST",
+    body: JSON.stringify({
+      name,
+      accountId,
+      amount,
+      currency: byId("benefit-currency").value.trim().toUpperCase() || "USD",
+      period: byId("benefit-period").value,
+      periodStartMonth: Number(byId("benefit-start-month").value),
+      descriptorPatterns: patterns
+    })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.message ?? "Unable to save benefit.");
+  }
+  byId("benefit-name").value = "";
+  byId("benefit-amount").value = "";
+  byId("benefit-patterns").value = "";
+  status.textContent = "Saved. Posted matching credits will appear here.";
+  await refreshFinanceAfterMutation();
+}
+
+async function deleteFinanceBenefit(benefitId) {
+  if (!benefitId || !window.confirm("Remove this benefit configuration?")) {
+    return;
+  }
+  const response = await apiFetch(`/api/finance/benefits/${encodeURIComponent(benefitId)}`, {
+    method: "DELETE"
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.message ?? "Unable to remove benefit.");
+  }
+  byId("benefit-status").textContent = "Benefit removed.";
+  await refreshFinanceAfterMutation();
+}
+
+async function syncPlaidTransactions() {
+  const status = byId("plaid-status");
+  status.textContent = "Syncing Plaid…";
+  const response = await apiFetch("/api/integrations/plaid/sync", {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.reason ?? payload.error ?? "Plaid sync failed.");
+  }
+  status.textContent = payload.synced
+    ? `Synced ${number.format(payload.itemCount ?? 0)} connection${payload.itemCount === 1 ? "" : "s"}.`
+    : (payload.reason ?? "Plaid sync needs attention.");
+  await refreshFinanceAfterMutation();
+}
+
+async function connectPlaid() {
+  const status = byId("plaid-status");
+  status.textContent = "Creating a secure Plaid Link session…";
+  const response = await apiFetch("/api/integrations/plaid/link-token", {
+    method: "POST",
+    body: JSON.stringify({ userId: "personal-dashboard" })
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.linkToken) {
+    throw new Error(payload.response?.error ?? payload.error ?? "Unable to start Plaid Link.");
+  }
+  if (!window.Plaid?.create) {
+    throw new Error("Plaid Link did not load. Check the network connection and try again.");
+  }
+  const handler = window.Plaid.create({
+    token: payload.linkToken,
+    onSuccess: async (publicToken, metadata) => {
+      try {
+        status.textContent = "Saving connection…";
+        const exchangeResponse = await apiFetch("/api/integrations/plaid/exchange-public-token", {
+          method: "POST",
+          body: JSON.stringify({
+            publicToken,
+            institutionName: metadata.institution?.name
+          })
+        });
+        const exchange = await exchangeResponse.json().catch(() => ({}));
+        if (!exchangeResponse.ok) {
+          throw new Error(exchange.response?.error ?? "Unable to save Plaid connection.");
+        }
+        status.textContent = "Connected. Pulling transaction history…";
+        await syncPlaidTransactions();
+      } catch (error) {
+        status.textContent = error instanceof Error ? error.message : String(error);
+      }
+    },
+    onExit: (_error, metadata) => {
+      if (!metadata?.status?.successful) {
+        status.textContent = "Plaid Link closed before an account was connected.";
+      }
+    }
+  });
+  handler.open();
+}
+
 function updateTransactionStateFromControls() {
   transactionState = {
     ...transactionState,
@@ -776,10 +1165,11 @@ async function refreshTransactionView() {
   const refreshToken = transactionRefreshToken;
   const requestedState = JSON.stringify(transactionState);
   try {
-    const [transactions, categoryAggregate, monthAggregate] = await Promise.all([
+    const [transactions, categoryAggregate, monthAggregate, overview] = await Promise.all([
       loadTransactions(appConfig.apiBaseUrl),
       loadTransactionAggregate(appConfig.apiBaseUrl, "category"),
-      loadTransactionAggregate(appConfig.apiBaseUrl, "month")
+      loadTransactionAggregate(appConfig.apiBaseUrl, "month"),
+      loadFinanceOverview(appConfig.apiBaseUrl)
     ]);
     if (
       refreshToken !== transactionRefreshToken ||
@@ -790,7 +1180,10 @@ async function refreshTransactionView() {
     renderTransactions(transactions);
     renderAggregate("aggregate-categories", categoryAggregate);
     renderAggregate("aggregate-months", monthAggregate);
+    renderFinanceOverview(overview);
     markActiveSortButton();
+    markActiveFinanceScope();
+    markActiveDatePreset();
   } catch (error) {
     if (
       refreshToken === transactionRefreshToken &&
@@ -832,7 +1225,59 @@ function setupTransactionControls() {
       refreshTransactionView();
     });
   }
+  for (const button of document.querySelectorAll("[data-finance-scope]")) {
+    button.addEventListener("click", () => {
+      const scope = button.dataset.financeScope;
+      transactionState = {
+        ...transactionState,
+        accountType: scope === "all" ? "" : scope,
+        accountId: "",
+        category: "",
+        status: "",
+        offset: 0
+      };
+      refreshTransactionView();
+    });
+  }
+  for (const button of document.querySelectorAll("[data-date-range]")) {
+    button.addEventListener("click", () => {
+      const days = Number(button.dataset.dateRange);
+      if (!Number.isFinite(days)) {
+        return;
+      }
+      transactionState = {
+        ...transactionState,
+        startDate: dateInputDaysAgo(days),
+        endDate: "",
+        offset: 0
+      };
+      refreshTransactionView();
+    });
+  }
+  byId("benefit-submit").addEventListener("click", () => {
+    submitFinanceBenefit().catch((error) => {
+      byId("benefit-status").textContent = error instanceof Error ? error.message : String(error);
+    });
+  });
+  byId("benefit-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    submitFinanceBenefit().catch((error) => {
+      byId("benefit-status").textContent = error instanceof Error ? error.message : String(error);
+    });
+  });
+  byId("plaid-connect").addEventListener("click", () => {
+    connectPlaid().catch((error) => {
+      byId("plaid-status").textContent = error instanceof Error ? error.message : String(error);
+    });
+  });
+  byId("plaid-sync").addEventListener("click", () => {
+    syncPlaidTransactions().catch((error) => {
+      byId("plaid-status").textContent = error instanceof Error ? error.message : String(error);
+    });
+  });
   markActiveSortButton();
+  markActiveFinanceScope();
+  markActiveDatePreset();
 }
 
 function setupHermesBridgeControls() {
@@ -883,14 +1328,16 @@ async function main() {
     const config = await loadConfig();
     appConfig = config;
     const dashboard = await loadDashboard(config.apiBaseUrl);
-    const [transactions, categoryAggregate, monthAggregate] = await Promise.all([
+    currentDashboard = dashboard;
+    const [transactions, categoryAggregate, monthAggregate, overview] = await Promise.all([
       loadTransactions(config.apiBaseUrl).catch(() => localTransactionResult(dashboard)),
       loadTransactionAggregate(config.apiBaseUrl, "category").catch(() =>
         localAggregate(dashboard, "category")
       ),
       loadTransactionAggregate(config.apiBaseUrl, "month").catch(() =>
         localAggregate(dashboard, "month")
-      )
+      ),
+      loadFinanceOverview(config.apiBaseUrl).catch(() => localFinanceOverview(dashboard))
     ]);
     renderStatus(dashboard);
     renderMetrics(financeMetrics(dashboard));
@@ -900,7 +1347,7 @@ async function main() {
     renderAggregate("aggregate-months", monthAggregate);
     renderTasks(dashboard.openclaw);
     renderTravel(dashboard.travel);
-    renderFinance(dashboard.finance);
+    renderFinanceOverview(overview);
     renderIntake(dashboard.intake);
     renderHermes(dashboard.hermes);
     renderIntegrations(dashboard.integrations);

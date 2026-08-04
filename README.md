@@ -307,6 +307,37 @@ window that marks active OMP runs as stalled. Reconciliation runs on
 startup and every worker polling interval by default; set
 `CODING_AGENT_RECONCILE_WATCHDOG_ENABLED=false` to keep it startup-only.
 
+## Finance Tracker
+
+The dashboard starts in the credit-card view and defaults transaction search to
+the trailing year. Switch to **Bank accounts** or **All** to keep card and
+depository activity separate without losing the cross-account ledger. Search
+matches merchant, the original description when Plaid supplies it, category,
+account, institution, and last four digits.
+
+The tracker also provides:
+
+- Fee Watch for posted annual, late, overdraft, returned-item, interest, ATM,
+  foreign-transaction, and bank-service fees.
+- Configurable card-benefit credits. Add a card, value, reset period, and
+  explicit statement-descriptor pattern; only posted matching credits count,
+  and the dashboard shows available, partial, or credited status.
+- Account balances, available credit, institution, and account type/subtype
+  when Plaid supplies them.
+
+Plaid transaction sync is intentionally not a rewards or FX-ledger source:
+issuer points earning, the original foreign-currency amount, and the exchange
+rate need a future issuer/email adapter. The domain contract already reserves
+fields for that adapter, but no email ingestion runs in this dashboard yet.
+
+Finance endpoints:
+
+- `GET /api/finance/overview`: scoped summary, fee watch, benefit status, and
+  recent credits. It defaults to the past year unless `range=all` is supplied.
+- `GET`, `POST`, and `DELETE /api/finance/benefits`: list and manage local
+  benefit-credit configurations. Mutations require the dashboard bearer token
+  when one is configured.
+
 Plaid-facing endpoints:
 
 - `POST /api/integrations/plaid/link-token`: create a Plaid Link token for the
@@ -319,9 +350,10 @@ Plaid-facing endpoints:
 - `POST /api/integrations/plaid/webhook`: accept Plaid transaction webhooks and
   trigger sync on `SYNC_UPDATES_AVAILABLE`.
 
-Set `PLAID_CLIENT_ID`, `PLAID_SECRET`, and `PLAID_ENV`. The access token store
-is local ignored data for now; move it behind encrypted storage before using
-this outside a personal trusted host.
+Set `PLAID_CLIENT_ID`, `PLAID_SECRET`, and `PLAID_ENV` (`sandbox` or
+`production`). The access-token store is local ignored data and is written with
+owner-only file permissions; move it behind encrypted storage before using this
+outside a personal trusted host.
 
 Hotel Rate Finder endpoints:
 

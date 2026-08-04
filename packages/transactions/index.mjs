@@ -1,3 +1,5 @@
+import { classifyFinanceTransaction, financeAccountType } from "../finance/index.mjs";
+
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 
@@ -40,7 +42,30 @@ function transactionCurrency(transaction) {
 
 function accountLabel(transaction, accountById = new Map()) {
   const account = accountById.get(transaction.accountId);
-  return transaction.card ?? account?.name ?? transaction.accountId ?? "Unknown account";
+  return account?.name ?? transaction.card ?? transaction.accountId ?? "Unknown account";
+}
+
+function accountType(transaction, accountById = new Map()) {
+  return financeAccountType(accountById.get(transaction.accountId) ?? transaction);
+}
+
+function transactionPresentation(transaction, accountById = new Map()) {
+  const account = accountById.get(transaction.accountId);
+  return {
+    ...transaction,
+    account: account
+      ? {
+          id: account.id,
+          name: account.name,
+          last4: account.last4,
+          type: financeAccountType(account),
+          subtype: account.subtype,
+          institutionName: account.institutionName
+        }
+      : undefined,
+    accountLabel: accountLabel(transaction, accountById),
+    classification: classifyFinanceTransaction(transaction)
+  };
 }
 
 function matchesList(value, accepted) {
@@ -68,6 +93,7 @@ export function transactionQueryFromSearchParams(searchParams) {
   return {
     q: searchParams.get("q") ?? searchParams.get("search") ?? "",
     accountId: parseList(searchParams.get("accountId") ?? searchParams.get("account")),
+    accountType: parseList(searchParams.get("accountType") ?? searchParams.get("scope")),
     card: parseList(searchParams.get("card")),
     category: parseList(searchParams.get("category")),
     status: parseList(searchParams.get("status")),
@@ -134,6 +160,7 @@ export function filterTransactions(transactions, query = {}, accounts = []) {
   const accountById = new Map(accounts.map((account) => [account.id, account]));
   const search = normalizedText(query.q);
   const accountIds = parseList(query.accountId);
+  const accountTypes = parseList(query.accountType);
   const cards = parseList(query.card);
   const categories = parseList(query.category);
   const statuses = parseList(query.status);
@@ -147,13 +174,18 @@ export function filterTransactions(transactions, query = {}, accounts = []) {
     const date = transactionDate(transaction);
     const time = Date.parse(date);
     const amount = Math.abs(Number(transaction.amount ?? 0));
+    const account = accountById.get(transaction.accountId);
     const label = accountLabel(transaction, accountById);
     const searchable = [
       transaction.merchant,
       transaction.name,
       transactionCategory(transaction),
       transaction.categoryDetailed,
+      transaction.originalDescription,
+      transaction.transactionCode,
       label,
+      account?.institutionName,
+      account?.last4,
       transaction.paymentChannel
     ]
       .map(normalizedText)
@@ -162,6 +194,7 @@ export function filterTransactions(transactions, query = {}, accounts = []) {
     return (
       (!search || searchable.includes(search)) &&
       matchesList(transaction.accountId, accountIds) &&
+      matchesList(accountType(transaction, accountById), accountTypes) &&
       matchesList(label, cards) &&
       matchesList(transactionCategory(transaction), categories) &&
       matchesList(transactionStatus(transaction), statuses) &&
@@ -211,19 +244,22 @@ export function sortTransactions(transactions, query = {}, accounts = []) {
 export function queryTransactions(transactions, query = {}, accounts = []) {
   const filtered = filterTransactions(transactions, query, accounts);
   const sorted = sortTransactions(filtered, query, accounts);
+  const accountById = new Map(accounts.map((account) => [account.id, account]));
   const limit = Math.min(
     Math.max(Number.parseInt(query.limit ?? DEFAULT_LIMIT, 10) || DEFAULT_LIMIT, 1),
     MAX_LIMIT
   );
   const offset = Math.max(Number.parseInt(query.offset ?? 0, 10) || 0, 0);
   return {
-    items: sorted.slice(offset, offset + limit),
     total: filtered.length,
     limit,
     offset,
     sort: query.sort ?? "date",
     direction: query.direction === "asc" ? "asc" : "desc",
-    facets: transactionFacets(transactions, accounts)
+    facets: transactionFacets(filtered, accounts),
+    items: sorted
+      .slice(offset, offset + limit)
+      .map((transaction) => transactionPresentation(transaction, accountById))
   };
 }
 
