@@ -120,6 +120,146 @@ function objectPayload(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+const GMAIL_TRANSACTION_NOTIFICATION_VERSION = "gmail-transaction-notification.v1";
+const GMAIL_TRANSACTION_EXTERNAL_ID_LENGTH = 43;
+const GMAIL_TRANSACTION_MERCHANT_MAX_LENGTH = 160;
+const GMAIL_TRANSACTION_MAX_ABSOLUTE_AMOUNT = 1_000_000_000;
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function opaqueGmailTransactionId(value) {
+  const id = nonEmptyString(value);
+  if (!id || id.length !== GMAIL_TRANSACTION_EXTERNAL_ID_LENGTH) {
+    return undefined;
+  }
+
+  // The gateway emits a SHA-256-derived base64url identifier. Do not accept a
+  // raw Gmail message identifier or any email content as the dashboard key.
+  return /^[A-Za-z0-9_-]+$/.test(id) ? id : undefined;
+}
+
+function finiteAmount(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) && Math.abs(value) <= GMAIL_TRANSACTION_MAX_ABSOLUTE_AMOUNT
+      ? value
+      : undefined;
+  }
+
+  if (typeof value !== "string" || !value.trim()) {
+    return undefined;
+  }
+
+  const amount = Number(value);
+  return Number.isFinite(amount) && Math.abs(amount) <= GMAIL_TRANSACTION_MAX_ABSOLUTE_AMOUNT
+    ? amount
+    : undefined;
+}
+
+function currencyCode(value) {
+  const currency = nonEmptyString(value);
+  return currency && /^[A-Za-z]{3}$/.test(currency) ? currency.toUpperCase() : undefined;
+}
+
+function cardFromLast4(value) {
+  const last4 = nonEmptyString(value);
+  return last4 && /^\d{4}$/.test(last4) ? `Card •••• ${last4}` : "Unknown card";
+}
+
+function timestamp(value) {
+  const candidate = nonEmptyString(value);
+  return candidate && Number.isFinite(Date.parse(candidate)) ? candidate : undefined;
+}
+
+function displayText(value, maxLength) {
+  const text = nonEmptyString(value)?.replace(/\s+/g, " ");
+  return text ? text.slice(0, maxLength) : undefined;
+}
+
+export function isGmailTransactionNotification(payload) {
+  const envelope = objectPayload(payload);
+  const hasCanonicalType = envelope.type === "transaction-notification";
+  const hasCompatibleEventType =
+    (envelope.type === undefined || envelope.type === null || envelope.type === "") &&
+    envelope.eventType === "transaction-notification";
+
+  return (
+    envelope.version === GMAIL_TRANSACTION_NOTIFICATION_VERSION &&
+    (hasCanonicalType || hasCompatibleEventType)
+  );
+}
+
+function gmailTransactionNotificationCandidate(payload) {
+  const envelope = objectPayload(payload);
+  const data = objectPayload(envelope.data);
+  const explicitCandidate = objectPayload(envelope.candidate);
+  const nestedCandidate = objectPayload(data.candidate);
+  const candidate = Object.keys(explicitCandidate).length
+    ? explicitCandidate
+    : Object.keys(nestedCandidate).length
+      ? nestedCandidate
+      : data;
+
+  const field = (...names) => {
+    for (const source of [candidate, data, envelope]) {
+      for (const name of names) {
+        if (source[name] !== undefined && source[name] !== null) {
+          return source[name];
+        }
+      }
+    }
+    return undefined;
+  };
+
+  return {
+    id: field("externalId", "id"),
+    merchant: field("merchant"),
+    amount: field("amount"),
+    currency: field("currency"),
+    cardLast4: field("cardLast4"),
+    occurredAt: field("occurredAt"),
+    authorizedAt: field("authorizedAt")
+  };
+}
+
+/**
+ * Normalize the narrow, gateway-originated transaction fast path. This is
+ * deliberately not a generic email-to-transaction parser: only an explicitly
+ * typed, versioned gateway event can enter the finance collection.
+ */
+export function normalizeGmailTransactionNotificationPayload(payload) {
+  if (!isGmailTransactionNotification(payload)) {
+    return undefined;
+  }
+
+  const candidate = gmailTransactionNotificationCandidate(payload);
+  const sourceTransactionId = opaqueGmailTransactionId(candidate.id);
+  const amount = finiteAmount(candidate.amount);
+
+  // A malformed event must not become a zero-value or non-idempotent finance
+  // item. The source event dispatcher will leave it unpersisted.
+  if (!sourceTransactionId || amount === undefined) {
+    return undefined;
+  }
+
+  return transaction({
+    id: `gmail_${sourceTransactionId}`,
+    merchant:
+      displayText(candidate.merchant, GMAIL_TRANSACTION_MERCHANT_MAX_LENGTH) ?? "Unknown merchant",
+    amount,
+    category: "Unclassified",
+    card: cardFromLast4(candidate.cardLast4),
+    status: "pending",
+    pending: true,
+    date: timestamp(candidate.occurredAt),
+    authorizedDate: timestamp(candidate.authorizedAt),
+    isoCurrencyCode: currencyCode(candidate.currency),
+    sourceTransactionId,
+    source: "gmail"
+  });
+}
+
 /**
  * Asia Travel Deals sends a versioned webhook envelope whose candidate lives
  * under `candidate`.  The feed endpoint returns that same candidate shape
@@ -283,7 +423,14 @@ export function normalizeSourceEvent(source, payload) {
             : "financeAccount",
         value: normalizePlaidPayload(payload)
       };
-    case "gmail-intake":
+    case "gmail-intake": {
+      if (isGmailTransactionNotification(payload)) {
+        const normalizedTransaction = normalizeGmailTransactionNotificationPayload(payload);
+        return normalizedTransaction
+          ? { kind: "transaction", value: normalizedTransaction }
+          : { kind: "unknown", value: payload };
+      }
+
       return {
         kind:
           payload.reservationType || payload.travelDate || payload.confirmationCode
@@ -291,6 +438,7 @@ export function normalizeSourceEvent(source, payload) {
             : "intakeItem",
         value: normalizeGmailPayload(payload)
       };
+    }
     default:
       return { kind: "unknown", value: payload };
   }

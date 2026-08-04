@@ -293,13 +293,18 @@ export function dashboardFixture() {
       actions: [
         hermesAction({
           id: "ha_001",
-          idempotencyKey: "gmail-intake-scan-2026-07-02",
-          capabilityId: "gmail_intake_scan",
+          idempotencyKey: "gmail-search-2026-07-02",
+          capabilityId: "gmail_search",
           target: "gmail-intake",
-          title: "Scan recent travel emails",
+          title: "Search recent travel emails",
           status: "ready",
           payload: {
-            query: "newer_than:14d (confirmation OR itinerary OR receipt)",
+            purpose: "interactive-search",
+            filters: {
+              keywords: ["confirmation", "itinerary", "receipt"],
+              after: "2026-06-18T00:00:00.000Z",
+              labels: ["INBOX"]
+            },
             limit: 25
           },
           createdAt: "2026-07-02T11:00:00.000Z"

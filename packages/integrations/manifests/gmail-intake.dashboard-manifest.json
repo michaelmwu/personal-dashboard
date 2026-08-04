@@ -14,14 +14,39 @@
   ],
   "capabilities": [
     {
-      "id": "gmail_intake_scan",
-      "title": "Scan Gmail intake",
+      "id": "gmail_search",
+      "title": "Search Gmail",
+      "kind": "deterministic",
+      "target": "gmail-intake",
+      "endpoint": "/api/integrations/gmail-intake/search",
+      "description": "Search Gmail through the read-only email gateway with bounded keyword, sender, date, and label filters. Returns opaque message handles.",
+      "inputSchema": {
+        "purpose": "interactive-search|scheduled-scan",
+        "filters": "EmailSearchFilters",
+        "limit": "number?"
+      }
+    },
+    {
+      "id": "gmail_read",
+      "title": "Read selected Gmail messages",
+      "kind": "deterministic",
+      "target": "gmail-intake",
+      "endpoint": "/api/integrations/gmail-intake/messages/read",
+      "description": "Retrieve sanitized plain-text content only for opaque handles returned by a recent Gmail search receipt.",
+      "inputSchema": {
+        "receipt": "string",
+        "handle": "string"
+      }
+    },
+    {
+      "id": "gmail_intake_analyze",
+      "title": "Analyze Gmail intake",
       "kind": "agentic",
       "target": "gmail-intake",
-      "description": "Read recent Gmail and classify reservations, statements, and important messages.",
+      "description": "Analyze a receipt-bound, sanitized Gmail result and propose typed dashboard actions. It cannot access or mutate Gmail.",
       "inputSchema": {
-        "query": "string",
-        "limit": "number"
+        "receipt": "string",
+        "handle": "string"
       }
     },
     {
@@ -29,11 +54,12 @@
       "title": "Parse reservation",
       "kind": "agentic",
       "target": "gmail-intake",
-      "description": "Parse one email or attachment into a normalized travel reservation.",
+      "description": "Parse one receipt-bound, sanitized message into a proposed normalized travel reservation without Gmail access or mutation.",
       "inputSchema": {
-        "messageId": "string"
+        "receipt": "string",
+        "handle": "string"
       }
     }
   ],
-  "eventTypes": ["reservation", "intake"]
+  "eventTypes": ["reservation", "intake", "transaction-notification"]
 }

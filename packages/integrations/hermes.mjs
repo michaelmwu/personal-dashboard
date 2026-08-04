@@ -99,23 +99,48 @@ export function hermesCapabilities() {
       }
     }),
     hermesCapability({
-      id: "gmail_intake_scan",
-      title: "Scan Gmail intake",
+      id: "gmail_search",
+      title: "Search Gmail",
       target: "gmail-intake",
       description:
-        "Read recent Gmail and classify reservations, statements, and important messages.",
+        "Search Gmail through the bounded read-only gateway. Returns opaque receipt-bound handles only.",
       inputSchema: {
-        query: "string",
-        limit: "number"
+        purpose: "interactive-search|scheduled-scan",
+        filters: "EmailSearchFilters",
+        limit: "number?"
+      }
+    }),
+    hermesCapability({
+      id: "gmail_read",
+      title: "Read selected Gmail message",
+      target: "gmail-intake",
+      description:
+        "Read sanitized plain text for a recent opaque Gmail receipt and handle. It cannot access attachments or mutate Gmail.",
+      inputSchema: {
+        receipt: "string",
+        handle: "string"
+      }
+    }),
+    hermesCapability({
+      id: "gmail_intake_analyze",
+      title: "Analyze Gmail intake",
+      target: "gmail-intake",
+      description:
+        "Analyze receipt-bound sanitized email content and propose typed actions without Gmail mutation authority.",
+      inputSchema: {
+        receipt: "string",
+        handle: "string"
       }
     }),
     hermesCapability({
       id: "reservation_parse",
       title: "Parse reservation",
       target: "gmail-intake",
-      description: "Parse one email or attachment into a normalized travel reservation.",
+      description:
+        "Parse one receipt-bound sanitized email into a proposed normalized travel reservation.",
       inputSchema: {
-        messageId: "string"
+        receipt: "string",
+        handle: "string"
       }
     })
   ];
