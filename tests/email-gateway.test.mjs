@@ -121,7 +121,7 @@ describe("email gateway policy", () => {
     ).toThrow("scheduled-scan requires an after timestamp.");
   });
 
-  test("omits text attachments and redacts authentication material", () => {
+  test("omits text attachments, including nested attachment parts, and redacts authentication material", () => {
     const message = {
       payload: {
         mimeType: "multipart/mixed",
@@ -154,6 +154,18 @@ describe("email gateway policy", () => {
             body: {
               data: Buffer.from("disposition attachment text").toString("base64url")
             }
+          },
+          {
+            mimeType: "multipart/mixed",
+            filename: "nested-message.eml",
+            parts: [
+              {
+                mimeType: "text/plain",
+                body: {
+                  data: Buffer.from("nested attachment text").toString("base64url")
+                }
+              }
+            ]
           }
         ]
       }
@@ -164,6 +176,7 @@ describe("email gateway policy", () => {
     expect(text).not.toContain("private attachment text");
     expect(text).not.toContain("small inline attachment text");
     expect(text).not.toContain("disposition attachment text");
+    expect(text).not.toContain("nested attachment text");
   });
 
   test("keeps raw Gmail message ids inside opaque receipts only", () => {

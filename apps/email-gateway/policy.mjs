@@ -166,8 +166,10 @@ function collectTextParts(part, textParts, htmlParts) {
   const body = part.body && typeof part.body === "object" ? part.body : {};
   // A Gmail attachment can be identified by an attachment id, filename, or
   // MIME disposition. Never fetch or return it, even when it is small enough
-  // for Gmail to inline its text data.
-  if (!isAttachmentPart(part, body) && typeof body.data === "string") {
+  // for Gmail to inline its text data. An attachment container can itself be
+  // multipart, so do not descend into its children either.
+  if (isAttachmentPart(part, body)) return;
+  if (typeof body.data === "string") {
     if (mimeType === "text/plain") textParts.push(decodeBody(body.data));
     if (mimeType === "text/html") htmlParts.push(decodeBody(body.data));
   }
