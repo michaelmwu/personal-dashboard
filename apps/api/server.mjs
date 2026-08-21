@@ -3349,6 +3349,13 @@ export function createApiServer({
           );
           return;
         }
+        // Generic Hermes actions are allowed to remain locally unauthenticated
+        // in an unconfigured development API. Gmail capabilities are different:
+        // they can cause the API to use its scoped gateway-reader token, so they
+        // must fail closed unless dashboard bearer authentication is configured.
+        if (capability.target === "gmail-intake" && !requireEmailGatewayReader(request, response)) {
+          return;
+        }
         if (capability.kind === "agentic" && capability.target === "gmail-intake") {
           const receiptBoundPayload = receiptBoundGmailActionPayload(payload.payload);
           if (!receiptBoundPayload) {

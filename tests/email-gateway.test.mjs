@@ -88,6 +88,16 @@ describe("email gateway policy", () => {
     expect(() => assertEnabledGatewayConfig(config)).toThrow("EMAIL_GATEWAY_DATA_DIR");
   });
 
+  test("requires distinct gateway admin and consumer tokens", () => {
+    const config = {
+      ...gatewayConfig("/gateway-owned-state"),
+      consumerToken: "admin-token"
+    };
+    expect(() => assertEnabledGatewayConfig(config)).toThrow(
+      "EMAIL_GATEWAY_ADMIN_TOKEN and EMAIL_GATEWAY_CONSUMER_TOKEN must differ"
+    );
+  });
+
   test("compiles bounded structured Gmail searches without accepting raw syntax", () => {
     expect(
       compileEmailSearch(
@@ -166,6 +176,17 @@ describe("email gateway policy", () => {
                 }
               }
             ]
+          },
+          {
+            mimeType: "message/rfc822",
+            parts: [
+              {
+                mimeType: "text/plain",
+                body: {
+                  data: Buffer.from("forwarded attachment text").toString("base64url")
+                }
+              }
+            ]
           }
         ]
       }
@@ -177,6 +198,7 @@ describe("email gateway policy", () => {
     expect(text).not.toContain("small inline attachment text");
     expect(text).not.toContain("disposition attachment text");
     expect(text).not.toContain("nested attachment text");
+    expect(text).not.toContain("forwarded attachment text");
   });
 
   test("keeps raw Gmail message ids inside opaque receipts only", () => {

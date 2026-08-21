@@ -210,6 +210,59 @@ describe("Gmail gateway dashboard ingress", () => {
     }
   });
 
+  test("fails closed for every Gmail Hermes action without dashboard bearer authentication", async () => {
+    let gatewayRequests = 0;
+    const gateway = http.createServer((_request, response) => {
+      gatewayRequests += 1;
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ message: { text: "This must not be read." } }));
+    });
+    const gatewayPort = await listen(gateway);
+    const original = Object.fromEntries(
+      ["EMAIL_GATEWAY_API_BASE_URL", "EMAIL_GATEWAY_DASHBOARD_TOKEN"].map((key) => [
+        key,
+        process.env[key]
+      ])
+    );
+    process.env.EMAIL_GATEWAY_API_BASE_URL = `http://127.0.0.1:${gatewayPort}`;
+    process.env.EMAIL_GATEWAY_DASHBOARD_TOKEN = "scoped-reader-token";
+    const server = createApiServer({ apiToken: "", emailGatewayEventToken: "gateway-event-token" });
+    const port = await listen(server);
+    try {
+      for (const capabilityId of [
+        "gmail_search",
+        "gmail_read",
+        "gmail_intake_analyze",
+        "reservation_parse"
+      ]) {
+        const response = await fetch(`http://127.0.0.1:${port}/api/hermes/actions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            idempotencyKey: `unauthenticated-${capabilityId}-${Date.now()}`,
+            capabilityId,
+            payload: { receipt: "opaque-receipt", handle: "opaque-handle" }
+          })
+        });
+        expect(response.status).toBe(503);
+        expect(await response.json()).toMatchObject({
+          error: "email_gateway_reader_auth_not_configured"
+        });
+      }
+      expect(gatewayRequests).toBe(0);
+    } finally {
+      for (const [key, value] of Object.entries(original)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      }
+      await close(server);
+      await close(gateway);
+    }
+  });
+
   test("fails closed without a dedicated event token", async () => {
     const server = createApiServer({ apiToken: "dashboard-token", emailGatewayEventToken: "" });
     const port = await listen(server);

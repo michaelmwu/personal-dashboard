@@ -186,6 +186,9 @@ export function assertEnabledGatewayConfig(config) {
   if (missing.length) {
     throw new Error(`Email gateway is enabled but missing ${missing.join(", ")}.`);
   }
+  if (config.adminToken === config.consumerToken) {
+    throw new Error("EMAIL_GATEWAY_ADMIN_TOKEN and EMAIL_GATEWAY_CONSUMER_TOKEN must differ.");
+  }
   const key = decodeEncryptionKey(config.tokenEncryptionKey);
   if (key.length !== 32) {
     throw new Error("EMAIL_GATEWAY_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes.");

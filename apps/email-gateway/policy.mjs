@@ -153,9 +153,15 @@ function isAttachmentPart(part, body) {
         (header) => String(header?.name ?? "").toLowerCase() === "content-disposition"
       )?.value
     : "";
+  const mimeType = String(part?.mimeType ?? "").toLowerCase();
   return (
     Boolean(body.attachmentId) ||
     Boolean(nonEmptyString(part?.filename)) ||
+    // A forwarded RFC 822 message may be represented as an inline multipart
+    // container without a filename or attachment disposition. Treat all
+    // message/* representations as attachments so their nested body never
+    // crosses the email-to-agent boundary.
+    mimeType.startsWith("message/") ||
     /(?:^|;)\s*attachment\b/i.test(String(disposition ?? ""))
   );
 }
