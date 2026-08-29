@@ -231,11 +231,14 @@ export function dashboardFixture() {
         state: "not-connected",
         lastSync: null
       },
+      benefits: [],
       accounts: [
         financeAccount({
           id: "acct_001",
           name: "Amex Gold",
           kind: "credit",
+          type: "credit",
+          subtype: "credit card",
           last4: "1001",
           syncStatus: "placeholder"
         }),
@@ -243,6 +246,8 @@ export function dashboardFixture() {
           id: "acct_002",
           name: "Chase Sapphire Reserve",
           kind: "credit",
+          type: "credit",
+          subtype: "credit card",
           last4: "4242",
           syncStatus: "placeholder"
         }),
@@ -250,6 +255,8 @@ export function dashboardFixture() {
           id: "acct_003",
           name: "Chase Freedom",
           kind: "credit",
+          type: "credit",
+          subtype: "credit card",
           last4: "9009",
           syncStatus: "placeholder"
         })
@@ -364,6 +371,7 @@ export function emptyDashboard() {
         state: "not-connected",
         lastSync: null
       },
+      benefits: [],
       accounts: []
     },
     intake: {

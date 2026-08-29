@@ -17,6 +17,12 @@ import {
   emptyDashboard
 } from "../packages/fixtures/dashboard.mjs";
 import {
+  classifyFinanceTransaction,
+  financeBenefitPeriod,
+  financeOverview,
+  oneYearAgoDate
+} from "../packages/finance/index.mjs";
+import {
   applyCodingTaskControl,
   applyCodingTaskReview,
   applyCodingTaskValidation,
@@ -119,10 +125,13 @@ import {
   applyPlaidSync,
   getSourceState,
   listAppItems,
+  listFinanceBenefits,
   listPlaidItems,
   loadDashboard,
   patchAppItemPayload,
+  removeFinanceBenefit,
   upsertAppItem,
+  upsertFinanceBenefit,
   upsertHermesAction,
   upsertHotelReservation,
   upsertNormalizedEvent,
@@ -730,6 +739,29 @@ describe("contracts", () => {
     }
   });
 
+  test("finance overview API applies the trailing-year default and account scope", async () => {
+    const apiServer = createApiServer({ apiToken: "dashboard-token" });
+    const apiPort = await listen(apiServer);
+
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${apiPort}/api/finance/overview?accountType=credit`
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        version: "finance-overview.v1",
+        accountType: "credit",
+        period: { startDate: oneYearAgoDate() },
+        accounts: expect.any(Array),
+        feeWatch: expect.any(Array),
+        benefits: expect.any(Array),
+        recentCredits: expect.any(Array)
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
   test("web server streams proxied Bridge event responses without buffering", async () => {
     let upstreamResponse;
     const apiRequests = [];
@@ -1312,6 +1344,7 @@ describe("contracts", () => {
       "/api/apps/coding-agent/pr-maintenance",
       "/api/apps/coding-agent/archive",
       "/api/travel/reservations",
+      "/api/finance/benefits",
       "/api/integrations/plaid/link-token",
       "/api/integrations/plaid/exchange-public-token",
       "/api/integrations/plaid/sync",
@@ -6666,7 +6699,7 @@ describe("contracts", () => {
     });
   });
 
-  test("Plaid config treats blank base URL as unset and supports development", () => {
+  test("Plaid config treats blank base URL as unset and maps retired environments to sandbox", () => {
     expect(
       plaidConfig({
         PLAID_CLIENT_ID: "client",
@@ -6676,13 +6709,15 @@ describe("contracts", () => {
       }).baseUrl
     ).toBe("https://sandbox.plaid.com");
 
-    expect(
-      plaidConfig({
-        PLAID_CLIENT_ID: "client",
-        PLAID_SECRET: "secret",
-        PLAID_ENV: "development"
-      }).baseUrl
-    ).toBe("https://development.plaid.com");
+    const fallback = plaidConfig({
+      PLAID_CLIENT_ID: "client",
+      PLAID_SECRET: "secret",
+      PLAID_ENV: "development"
+    });
+    expect(fallback).toMatchObject({
+      env: "sandbox",
+      baseUrl: "https://sandbox.plaid.com"
+    });
   });
 
   test("Plaid webhook verification validates JWT signature and raw body hash", async () => {
@@ -6721,9 +6756,11 @@ describe("contracts", () => {
 
   test("Plaid transaction sync paginates with cursor and normalizes account data", async () => {
     const cursors = [];
+    const syncCalls = [];
     const client = {
       async transactionsSync(body) {
         cursors.push(body.cursor);
+        syncCalls.push(body);
         if (!body.cursor) {
           return {
             data: {
@@ -6736,7 +6773,9 @@ describe("contracts", () => {
                   pending: true,
                   date: "2026-07-01",
                   personal_finance_category: {
-                    primary: "TRAVEL"
+                    primary: "TRAVEL",
+                    detailed: "TRAVEL_HOTELS_AND_LODGING",
+                    version: "v2"
                   }
                 }
               ],
@@ -6746,6 +6785,7 @@ describe("contracts", () => {
                 {
                   account_id: "plaid_account_001",
                   name: "Amex Platinum",
+                  type: "credit",
                   subtype: "credit card",
                   mask: "1001",
                   balances: {
@@ -6791,7 +6831,8 @@ describe("contracts", () => {
           baseUrl: "https://sandbox.plaid.com",
           clientId: "client-id",
           secret: "secret",
-          daysRequested: 730
+          daysRequested: 730,
+          personalFinanceCategoryVersion: "v2"
         }
       }
     );
@@ -6801,10 +6842,25 @@ describe("contracts", () => {
       cursor: "cursor_2"
     });
     expect(cursors).toEqual([undefined, "cursor_1"]);
-    expect(normalizePlaidTransaction(sync.added[0])).toMatchObject({
+    expect(syncCalls[0]).toMatchObject({
+      options: {
+        include_personal_finance_category: true,
+        include_original_description: true,
+        personal_finance_category_version: "v2",
+        days_requested: 730
+      }
+    });
+    expect(
+      normalizePlaidTransaction(sync.added[0], {
+        accountById: new Map(sync.accounts.map((account) => [account.account_id, account]))
+      })
+    ).toMatchObject({
       id: "plaid_txn_001",
       merchant: "Hyatt",
       category: "TRAVEL",
+      categoryDetailed: "TRAVEL_HOTELS_AND_LODGING",
+      personalFinanceCategoryVersion: "v2",
+      accountType: "credit",
       pending: true,
       status: "pending",
       source: "plaid"
@@ -6813,6 +6869,8 @@ describe("contracts", () => {
       id: "plaid_account_001",
       name: "Amex Platinum",
       kind: "credit card",
+      type: "credit",
+      subtype: "credit card",
       last4: "1001",
       balance: 455.12
     });
@@ -6987,6 +7045,151 @@ describe("contracts", () => {
         expect.objectContaining({ key: "FOOD_AND_DRINK", currency: "EUR", spend: 10 })
       ])
     );
+  });
+
+  test("finance tracker scopes accounts, flags fees, and matches explicit benefit credits", () => {
+    const accounts = [
+      {
+        id: "card_001",
+        name: "Amex Platinum",
+        type: "credit",
+        subtype: "credit card",
+        last4: "1001"
+      },
+      {
+        id: "bank_001",
+        name: "Checking",
+        type: "depository",
+        subtype: "checking",
+        last4: "2222"
+      }
+    ];
+    const transactions = [
+      {
+        id: "fee_annual",
+        accountId: "card_001",
+        merchant: "AMEX PLATINUM CARDMEMBER FEE",
+        amount: 695,
+        date: "2026-02-01",
+        status: "posted",
+        transactionCode: "membership fee",
+        isoCurrencyCode: "USD"
+      },
+      {
+        id: "fee_late",
+        accountId: "card_001",
+        merchant: "Late Payment Fee",
+        amount: 29,
+        date: "2026-03-01",
+        status: "posted",
+        transactionCode: "late fee",
+        isoCurrencyCode: "USD"
+      },
+      {
+        id: "credit_airline",
+        accountId: "card_001",
+        merchant: "AMEX AIRLINE FEE REIMBURSEMENT",
+        amount: -50,
+        date: "2026-04-01",
+        status: "posted",
+        isoCurrencyCode: "USD"
+      },
+      {
+        id: "payment_autopay",
+        accountId: "card_001",
+        merchant: "AUTOPAY PAYMENT",
+        amount: -500,
+        date: "2026-04-02",
+        status: "posted",
+        transactionCode: "payment",
+        isoCurrencyCode: "USD"
+      },
+      {
+        id: "fee_bank",
+        accountId: "bank_001",
+        merchant: "Bank Service Charge",
+        amount: 12,
+        date: "2026-04-03",
+        status: "posted",
+        transactionCode: "bank charge",
+        isoCurrencyCode: "USD"
+      }
+    ];
+    const benefits = [
+      {
+        id: "benefit_airline",
+        accountId: "card_001",
+        name: "Airline incidental credit",
+        amount: 200,
+        currency: "USD",
+        period: "annual",
+        descriptorPatterns: ["airline fee reimbursement"]
+      }
+    ];
+    const now = new Date(Date.UTC(2026, 7, 4));
+    const overview = financeOverview(
+      { accounts, transactions, benefits, sync: { state: "synced" } },
+      { accountType: "credit", startDate: "2026-01-01" },
+      now
+    );
+
+    expect(overview.accounts.map((account) => account.id)).toEqual(["card_001"]);
+    expect(
+      financeOverview(
+        { accounts, transactions, benefits },
+        transactionQueryFromSearchParams(
+          new URLSearchParams("accountType=credit&startDate=2026-01-01")
+        ),
+        now
+      ).accounts.map((account) => account.id)
+    ).toEqual(["card_001"]);
+    expect(overview.summary).toMatchObject({
+      transactionCount: 4,
+      feeCount: 2,
+      feeAmount: 724,
+      creditCount: 1,
+      creditAmount: 50
+    });
+    expect(overview.feeWatch).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "fee_annual",
+          classification: expect.objectContaining({ feeType: "annual" })
+        }),
+        expect.objectContaining({
+          id: "fee_late",
+          classification: expect.objectContaining({ feeType: "late" })
+        })
+      ])
+    );
+    expect(overview.benefits).toEqual([
+      expect.objectContaining({
+        id: "benefit_airline",
+        status: "partial",
+        creditedAmount: 50,
+        remainingAmount: 150,
+        matches: [expect.objectContaining({ id: "credit_airline" })]
+      })
+    ]);
+    expect(
+      financeOverview(
+        { accounts, transactions, benefits },
+        { accountType: "depository", startDate: "2026-01-01" },
+        now
+      ).benefits
+    ).toEqual([]);
+    expect(classifyFinanceTransaction(transactions[3])).toMatchObject({ kind: "payment" });
+    expect(
+      queryTransactions(transactions, { accountType: "depository", q: "service charge" }, accounts)
+        .items
+    ).toEqual([expect.objectContaining({ id: "fee_bank", accountLabel: "Checking" })]);
+    expect(oneYearAgoDate(now)).toBe("2025-08-04");
+    expect(
+      financeBenefitPeriod(
+        { period: "cardmember-year", periodStartMonth: 10 },
+        new Date(Date.UTC(2026, 7, 4))
+      )
+    ).toEqual({ startDate: "2025-10-01", endDate: "2026-09-30" });
   });
 
   test("Hotel Rate Finder client creates saved searches, runs jobs, and polls status", async () => {
@@ -7743,6 +7946,39 @@ describe("contracts", () => {
         })
       ])
     );
+  });
+
+  test("dashboard store persists and removes finance benefit configurations", async () => {
+    const filePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-benefits-${Date.now()}.json`;
+    const benefit = await upsertFinanceBenefit(filePath, {
+      id: "benefit_store_001",
+      accountId: "acct_001",
+      name: "Dining credit",
+      amount: 120,
+      currency: "USD",
+      period: "monthly",
+      periodStartMonth: 1,
+      descriptorPatterns: ["dining credit"],
+      enabled: true
+    });
+
+    expect(benefit).toMatchObject({
+      id: "benefit_store_001",
+      createdAt: expect.any(String),
+      updatedAt: expect.any(String)
+    });
+    expect(await listFinanceBenefits(filePath)).toEqual([
+      expect.objectContaining({ id: "benefit_store_001", name: "Dining credit" })
+    ]);
+    expect((await loadDashboard(emptyDashboard(), filePath)).finance.benefits).toEqual([
+      expect.objectContaining({ id: "benefit_store_001" })
+    ]);
+    expect(await removeFinanceBenefit(filePath, "benefit_store_001")).toMatchObject({
+      id: "benefit_store_001"
+    });
+    expect(await listFinanceBenefits(filePath)).toEqual([]);
+
+    await rm(filePath, { force: true });
   });
 
   test("dashboard store persists hotel reservations, watches, and rate alerts", async () => {

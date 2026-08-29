@@ -19,6 +19,7 @@ apps/
   web/          Static dashboard frontend and local web server
 packages/
   contracts/    Shared domain builders and dashboard contract shape
+  finance/      Account scoping, fee watch, and benefit-credit matching rules
   fixtures/     Representative local development data
   integrations/ Hermes, OpenClaw, travel, finance, and intake adapter boundaries
 scripts/        Conductor-aware dev, archive, port, and smoke-test scripts
@@ -75,6 +76,12 @@ Plaid Link
   -> apps/api /api/integrations/plaid/sync
   -> packages/integrations/plaid
   -> apps/web finance and transaction surfaces
+
+Finance tracker
+  -> packages/transactions scoped ledger query
+  -> packages/finance fee and benefit-credit evaluation
+  -> apps/api /api/finance/overview
+  -> apps/web card and bank views
 
 Manual hotel reservation / Gmail reservation
   -> apps/api /api/travel/reservations

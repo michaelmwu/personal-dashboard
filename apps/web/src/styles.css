@@ -180,6 +180,75 @@ h2 {
   gap: 4px;
 }
 
+.finance-toolbar {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+}
+
+.scope-tabs,
+.plaid-actions,
+.date-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.scope-tabs button,
+.plaid-actions button,
+.date-presets button {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fff;
+  color: var(--ink);
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.scope-tabs button.active,
+.date-presets button.active {
+  border-color: var(--accent);
+  background: #ecfdf5;
+  color: var(--accent-strong);
+}
+
+.plaid-actions button:first-child {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.finance-notice,
+.date-presets,
+.finance-status {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.finance-notice {
+  min-height: 34px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--line);
+  background: #f8fafc;
+}
+
+.date-presets {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfcfb;
+}
+
+.date-presets > span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
 .sort-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -275,7 +344,7 @@ h2 {
 
 .table-row {
   display: grid;
-  grid-template-columns: 92px minmax(180px, 1.2fr) minmax(132px, 0.75fr) minmax(180px, 1fr) 112px;
+  grid-template-columns: 92px minmax(170px, 1.15fr) minmax(150px, 0.9fr) minmax(150px, 0.9fr) 100px 112px;
   gap: 14px;
   align-items: center;
   min-height: 58px;
@@ -300,6 +369,12 @@ h2 {
   gap: 4px;
 }
 
+.table-row > span:nth-child(2),
+.table-row > span:nth-child(3) {
+  display: grid;
+  gap: 4px;
+}
+
 .table-row span:last-child {
   font-weight: 900;
   text-align: right;
@@ -307,6 +382,14 @@ h2 {
 
 .credit-row span:last-child {
   color: var(--positive);
+}
+
+.transaction-kind {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 mark {
@@ -392,6 +475,163 @@ mark {
   color: var(--muted);
   font-weight: 800;
   text-align: right;
+}
+
+.finance-status {
+  padding: 10px 14px 0;
+}
+
+.fee-card {
+  border-left: 4px solid var(--calm);
+}
+
+.fee-card.medium {
+  border-left-color: var(--warning);
+}
+
+.fee-card.high {
+  border-left-color: var(--danger);
+}
+
+.benefit-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--calm);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.benefit-card.credited {
+  border-left-color: var(--positive);
+}
+
+.benefit-card.partial {
+  border-left-color: var(--warning);
+}
+
+.benefit-card.needs-setup {
+  border-left-color: var(--danger);
+}
+
+.recent-credit-section {
+  border-top: 1px solid var(--line);
+}
+
+.recent-credit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 14px 0;
+}
+
+.recent-credit-header h3 {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.recent-credit-header span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.credit-card small {
+  color: var(--positive);
+}
+
+.benefit-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.benefit-card p,
+.benefit-card small {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.quiet-button {
+  border: 0;
+  padding: 2px 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.quiet-button:hover {
+  color: var(--danger);
+}
+
+.benefit-form {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-top: 1px solid var(--line);
+  background: #fbfcfb;
+}
+
+.benefit-form h3 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.benefit-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.benefit-form input,
+.benefit-form select,
+.benefit-form textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  text-transform: none;
+}
+
+.benefit-form textarea {
+  resize: vertical;
+}
+
+.benefit-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.benefit-form p,
+.benefit-form output {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.benefit-form button {
+  min-height: 34px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 800;
+  cursor: pointer;
 }
 
 .aggregate-card {
@@ -567,8 +807,10 @@ mark {
 
   .table-row span:nth-child(3),
   .table-row span:nth-child(4),
+  .table-row span:nth-child(5),
   .table-head span:nth-child(3),
-  .table-head span:nth-child(4) {
+  .table-head span:nth-child(4),
+  .table-head span:nth-child(5) {
     display: none;
   }
 
@@ -622,5 +864,13 @@ mark {
 
   .sort-toolbar {
     justify-content: flex-start;
+  }
+
+  .finance-toolbar {
+    justify-items: start;
+  }
+
+  .benefit-form-row {
+    grid-template-columns: 1fr;
   }
 }

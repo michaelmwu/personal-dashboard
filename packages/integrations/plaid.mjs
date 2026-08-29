@@ -8,7 +8,6 @@ import { Configuration, CountryCode, PlaidApi, PlaidEnvironments, Products } fro
 
 const PLAID_ENV_URLS = {
   sandbox: "https://sandbox.plaid.com",
-  development: "https://development.plaid.com",
   production: "https://production.plaid.com"
 };
 
@@ -23,7 +22,10 @@ const COUNTRY_CODE_MAP = {
 const webhookVerificationKeys = new Map();
 
 export function plaidConfig(env = process.env) {
-  const plaidEnv = env.PLAID_ENV ?? "sandbox";
+  const requestedEnvironment = String(env.PLAID_ENV ?? "sandbox")
+    .trim()
+    .toLowerCase();
+  const plaidEnv = requestedEnvironment === "production" ? "production" : "sandbox";
   const explicitBaseUrl = env.PLAID_BASE_URL?.trim();
   return {
     clientId: env.PLAID_CLIENT_ID ?? "",
@@ -45,6 +47,7 @@ export function plaidConfig(env = process.env) {
       .filter(Boolean),
     language: env.PLAID_LANGUAGE ?? "en",
     daysRequested: Number.parseInt(env.PLAID_DAYS_REQUESTED ?? "730", 10),
+    personalFinanceCategoryVersion: env.PLAID_PERSONAL_FINANCE_CATEGORY_VERSION?.trim() || "v2",
     webhook: env.PLAID_WEBHOOK_URL ?? ""
   };
 }
@@ -257,6 +260,7 @@ export async function syncPlaidTransactions({ accessToken, cursor } = {}, option
   const config = options.config ?? plaidConfig();
   const client = options.client ?? createPlaidClient(config);
   const count = options.count ?? 500;
+  const personalFinanceCategoryVersion = config.personalFinanceCategoryVersion || "v2";
   const initialCursor = cursor;
   let nextCursor = cursor;
   let hasMore = true;
@@ -275,6 +279,8 @@ export async function syncPlaidTransactions({ accessToken, cursor } = {}, option
         count,
         options: {
           include_personal_finance_category: true,
+          include_original_description: true,
+          personal_finance_category_version: personalFinanceCategoryVersion,
           days_requested: config.daysRequested
         }
       },
@@ -290,6 +296,7 @@ export async function syncPlaidTransactions({ accessToken, cursor } = {}, option
         modified: [],
         removed: [],
         accounts: [],
+        personalFinanceCategoryVersion,
         requestIds,
         response: response.body
       };
@@ -311,25 +318,39 @@ export async function syncPlaidTransactions({ accessToken, cursor } = {}, option
     modified,
     removed,
     accounts,
+    personalFinanceCategoryVersion,
     requestIds
   };
 }
 
-export function normalizePlaidAccount(account) {
-  const balance = account.balances?.current ?? account.balances?.available;
+export function normalizePlaidAccount(account, { itemId, institutionName } = {}) {
+  const currentBalance = account.balances?.current;
+  const availableBalance = account.balances?.available;
+  const balance = currentBalance ?? availableBalance;
   return {
     id: account.account_id,
     name: account.name ?? account.official_name ?? "Unknown account",
     kind: account.subtype ?? account.type ?? "unknown",
+    type: account.type,
+    subtype: account.subtype,
     last4: account.mask ?? "----",
     syncStatus: "synced",
-    institutionName: account.institution_name,
+    institutionName: institutionName ?? account.institution_name,
+    itemId,
     source: "plaid",
-    balance: typeof balance === "number" ? balance : undefined
+    balance: typeof balance === "number" ? balance : undefined,
+    currentBalance: typeof currentBalance === "number" ? currentBalance : undefined,
+    availableBalance: typeof availableBalance === "number" ? availableBalance : undefined,
+    creditLimit: typeof account.balances?.limit === "number" ? account.balances.limit : undefined,
+    isoCurrencyCode:
+      account.balances?.iso_currency_code ?? account.balances?.unofficial_currency_code
   };
 }
 
-export function normalizePlaidTransaction(transaction, { accountById = new Map() } = {}) {
+export function normalizePlaidTransaction(
+  transaction,
+  { accountById = new Map(), itemId, institutionName, personalFinanceCategoryVersion } = {}
+) {
   const account = accountById.get(transaction.account_id);
   const personalFinanceCategory = transaction.personal_finance_category ?? {};
   return {
@@ -356,9 +377,17 @@ export function normalizePlaidTransaction(transaction, { accountById = new Map()
     unofficialCurrencyCode: transaction.unofficial_currency_code,
     merchantEntityId: transaction.merchant_entity_id,
     name: transaction.name,
+    originalDescription: transaction.original_description,
+    transactionCode: transaction.transaction_code,
+    personalFinanceCategoryVersion:
+      personalFinanceCategory.version ?? personalFinanceCategoryVersion,
     logoUrl: transaction.logo_url,
     website: transaction.website,
     location: transaction.location,
+    accountType: account?.type,
+    accountSubtype: account?.subtype,
+    institutionName: institutionName ?? account?.institution_name,
+    itemId,
     sourceTransactionId: transaction.transaction_id,
     source: "plaid"
   };

@@ -349,9 +349,19 @@ export function transaction({
   unofficialCurrencyCode,
   merchantEntityId,
   name,
+  originalDescription,
+  transactionCode,
+  personalFinanceCategoryVersion,
   logoUrl,
   website,
   location,
+  accountType,
+  accountSubtype,
+  institutionName,
+  itemId,
+  originalAmount,
+  originalCurrencyCode,
+  exchangeRate,
   sourceTransactionId,
   source
 }) {
@@ -374,9 +384,19 @@ export function transaction({
     unofficialCurrencyCode,
     merchantEntityId,
     name,
+    originalDescription,
+    transactionCode,
+    personalFinanceCategoryVersion,
     logoUrl,
     website,
     location,
+    accountType,
+    accountSubtype,
+    institutionName,
+    itemId,
+    originalAmount,
+    originalCurrencyCode,
+    exchangeRate,
     sourceTransactionId,
     source
   };
@@ -567,13 +587,36 @@ export function financeAccount({
   id,
   name,
   kind,
+  type,
+  subtype,
   last4,
   syncStatus,
   institutionName,
+  itemId,
   source,
-  balance
+  balance,
+  currentBalance,
+  availableBalance,
+  creditLimit,
+  isoCurrencyCode
 }) {
-  return { id, name, kind, last4, syncStatus, institutionName, source, balance };
+  return {
+    id,
+    name,
+    kind,
+    type,
+    subtype,
+    last4,
+    syncStatus,
+    institutionName,
+    itemId,
+    source,
+    balance,
+    currentBalance,
+    availableBalance,
+    creditLimit,
+    isoCurrencyCode
+  };
 }
 
 export function intakeItem({ id, source, title, detail, classification, state, receivedAt }) {
@@ -624,7 +667,7 @@ export function dashboardContract({
   rewards,
   openclaw,
   travel = { hotelWatches: [], flightWatches: [], dealFeed: [], reservations: [] },
-  finance = { accounts: [], sync: {} },
+  finance = { accounts: [], benefits: [], sync: {} },
   intake = { items: [] },
   apps = { manifests: [], panels: [], items: [] },
   hermes = {

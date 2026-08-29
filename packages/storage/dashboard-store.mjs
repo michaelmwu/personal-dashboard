@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 const overlayMutationQueues = new Map();
@@ -16,7 +16,8 @@ function emptyOverlay() {
     finance: {
       accounts: [],
       sync: undefined,
-      plaidItems: []
+      plaidItems: [],
+      benefits: []
     },
     intake: {
       items: []
@@ -47,10 +48,15 @@ async function readOverlay(filePath) {
 }
 
 async function writeOverlay(filePath, overlay) {
-  await mkdir(dirname(filePath), { recursive: true });
+  await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(overlay, null, 2)}\n`, "utf8");
+  await writeFile(tempPath, `${JSON.stringify(overlay, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600
+  });
+  await chmod(tempPath, 0o600);
   await rename(tempPath, filePath);
+  await chmod(filePath, 0o600);
 }
 
 async function mutateOverlay(filePath, mutator) {
@@ -121,7 +127,8 @@ export function mergeDashboardOverlay(baseDashboard, overlay) {
       accounts: mergeById(baseDashboard.finance.accounts, overlay.finance?.accounts ?? []),
       plaidItems: (overlay.finance?.plaidItems ?? baseDashboard.finance.plaidItems ?? []).map(
         publicPlaidItem
-      )
+      ),
+      benefits: mergeById(baseDashboard.finance.benefits ?? [], overlay.finance?.benefits ?? [])
     },
     intake: {
       ...baseDashboard.intake,
@@ -212,6 +219,31 @@ export async function upsertPlaidItem(filePath, item) {
       updatedAt: item.updatedAt ?? new Date().toISOString()
     });
     return overlay;
+  });
+}
+
+export async function listFinanceBenefits(filePath) {
+  const overlay = await readOverlay(filePath);
+  return overlay.finance?.benefits ?? [];
+}
+
+export async function upsertFinanceBenefit(filePath, benefit) {
+  return mutateOverlay(filePath, (overlay) => {
+    overlay.finance.benefits = upsertById(overlay.finance.benefits ?? [], {
+      ...benefit,
+      createdAt: benefit.createdAt ?? new Date().toISOString(),
+      updatedAt: benefit.updatedAt ?? new Date().toISOString()
+    });
+    return overlay.finance.benefits.find((candidate) => candidate.id === benefit.id);
+  });
+}
+
+export async function removeFinanceBenefit(filePath, benefitId) {
+  return mutateOverlay(filePath, (overlay) => {
+    const before = overlay.finance.benefits ?? [];
+    const removed = before.find((benefit) => benefit.id === benefitId);
+    overlay.finance.benefits = before.filter((benefit) => benefit.id !== benefitId);
+    return removed;
   });
 }
 
