@@ -553,6 +553,7 @@ describe("contracts", () => {
     expect(ids).toContain("hotel_rate_finder");
     expect(ids).toContain("flight_searcher");
     expect(ids).toContain("asia_travel_deals");
+    expect(ids).toContain("house_calendar");
     expect(ids).toContain("gmail_intake");
   });
 
@@ -560,7 +561,13 @@ describe("contracts", () => {
     const registry = await loadPluginRegistry(new URL("..", import.meta.url).pathname);
 
     expect(registry.apps.map((app) => app.id)).toEqual(
-      expect.arrayContaining(["asia-travel-deals", "coding-agent", "hotel-rate-finder", "plaid"])
+      expect.arrayContaining([
+        "asia-travel-deals",
+        "coding-agent",
+        "hotel-rate-finder",
+        "house-calendar",
+        "plaid"
+      ])
     );
     expect(registry.panels).toEqual(
       expect.arrayContaining([
@@ -579,6 +586,12 @@ describe("contracts", () => {
           id: "hotel_rate_search",
           kind: "deterministic",
           endpoint: "/api/integrations/hotel-rate-finder/sync"
+        }),
+        expect.objectContaining({
+          id: "finance_overview",
+          kind: "deterministic",
+          target: "finance-dashboard",
+          endpoint: "/api/hermes/finance/overview"
         }),
         expect.objectContaining({
           id: "reservation_parse",
@@ -757,6 +770,48 @@ describe("contracts", () => {
         benefits: expect.any(Array),
         recentCredits: expect.any(Array)
       });
+
+      const unauthenticatedHermes = await fetch(
+        `http://127.0.0.1:${apiPort}/api/hermes/finance/overview?accountType=credit`
+      );
+      expect(unauthenticatedHermes.status).toBe(401);
+
+      const hermesOverview = await fetch(
+        `http://127.0.0.1:${apiPort}/api/hermes/finance/overview?accountType=credit`,
+        { headers: { Authorization: "Bearer dashboard-token" } }
+      );
+      expect(hermesOverview.status).toBe(200);
+      expect(await hermesOverview.json()).toMatchObject({
+        version: "finance-overview.v1",
+        accountType: "credit",
+        period: { startDate: oneYearAgoDate() }
+      });
+
+      const action = await fetch(`http://127.0.0.1:${apiPort}/api/hermes/actions`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer dashboard-token",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "finance-overview-contract-test"
+        },
+        body: JSON.stringify({
+          capabilityId: "finance_overview",
+          payload: { account_type: "credit" }
+        })
+      });
+      expect(action.status).toBe(202);
+      expect(await action.json()).toMatchObject({
+        accepted: true,
+        dispatch: {
+          dispatched: true,
+          readOnly: true,
+          target: "finance-dashboard",
+          response: {
+            version: "finance-overview.v1",
+            accountType: "credit"
+          }
+        }
+      });
     } finally {
       await closeServer(apiServer);
     }
@@ -837,6 +892,7 @@ describe("contracts", () => {
     });
 
     expect(context.capabilities).toHaveLength(hermesCapabilities().length);
+    expect(hermesCapabilities().map((capability) => capability.id)).toContain("finance_overview");
     expect(context.version).toBe("dashboard.v1");
     expect(context.travel.reservationsNeedingReview).toHaveLength(1);
     expect(context.intake.needsReview).toHaveLength(2);

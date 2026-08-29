@@ -661,6 +661,16 @@ mark {
   grid-template-columns: 128px minmax(0, 1fr);
 }
 
+.app-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.app-link:hover,
+.app-link:focus-visible {
+  text-decoration: underline;
+}
+
 .bridge-console,
 .operator-console {
   display: grid;

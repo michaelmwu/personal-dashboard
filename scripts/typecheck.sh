@@ -7,6 +7,7 @@ bun build \
   apps/api/server.mjs \
   apps/web/server.mjs \
   scripts/dev.mjs \
+  scripts/production.mjs \
   packages/contracts/index.mjs \
   packages/finance/index.mjs \
   packages/fixtures/dashboard.mjs \

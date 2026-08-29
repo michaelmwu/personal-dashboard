@@ -3,6 +3,7 @@
 .context
 .cursor
 
+.data
 .env
 .env.*
 !.env.example
@@ -14,6 +15,7 @@ node_modules
 dist
 build
 coverage
+test-results
 
 .DS_Store
 *.log

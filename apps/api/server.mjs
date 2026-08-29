@@ -155,6 +155,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "../..");
 const port = Number.parseInt(process.env.API_PORT ?? "8810", 10);
 const webPort = Number.parseInt(process.env.WEB_PORT ?? "8811", 10);
+const host = process.env.API_HOST ?? "127.0.0.1";
 const hermesApiToken = process.env.PERSONAL_DASHBOARD_API_TOKEN ?? "";
 const storePath = dashboardStorePath(root);
 const codingAgentStore = createCodingAgentStore({ filePath: storePath });
@@ -240,6 +241,42 @@ function financeAggregateQuery(searchParams) {
     query.startDate = oneYearAgoDate();
   }
   return query;
+}
+
+function financeOverviewQueryFromPayload(payload = {}) {
+  const params = new URLSearchParams();
+  for (const [queryKey, payloadKeys] of Object.entries({
+    accountType: ["accountType", "account_type"],
+    startDate: ["startDate", "start_date"],
+    endDate: ["endDate", "end_date"],
+    range: ["range"]
+  })) {
+    const value = payloadKeys
+      .map((key) => payload[key])
+      .find((candidate) => typeof candidate === "string" && candidate.trim());
+    if (value) {
+      params.set(queryKey, value);
+    }
+  }
+  return financeTransactionQuery(params);
+}
+
+async function financeOverviewSnapshot(query) {
+  const dashboard = await dashboardSnapshot();
+  const transactions = filterTransactions(
+    dashboard.transactions,
+    query,
+    dashboard.finance.accounts
+  );
+  return financeOverview(
+    {
+      accounts: dashboard.finance.accounts,
+      transactions,
+      benefits: dashboard.finance.benefits ?? [],
+      sync: dashboard.finance.sync
+    },
+    query
+  );
 }
 
 function benefitDescriptorPatterns(value) {
@@ -1760,6 +1797,10 @@ async function dispatchHermesAction(action, capability) {
 }
 
 async function dispatchDeterministicCapability(action, capability) {
+  if (capability.endpoint === "/api/hermes/finance/overview") {
+    const response = await financeOverviewSnapshot(financeOverviewQueryFromPayload(action.payload));
+    return { dispatched: true, target: capability.target, response, readOnly: true };
+  }
   if (capability.endpoint === "/api/integrations/plaid/sync") {
     const response = await syncPlaidItems({
       itemId: action.payload.itemId ?? action.payload.item_id
@@ -2725,25 +2766,19 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
       }
 
       if (request.method === "GET" && url.pathname === "/api/finance/overview") {
-        const dashboard = await dashboardSnapshot();
         const query = financeTransactionQuery(url.searchParams);
-        const transactions = filterTransactions(
-          dashboard.transactions,
-          query,
-          dashboard.finance.accounts
-        );
+        json(response, 200, await financeOverviewSnapshot(query));
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/hermes/finance/overview") {
+        if (!requireAuth(request, response)) {
+          return;
+        }
         json(
           response,
           200,
-          financeOverview(
-            {
-              accounts: dashboard.finance.accounts,
-              transactions,
-              benefits: dashboard.finance.benefits ?? [],
-              sync: dashboard.finance.sync
-            },
-            query
-          )
+          await financeOverviewSnapshot(financeTransactionQuery(url.searchParams))
         );
         return;
       }
@@ -3159,7 +3194,7 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
 const server = createApiServer();
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  server.listen(port, "127.0.0.1", () => {
-    console.log(`Personal Dashboard API listening on http://127.0.0.1:${port}`);
+  server.listen(port, host, () => {
+    console.log(`Personal Dashboard API listening on http://${host}:${port}`);
   });
 }

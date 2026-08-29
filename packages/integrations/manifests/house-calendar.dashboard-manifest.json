@@ -1,0 +1,18 @@
+{
+  "id": "house-calendar",
+  "name": "House Calendar",
+  "version": "dashboard-app.v1",
+  "baseUrlEnv": "HOUSE_CALENDAR_BASE_URL",
+  "panels": [
+    {
+      "id": "house-calendar-link",
+      "type": "app-link",
+      "title": "House Calendar",
+      "dataSource": "/api/apps/house-calendar/items?type=calendar",
+      "defaultPosition": "home"
+    }
+  ],
+  "capabilities": [],
+  "eventTypes": [],
+  "deepLink": "/"
+}

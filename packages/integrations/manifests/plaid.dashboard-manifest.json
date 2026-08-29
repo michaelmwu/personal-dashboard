@@ -14,6 +14,19 @@
   ],
   "capabilities": [
     {
+      "id": "finance_overview",
+      "title": "Review finance overview",
+      "kind": "deterministic",
+      "target": "finance-dashboard",
+      "endpoint": "/api/hermes/finance/overview",
+      "description": "Read a bounded account, fee, benefit, and recent-credit overview for the selected period.",
+      "inputSchema": {
+        "accountType": "credit|depository?",
+        "startDate": "YYYY-MM-DD?",
+        "endDate": "YYYY-MM-DD?"
+      }
+    },
+    {
       "id": "plaid_sync",
       "title": "Sync Plaid transactions",
       "kind": "deterministic",
