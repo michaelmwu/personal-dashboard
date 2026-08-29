@@ -1432,6 +1432,57 @@ describe("contracts", () => {
     }
   });
 
+  test("Asia Travel Deals webhooks accept only their scoped bearer token", async () => {
+    const apiServer = createApiServer({
+      apiToken: "dashboard-token",
+      asiaTravelDealsWebhookToken: "asia-webhook-token"
+    });
+    const apiPort = await listen(apiServer);
+    const endpoint = `http://127.0.0.1:${apiPort}/api/integrations/asia-travel-deals/events`;
+    const payload = {
+      schemaVersion: "asia-travel-deals.event.v1",
+      eventType: "candidate_upsert",
+      eventId: `asia_webhook_${Date.now()}`,
+      candidateId: `candidate_${Date.now()}`,
+      status: "needs_verification",
+      updatedAt: "2026-08-29T00:00:00.000Z"
+    };
+
+    try {
+      const rejected = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      expect(rejected.status).toBe(401);
+
+      const accepted = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer asia-webhook-token",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+      expect(accepted.status).toBe(202);
+      expect(await accepted.json()).toMatchObject({
+        accepted: true,
+        normalized: {
+          kind: "travelDeal",
+          value: { source: "asia-travel-deals" }
+        }
+      });
+
+      const overbroadAccess = await fetch(
+        `http://127.0.0.1:${apiPort}/api/hermes/finance/overview`,
+        { headers: { Authorization: "Bearer asia-webhook-token" } }
+      );
+      expect(overbroadAccess.status).toBe(401);
+    } finally {
+      await closeServer(apiServer);
+    }
+  });
+
   test("personal memory keeps proposals pending until an approved decision and recalls with provenance", () => {
     const proposal = planPersonalMemoryProposal(
       {

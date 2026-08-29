@@ -46,6 +46,9 @@ scripts/archive-workspace.sh --dry-run
 - `OPENCLAW_API_BASE_URL`: optional future OpenClaw service URL.
 - `HOUSE_CALENDAR_BASE_URL`: optional browser URL for the House Calendar
   dashboard porthole (for example, `https://house.michaelmwu.com`).
+- `ASIA_TRAVEL_DEALS_WEBHOOK_TOKEN`: optional, dedicated bearer token accepted
+  only by the Asia Travel Deals event webhook. Keep it separate from
+  `PERSONAL_DASHBOARD_API_TOKEN`.
 
 ## Coolify Deployment
 
@@ -66,6 +69,11 @@ predefined Docker network can use `HOTEL_RATE_FINDER_API_BASE_URL` and
 `ASIA_TRAVEL_DEALS_API_BASE_URL` to reach the respective private services.
 Set `HOTEL_RATE_SYNC_ENABLED=true` to make the bundled worker refresh active
 hotel reservations.
+
+For inbound private webhooks, override `API_HOST=0.0.0.0` in Coolify while
+leaving port `8810` without a public domain or Traefik route. The API remains
+reachable only on the shared Docker network and requires its endpoint-specific
+bearer token.
 
 ## Framework Endpoints
 

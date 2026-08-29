@@ -157,6 +157,7 @@ const port = Number.parseInt(process.env.API_PORT ?? "8810", 10);
 const webPort = Number.parseInt(process.env.WEB_PORT ?? "8811", 10);
 const host = process.env.API_HOST ?? "127.0.0.1";
 const hermesApiToken = process.env.PERSONAL_DASHBOARD_API_TOKEN ?? "";
+const configuredAsiaTravelDealsWebhookToken = process.env.ASIA_TRAVEL_DEALS_WEBHOOK_TOKEN ?? "";
 const storePath = dashboardStorePath(root);
 const codingAgentStore = createCodingAgentStore({ filePath: storePath });
 const asiaTravelDealsApiBaseUrl = process.env.ASIA_TRAVEL_DEALS_API_BASE_URL ?? "";
@@ -2075,6 +2076,30 @@ function requireHermesAuth(request, response, { apiToken = hermesApiToken } = {}
   return false;
 }
 
+function requireAsiaTravelDealsWebhookAuth(
+  request,
+  response,
+  { apiToken = hermesApiToken, webhookToken = configuredAsiaTravelDealsWebhookToken } = {}
+) {
+  const authorization = request.headers.authorization;
+  if (webhookToken) {
+    if (
+      authorization === `Bearer ${webhookToken}` ||
+      (apiToken && authorization === `Bearer ${apiToken}`)
+    ) {
+      return true;
+    }
+    error(
+      response,
+      401,
+      "unauthorized",
+      "Missing or invalid Asia Travel Deals webhook bearer token."
+    );
+    return false;
+  }
+  return requireHermesAuth(request, response, { apiToken });
+}
+
 async function requirePlaidWebhookAuth(
   request,
   response,
@@ -2120,8 +2145,16 @@ async function packageInfo() {
   return JSON.parse(raw);
 }
 
-export function createApiServer({ apiToken = hermesApiToken } = {}) {
+export function createApiServer({
+  apiToken = hermesApiToken,
+  asiaTravelDealsWebhookToken: webhookToken = configuredAsiaTravelDealsWebhookToken
+} = {}) {
   const requireAuth = (request, response) => requireHermesAuth(request, response, { apiToken });
+  const requireAsiaTravelDealsWebhook = (request, response) =>
+    requireAsiaTravelDealsWebhookAuth(request, response, {
+      apiToken,
+      webhookToken
+    });
 
   return http.createServer(async (request, response) => {
     try {
@@ -3146,10 +3179,14 @@ export function createApiServer({ apiToken = hermesApiToken } = {}) {
 
       const sourceEventMatch = url.pathname.match(/^\/api\/integrations\/([^/]+)\/events$/);
       if (request.method === "POST" && sourceEventMatch) {
-        if (!requireAuth(request, response)) {
+        const source = sourceEventMatch[1];
+        const authenticated =
+          source === ASIA_TRAVEL_DEALS_SOURCE_ID
+            ? requireAsiaTravelDealsWebhook(request, response)
+            : requireAuth(request, response);
+        if (!authenticated) {
           return;
         }
-        const source = sourceEventMatch[1];
         if (!isSupportedSourceAdapter(source)) {
           error(response, 404, "unsupported_source", `Unsupported integration source: ${source}`);
           return;
