@@ -41,6 +41,14 @@ export function integrationCatalog() {
       nextStep: "Expose reviewed deal candidates as a compact personal feed."
     }),
     integrationStatus({
+      id: "house_calendar",
+      name: "House Calendar",
+      sourceRepo: "508-dev/house-calendar",
+      adapter: "house-calendar",
+      stage: "standalone-app",
+      nextStep: "Open the shared household calendar from the dashboard porthole."
+    }),
+    integrationStatus({
       id: "plaid",
       name: "Plaid transactions",
       sourceRepo: "external:plaid",

@@ -19,6 +19,14 @@ apps:
         enabled: true
         position: operations
         order: 50
+  - id: house-calendar
+    enabled: true
+    manifest: packages/integrations/manifests/house-calendar.dashboard-manifest.json
+    panels:
+      - id: house-calendar-link
+        enabled: true
+        position: home
+        order: 5
   - id: plaid
     enabled: true
     manifest: packages/integrations/manifests/plaid.dashboard-manifest.json

@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const port = Number.parseInt(process.env.WEB_PORT ?? "8811", 10);
 const apiPort = Number.parseInt(process.env.API_PORT ?? "8810", 10);
+const host = process.env.WEB_HOST ?? "127.0.0.1";
 const configuredApiBaseUrl = process.env.PERSONAL_DASHBOARD_API_BASE_URL?.trim().replace(/\/$/, "");
 const apiBaseUrl = configuredApiBaseUrl || `http://127.0.0.1:${apiPort}`;
 
@@ -158,7 +159,7 @@ export function createWebServer({ rootDir = __dirname, proxyBaseUrl = apiBaseUrl
 const server = createWebServer();
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  server.listen(port, "127.0.0.1", () => {
-    console.log(`Personal Dashboard listening on http://127.0.0.1:${port}`);
+  server.listen(port, host, () => {
+    console.log(`Personal Dashboard listening on http://${host}:${port}`);
   });
 }

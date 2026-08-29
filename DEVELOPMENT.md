@@ -44,6 +44,28 @@ scripts/archive-workspace.sh --dry-run
 - `PERSONAL_DASHBOARD_API_TOKEN`: optional bearer token required by
   `/api/hermes/*` endpoints when configured.
 - `OPENCLAW_API_BASE_URL`: optional future OpenClaw service URL.
+- `HOUSE_CALENDAR_BASE_URL`: optional browser URL for the House Calendar
+  dashboard porthole (for example, `https://house.michaelmwu.com`).
+
+## Coolify Deployment
+
+The production image runs the web UI, loopback API, and integration worker in
+one private container. Attach one persistent Coolify volume at `/data`; it
+contains the dashboard JSON store, Plaid access tokens, and coding-agent run
+evidence. The image starts the worker through the API, so the API remains the
+only writer for dashboard state.
+
+The standard deployment does not need PostgreSQL or Redis. Configure Coolify
+to build the root `Dockerfile`, expose port `8811`, and use `/api/health` for
+health checks. Do not assign an ingress domain until private access control is
+in place.
+
+Set integration endpoints as private service URLs and keep their tokens in
+Coolify secret environment variables. For example, a dashboard on Coolify's
+predefined Docker network can use `HOTEL_RATE_FINDER_API_BASE_URL` and
+`ASIA_TRAVEL_DEALS_API_BASE_URL` to reach the respective private services.
+Set `HOTEL_RATE_SYNC_ENABLED=true` to make the bundled worker refresh active
+hotel reservations.
 
 ## Framework Endpoints
 

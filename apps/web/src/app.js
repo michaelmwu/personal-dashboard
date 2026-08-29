@@ -718,19 +718,36 @@ function renderIntegrations(integrations) {
     .join("");
 }
 
+function appDeepLink(manifest) {
+  const baseUrl = String(manifest?.baseUrl ?? "").trim();
+  if (!/^https?:\/\//i.test(baseUrl)) {
+    return "";
+  }
+  try {
+    return new URL(manifest.deepLink || "/", baseUrl).toString();
+  } catch {
+    return "";
+  }
+}
+
 function renderPluginPanels(apps) {
   const panels = apps?.panels ?? [];
   const items = apps?.items ?? [];
+  const manifests = new Map((apps?.manifests ?? []).map((manifest) => [manifest.id, manifest]));
   byId("plugin-panel-count").textContent = `${panels.length} enabled`;
   byId("plugin-panels").innerHTML = panels
     .map((panel) => {
       const appItems = items.filter((item) => item.app === panel.appId);
       const active = appItems.filter((item) => item.status !== "done").length;
+      const href = appDeepLink(manifests.get(panel.appId));
+      const title = href
+        ? `<a class="app-link" href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(panel.title)}</a>`
+        : `<strong>${escapeHtml(panel.title)}</strong>`;
       return `
         <article class="compact-card integration-card">
           <span class="pill">${escapeHtml(panel.type)}</span>
           <div>
-            <strong>${escapeHtml(panel.title)}</strong>
+            ${title}
             <p>${escapeHtml(panel.appId)} · ${escapeHtml(panel.defaultPosition)} · ${active} active</p>
           </div>
         </article>

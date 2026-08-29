@@ -77,6 +77,18 @@ export function hermesCapabilities() {
       }
     }),
     hermesCapability({
+      id: "finance_overview",
+      title: "Review finance overview",
+      target: "finance-dashboard",
+      description:
+        "Read a bounded account, fee, benefit, and recent-credit overview for the selected period.",
+      inputSchema: {
+        accountType: "credit|depository?",
+        startDate: "YYYY-MM-DD?",
+        endDate: "YYYY-MM-DD?"
+      }
+    }),
+    hermesCapability({
       id: "plaid_sync",
       title: "Sync Plaid transactions",
       target: "plaid",
