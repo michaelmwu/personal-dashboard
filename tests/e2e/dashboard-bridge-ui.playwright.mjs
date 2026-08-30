@@ -58,7 +58,7 @@ test("Hermes Bridge UI switches event streams when run ID changes", async ({ pag
   const webPort = await listen(webServer);
 
   try {
-    await page.goto(`http://127.0.0.1:${webPort}`, { waitUntil: "networkidle" });
+    await page.goto(`http://127.0.0.1:${webPort}/finance`, { waitUntil: "networkidle" });
     await page.locator("#bridge-run-id").fill("run_old");
     await expect(page.locator("#bridge-events")).toContainText("run_old");
 
@@ -134,7 +134,7 @@ test("Coding agent operator intake submits typed pickup and triage actions", asy
   const webPort = await listen(webServer);
 
   try {
-    await page.goto(`http://127.0.0.1:${webPort}`, { waitUntil: "networkidle" });
+    await page.goto(`http://127.0.0.1:${webPort}/finance`, { waitUntil: "networkidle" });
     await page.locator("#bridge-token").fill("dashboard-token");
 
     await page.locator("#pickup-repo").fill("michaelmwu/personal-dashboard");

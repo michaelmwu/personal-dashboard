@@ -20,7 +20,12 @@ const contentTypes = new Map([
 const loopbackOnlyApiPaths = new Set(["/api/host-dashboard/summary"]);
 
 function safePath(pathname, rootDir = __dirname) {
-  const relative = pathname === "/" ? "index.html" : pathname.slice(1);
+  const routeFiles = new Map([
+    ["/", "home.html"],
+    ["/finance", "index.html"],
+    ["/finance.html", "index.html"]
+  ]);
+  const relative = routeFiles.get(pathname) ?? pathname.slice(1);
   const normalized = normalize(relative);
   if (normalized.startsWith("..")) {
     return null;
