@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Hermes Dashboard</title>
+    <link rel="stylesheet" href="/src/home.css">
+  </head>
+  <body>
+    <main class="home-shell">
+      <header class="home-nav">
+        <a class="wordmark" href="/" aria-label="Hermes Dashboard home">Hermes</a>
+        <nav aria-label="Applications">
+          <a class="active" href="/">Home</a>
+          <a href="/finance">Finance</a>
+          <a href="#travel">Travel</a>
+          <a href="#operations">Operations</a>
+        </nav>
+        <p class="freshness" id="freshness">Loading workspace</p>
+      </header>
+
+      <section class="intro" aria-labelledby="home-title">
+        <div>
+          <p class="kicker" id="today">Your workspace</p>
+          <h1 id="home-title">A calm view of what needs you.</h1>
+        </div>
+        <p>Each porthole is a small, read-only view into an app. Open one when you need the full workflow.</p>
+      </section>
+
+      <section class="porthole-grid" id="portholes" aria-label="Application portholes" aria-live="polite">
+        <article class="porthole porthole-featured skeleton"><div></div></article>
+        <article class="porthole skeleton"><div></div></article>
+        <article class="porthole skeleton"><div></div></article>
+      </section>
+    </main>
+    <script type="module" src="/src/home.js"></script>
+  </body>
+</html>
