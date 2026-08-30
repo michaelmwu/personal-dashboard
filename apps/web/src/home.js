@@ -60,22 +60,20 @@ function render(dashboard) {
   const attention =
     alerts.length + rateDrops.length + tasks.filter((task) => task.state !== "done").length;
 
-  document.querySelector("#freshness").textContent =
-    dashboard.health?.summary ?? "Workspace synced";
   document.querySelector("#today").textContent = attention
-    ? `${attention} things need attention`
-    : "Your workspace is quiet";
+    ? `${attention} to review`
+    : "All caught up";
   document.querySelector("#portholes").innerHTML = [
     appCard({
-      name: "Hotel rates",
+      name: "Rates",
       mark: "RA",
       featured: true,
       state: rate ? "attention" : "quiet",
       badge: rate ? "review" : `${hotelWatches.length} watches`,
       href: "#travel",
-      footer: rate ? "Review rebooking" : "Open rate watches",
+      footer: rate ? "Review rebooking" : "Rate watches",
       body: rate
-        ? `<div class="headline-metric">−${money.format(rate.targetRate - rate.bestRate)}</div><span class="muted">against your booked rate</span>${rows([{ label: rate.property, meta: `${rate.location} · ${rate.checkIn}` }], "")}`
+        ? `<div class="headline-metric">−${money.format(rate.targetRate - rate.bestRate)}</div><span class="muted">below booked rate</span>${rows([{ label: rate.property, meta: `${rate.location} · ${rate.checkIn}` }], "")}`
         : rows(
             hotelWatches.map((watch) => ({ label: watch.property, meta: watch.status })),
             "No active rate watches."
@@ -85,49 +83,49 @@ function render(dashboard) {
       name: "Finance",
       mark: "FI",
       href: "/finance",
-      badge: `${transactions.length} recent`,
-      footer: "Open finance",
-      body: rows(financeRows, "No transactions are available yet.")
+      badge: `${transactions.length} transactions`,
+      footer: "Review transactions",
+      body: rows(financeRows, "No transactions yet.")
     }),
     appCard({
       name: "Trips",
       mark: "TR",
       href: "#travel",
       badge: `${(travel.reservations ?? []).length} reservations`,
-      footer: "View travel",
+      footer: "Trip details",
       body: rows(
         (travel.reservations ?? []).map((item) => ({ label: item.title, meta: item.dates })),
-        "No trips need attention."
+        "No upcoming trips."
       )
     }),
     appCard({
-      name: "Asia deals",
+      name: "Deals",
       mark: "AD",
       href: "#travel",
-      badge: deals.length ? `${deals.length} new fares` : "quiet",
-      footer: "See fare ideas",
+      badge: deals.length ? `${deals.length} fares` : "quiet",
+      footer: "Browse fares",
       body: rows(
         deals.map((deal) => ({ label: deal.route, meta: money.format(deal.price) })),
-        "No fare candidates right now."
+        "No fare candidates."
       )
     }),
     appCard({
-      name: "Coding agent",
+      name: "Coding",
       mark: "CO",
       href: "#operations",
       badge: tasks.length ? `${tasks.length} active` : "quiet",
-      footer: "Open queue",
+      footer: "Review queue",
       body: rows(
         tasks.map((task) => ({ label: task.title, meta: task.state })),
-        "Nothing is running."
+        "Nothing running."
       )
     }),
     appCard({
-      name: "Intake",
+      name: "Inbox",
       mark: "IN",
       href: "#operations",
       badge: intake.length ? `${intake.length} to review` : "quiet",
-      footer: "Open intake",
+      footer: "Review inbox",
       body: rows(
         intake.map((item) => ({ label: item.title, meta: item.state })),
         "Inbox is clear."
@@ -144,7 +142,7 @@ async function main() {
     if (!response.ok) throw new Error("Dashboard data is unavailable");
     render(await response.json());
   } catch (error) {
-    document.querySelector("#freshness").textContent = "Dashboard unavailable";
+    document.querySelector("#today").textContent = "Dashboard unavailable";
     document.querySelector("#portholes").innerHTML =
       `<p class="empty">${escapeHtml(error instanceof Error ? error.message : error)}</p>`;
   }

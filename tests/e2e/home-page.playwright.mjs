@@ -34,15 +34,13 @@ test("home page presents application portholes and links finance to its full wor
 
   try {
     await page.goto(`http://127.0.0.1:${webPort}`, { waitUntil: "networkidle" });
-    await expect(
-      page.getByRole("heading", { name: "A calm view of what needs you." })
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "What needs attention" })).toBeVisible();
     await expect(page.locator(".porthole").filter({ hasText: "Finance" })).toHaveAttribute(
       "href",
       "/finance"
     );
-    await expect(page.getByText("Hotel rates")).toBeVisible();
-    await expect(page.getByText("Coding agent")).toBeVisible();
+    await expect(page.getByText("Rates")).toBeVisible();
+    await expect(page.getByText("Coding")).toBeVisible();
   } finally {
     await page.close();
     await closeServer(webServer);
