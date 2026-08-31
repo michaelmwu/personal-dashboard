@@ -16,6 +16,7 @@ Personal Dashboard is a monorepo dashboard for personal spend, travel, alerts, r
 ```text
 apps/
   api/          Bun-powered HTTP API and integration webhook receiver
+  email-gateway/ Isolated Gmail OAuth owner and read-only policy gateway
   web/          Static dashboard frontend and local web server
 packages/
   contracts/    Shared domain builders and dashboard contract shape
@@ -31,10 +32,17 @@ dashboard.config.yaml
 ## Runtime Shape
 
 ```text
-Gmail / bank email
-  -> Hermes
-  -> apps/api /api/integrations/hermes/events
-  -> packages/integrations/hermes
+Gmail
+  -> apps/email-gateway (the sole Google OAuth credential owner)
+  -> bounded search / receipt-bound sanitized reads
+  -> apps/api /api/integrations/gmail-intake/search|messages/read
+  -> Hermes analysis profile (no Gmail credential or mutation capability)
+
+Gmail watch / Pub/Sub
+  -> apps/email-gateway issuer parser
+  -> typed gmail-transaction-notification.v1 event
+  -> apps/api /api/integrations/gmail-intake/events
+  -> packages/integrations/sources
   -> packages/contracts
   -> apps/web dashboard
 
@@ -63,7 +71,7 @@ hotel_rate_finder / flight-searcher / asiatraveldeals
   -> apps/api /api/integrations/:source/events
   -> apps/web travel surfaces
 
-Plaid / Gmail
+Plaid / typed Gmail transaction notifications
   -> packages/integrations/sources
   -> apps/api /api/integrations/:source/events
   -> apps/web finance, reservations, and intake surfaces
@@ -199,6 +207,34 @@ official Plaid Node SDK for Link token creation, public-token exchange, and
 cursor-based `/transactions/sync`. The dashboard stores Plaid access tokens and
 cursors in the ignored local dashboard store for the personal-host bootstrap;
 before multi-user or public deployment, replace that with encrypted storage.
+
+Gmail is intentionally different from a normal provider client. The
+`apps/email-gateway` process is the only runtime allowed to hold its OAuth
+client secret, refresh token, or Google access token. It asks Google for exactly
+`gmail.readonly`; it has no generic Gmail request endpoint and exports neither
+delete, trash, archive, label, send, draft, nor mark-read operations. The
+dashboard uses a separate scoped gateway reader token for bounded structured
+search and receipt-bound sanitized text retrieval. Hermes never receives the
+Google credential or a raw Gmail message identifier.
+
+Gmail transaction notifications take a deterministic fast path: a gateway
+watch finds a new message, an issuer-specific parser emits a versioned,
+opaque-ID `gmail-transaction-notification.v1` event, and the dashboard accepts
+it only with an event-specific bearer token. The normalizer permits only
+conservative transaction fields and marks the result as a Gmail pending
+candidate; Plaid remains the later reconciliation source of truth. Email
+bodies, headers, attachments, OAuth tokens, and raw Gmail IDs do not enter the
+dashboard contract. A candidate requires a configured sender/domain and a
+Gmail-evaluated, aligned DMARC pass; the visible From header alone is never a
+finance signal.
+
+Email analysis is a separate agentic step after retrieval. Sanitized email text
+is untrusted input and the analyzer can create typed proposals only. For a
+receipt-bound analysis action, the dashboard retrieves the sanitized text and
+passes it transiently to Hermes Bridge; the stored action keeps only the opaque
+receipt/handle and body length. Hermes receives no Gmail credential. Any future
+external action must be explicitly modeled, approved, and audited; it cannot
+expand Gmail authority.
 
 Hermes integration is bidirectional:
 

@@ -15,6 +15,8 @@ explicit development-only override.
 
 - `apps/api`: local JSON API and future integration webhook receiver.
 - `apps/web`: dashboard UI served from a separate local web port.
+- `apps/email-gateway`: opt-in, isolated Gmail read-only proxy. It is the only
+  local process permitted to hold Gmail OAuth material.
 - `packages/contracts`: shared dashboard contract builders.
 - `packages/integrations`: Hermes, OpenClaw, travel, finance, and intake adapter boundaries.
 - `packages/fixtures`: realistic development data.

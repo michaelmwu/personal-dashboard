@@ -67,12 +67,6 @@ import {
   validateCodingAgentAutomation
 } from "../packages/integrations/coding-agent.mjs";
 import {
-  applyPersonalMemoryDecision,
-  personalMemoryConfig,
-  planPersonalMemoryProposal,
-  recallPersonalMemories
-} from "../packages/integrations/personal-memory.mjs";
-import {
   createHermesAction,
   hermesActionIdFromIdempotencyKey,
   hermesCapabilities,
@@ -102,6 +96,12 @@ import {
   runOmpRpcSession
 } from "../packages/integrations/omp-rpc.mjs";
 import {
+  applyPersonalMemoryDecision,
+  personalMemoryConfig,
+  planPersonalMemoryProposal,
+  recallPersonalMemories
+} from "../packages/integrations/personal-memory.mjs";
+import {
   createPlaidLinkToken,
   exchangePlaidPublicToken,
   normalizePlaidAccount,
@@ -114,7 +114,11 @@ import {
   genericAppItemsFromDashboard,
   loadPluginRegistry
 } from "../packages/integrations/registry.mjs";
-import { integrationCatalog, normalizeSourceEvent } from "../packages/integrations/sources.mjs";
+import {
+  integrationCatalog,
+  isGmailTransactionNotification,
+  normalizeSourceEvent
+} from "../packages/integrations/sources.mjs";
 import {
   codingAgentStateStoreMode,
   createCodingAgentJsonStore,
@@ -159,8 +163,8 @@ import {
   discoverCodingAgentIssueTriage,
   discoverCodingAgentPrPickups,
   fetchCodingTaskPrSnapshot,
-  pollCodingAgentPrs,
   pollAsiaTravelDeals,
+  pollCodingAgentPrs,
   processCodingAgentRuns,
   publishReadyCodingAgentPrs,
   reviewCodingAgentTasks,
@@ -368,7 +372,7 @@ describe("contracts", () => {
     expect(dashboard.finance.accounts).toHaveLength(3);
     expect(dashboard.intake.items).toHaveLength(2);
     expect(dashboard.hermes.capabilities.map((capability) => capability.id)).toContain(
-      "gmail_intake_scan"
+      "gmail_search"
     );
     expect(dashboard.integrations.map((integration) => integration.id)).toContain("plaid");
   });
@@ -595,6 +599,21 @@ describe("contracts", () => {
         }),
         expect.objectContaining({
           id: "reservation_parse",
+          kind: "agentic",
+          target: "gmail-intake"
+        }),
+        expect.objectContaining({
+          id: "gmail_search",
+          kind: "deterministic",
+          endpoint: "/api/integrations/gmail-intake/search"
+        }),
+        expect.objectContaining({
+          id: "gmail_read",
+          kind: "deterministic",
+          endpoint: "/api/integrations/gmail-intake/messages/read"
+        }),
+        expect.objectContaining({
+          id: "gmail_intake_analyze",
           kind: "agentic",
           target: "gmail-intake"
         }),
@@ -7854,6 +7873,87 @@ describe("contracts", () => {
         state: "needs-review"
       }
     });
+
+    const gmailTransactionEvent = {
+      version: "gmail-transaction-notification.v1",
+      type: "transaction-notification",
+      externalId: "a".repeat(43),
+      merchant: "Neighborhood Market",
+      amount: "42.50",
+      currency: "usd",
+      cardLast4: "1234",
+      occurredAt: "2026-08-04T09:15:00.000Z",
+      authorizedAt: "2026-08-04T09:14:00.000Z",
+      parserId: "issuer-notification.v1",
+      confidence: 0.99,
+      body: "This raw email body must not reach the dashboard.",
+      headers: { subject: "Your card purchase" }
+    };
+    const gmailTransaction = normalizeSourceEvent("gmail-intake", gmailTransactionEvent);
+    expect(isGmailTransactionNotification(gmailTransactionEvent)).toBe(true);
+    expect(gmailTransaction).toMatchObject({
+      kind: "transaction",
+      value: {
+        id: `gmail_${gmailTransactionEvent.externalId}`,
+        merchant: "Neighborhood Market",
+        amount: 42.5,
+        category: "Unclassified",
+        card: "Card •••• 1234",
+        status: "pending",
+        pending: true,
+        date: "2026-08-04T09:15:00.000Z",
+        authorizedDate: "2026-08-04T09:14:00.000Z",
+        isoCurrencyCode: "USD",
+        sourceTransactionId: gmailTransactionEvent.externalId,
+        source: "gmail"
+      }
+    });
+    expect(gmailTransaction.value).not.toHaveProperty("body");
+    expect(gmailTransaction.value).not.toHaveProperty("headers");
+
+    const compatibleGmailTransaction = normalizeSourceEvent("gmail-intake", {
+      version: "gmail-transaction-notification.v1",
+      eventType: "transaction-notification",
+      data: {
+        candidate: {
+          id: "b".repeat(43),
+          merchant: "Railway",
+          amount: 1200,
+          currency: "JPY",
+          cardLast4: "9876"
+        }
+      }
+    });
+    expect(compatibleGmailTransaction).toMatchObject({
+      kind: "transaction",
+      value: {
+        id: `gmail_${"b".repeat(43)}`,
+        amount: 1200,
+        card: "Card •••• 9876",
+        source: "gmail"
+      }
+    });
+
+    // Explicitly typed malformed transaction events must not fall through to
+    // a legacy Gmail reservation or intake item.
+    expect(
+      normalizeSourceEvent("gmail-intake", {
+        version: "gmail-transaction-notification.v1",
+        type: "transaction-notification",
+        externalId: "invalid id with spaces",
+        amount: "not-a-number",
+        reservationType: "flight",
+        subject: "Flight confirmation"
+      })
+    ).toMatchObject({ kind: "unknown" });
+    expect(
+      normalizeSourceEvent("gmail-intake", {
+        version: "gmail-transaction-notification.v1",
+        type: "transaction-notification",
+        externalId: "c".repeat(43),
+        amount: 1_000_000_001
+      })
+    ).toMatchObject({ kind: "unknown" });
 
     expect(
       normalizeSourceEvent("flight-searcher", {
