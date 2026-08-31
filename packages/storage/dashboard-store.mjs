@@ -1,7 +1,98 @@
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 const overlayMutationQueues = new Map();
+const PLAID_TOKEN_ENCRYPTION_AAD = Buffer.from("personal-dashboard:plaid-access-token:v1", "utf8");
+
+export class PlaidTokenEncryptionError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "PlaidTokenEncryptionError";
+  }
+}
+
+export function plaidTokenEncryptionKey(env = process.env) {
+  const encoded = String(env.PLAID_TOKEN_ENCRYPTION_KEY ?? "").trim();
+  if (!encoded) {
+    return undefined;
+  }
+  let key;
+  try {
+    key = Buffer.from(encoded, "base64");
+  } catch {
+    throw new PlaidTokenEncryptionError("PLAID_TOKEN_ENCRYPTION_KEY must be base64-encoded.");
+  }
+  if (key.length !== 32) {
+    throw new PlaidTokenEncryptionError(
+      "PLAID_TOKEN_ENCRYPTION_KEY must decode to exactly 32 bytes."
+    );
+  }
+  return key;
+}
+
+function requiredPlaidTokenEncryptionKey(options = {}) {
+  const key = options.encryptionKey ?? plaidTokenEncryptionKey(options.env);
+  if (!key) {
+    throw new PlaidTokenEncryptionError(
+      "PLAID_TOKEN_ENCRYPTION_KEY is required before Plaid access tokens can be stored or read."
+    );
+  }
+  if (!Buffer.isBuffer(key) || key.length !== 32) {
+    throw new PlaidTokenEncryptionError("Plaid token encryption key must be exactly 32 bytes.");
+  }
+  return key;
+}
+
+export function encryptPlaidAccessToken(accessToken, options = {}) {
+  if (!accessToken) {
+    return undefined;
+  }
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", requiredPlaidTokenEncryptionKey(options), iv);
+  cipher.setAAD(PLAID_TOKEN_ENCRYPTION_AAD);
+  const ciphertext = Buffer.concat([cipher.update(String(accessToken), "utf8"), cipher.final()]);
+  return {
+    version: 1,
+    algorithm: "aes-256-gcm",
+    iv: iv.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+    ciphertext: ciphertext.toString("base64")
+  };
+}
+
+export function decryptPlaidAccessToken(encrypted, options = {}) {
+  if (!encrypted) {
+    return undefined;
+  }
+  if (
+    encrypted.version !== 1 ||
+    encrypted.algorithm !== "aes-256-gcm" ||
+    !encrypted.iv ||
+    !encrypted.tag ||
+    !encrypted.ciphertext
+  ) {
+    throw new PlaidTokenEncryptionError("Unsupported encrypted Plaid access-token format.");
+  }
+  try {
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      requiredPlaidTokenEncryptionKey(options),
+      Buffer.from(encrypted.iv, "base64")
+    );
+    decipher.setAAD(PLAID_TOKEN_ENCRYPTION_AAD);
+    decipher.setAuthTag(Buffer.from(encrypted.tag, "base64"));
+    return Buffer.concat([
+      decipher.update(Buffer.from(encrypted.ciphertext, "base64")),
+      decipher.final()
+    ]).toString("utf8");
+  } catch (error) {
+    if (error instanceof PlaidTokenEncryptionError) {
+      throw error;
+    }
+    throw new PlaidTokenEncryptionError("Unable to decrypt Plaid access token.");
+  }
+}
 
 function emptyOverlay() {
   return {
@@ -97,7 +188,7 @@ function mergeById(baseItems, overlayItems) {
 }
 
 function publicPlaidItem(item) {
-  const { accessToken, cursor, ...publicItem } = item;
+  const { accessToken, accessTokenEncrypted, cursor, ...publicItem } = item;
   return publicItem;
 }
 
@@ -206,19 +297,53 @@ export async function upsertSourceState(filePath, source, state = {}) {
   });
 }
 
-export async function listPlaidItems(filePath) {
+export async function listPlaidItems(filePath, options = {}) {
   const overlay = await readOverlay(filePath);
-  return overlay.finance.plaidItems ?? [];
+  return (overlay.finance.plaidItems ?? []).map((item) => {
+    if (item.accessTokenEncrypted) {
+      return {
+        ...item,
+        accessToken: decryptPlaidAccessToken(item.accessTokenEncrypted, options)
+      };
+    }
+    if (item.accessToken) {
+      requiredPlaidTokenEncryptionKey(options);
+    }
+    return item;
+  });
 }
 
-export async function upsertPlaidItem(filePath, item) {
+export async function upsertPlaidItem(filePath, item, options = {}) {
+  const { accessToken, ...storedItem } = item;
+  const accessTokenEncrypted = accessToken
+    ? encryptPlaidAccessToken(accessToken, options)
+    : undefined;
   return mutateOverlay(filePath, (overlay) => {
     overlay.finance.plaidItems = upsertById(overlay.finance.plaidItems ?? [], {
-      ...item,
-      syncStatus: item.syncStatus ?? "linked",
-      updatedAt: item.updatedAt ?? new Date().toISOString()
+      ...storedItem,
+      ...(accessTokenEncrypted ? { accessTokenEncrypted } : {}),
+      syncStatus: storedItem.syncStatus ?? "linked",
+      updatedAt: storedItem.updatedAt ?? new Date().toISOString()
     });
     return overlay;
+  });
+}
+
+export async function migratePlaidAccessTokens(filePath, options = {}) {
+  return mutateOverlay(filePath, (overlay) => {
+    let migrated = 0;
+    overlay.finance.plaidItems = (overlay.finance.plaidItems ?? []).map((item) => {
+      if (!item.accessToken) {
+        return item;
+      }
+      migrated += 1;
+      const { accessToken, ...storedItem } = item;
+      return {
+        ...storedItem,
+        accessTokenEncrypted: encryptPlaidAccessToken(accessToken, options)
+      };
+    });
+    return { migrated };
   });
 }
 

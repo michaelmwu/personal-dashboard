@@ -128,6 +128,7 @@ import {
   listFinanceBenefits,
   listPlaidItems,
   loadDashboard,
+  migratePlaidAccessTokens,
   patchAppItemPayload,
   removeFinanceBenefit,
   upsertAppItem,
@@ -8036,11 +8037,17 @@ describe("contracts", () => {
   test("dashboard store persists Plaid item cursors and synced transactions", async () => {
     const filePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-plaid-store-${Date.now()}.json`;
 
-    await upsertPlaidItem(filePath, {
-      id: "item_123",
-      accessToken: "access-sandbox-123",
-      cursor: "cursor_0"
-    });
+    const encryptionKey = Buffer.alloc(32, 7);
+
+    await upsertPlaidItem(
+      filePath,
+      {
+        id: "item_123",
+        accessToken: "access-sandbox-123",
+        cursor: "cursor_0"
+      },
+      { encryptionKey }
+    );
     await applyPlaidSync(filePath, "item_123", {
       synced: true,
       cursor: "cursor_1",
@@ -8079,7 +8086,9 @@ describe("contracts", () => {
     });
 
     const dashboard = await loadDashboard(dashboardFixture(), filePath);
-    const items = await listPlaidItems(filePath);
+    const rawStore = await readFile(filePath, "utf8");
+    const items = await listPlaidItems(filePath, { encryptionKey });
+    expect(rawStore).not.toContain("access-sandbox-123");
     expect(items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -8151,6 +8160,31 @@ describe("contracts", () => {
     });
     expect(await listFinanceBenefits(filePath)).toEqual([]);
 
+    await rm(filePath, { force: true });
+  });
+
+  test("Plaid token storage migrates legacy plaintext access tokens before sync", async () => {
+    const filePath = `${process.env.TMPDIR ?? "/tmp"}/personal-dashboard-plaid-migration-${Date.now()}.json`;
+    const encryptionKey = Buffer.alloc(32, 8);
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        finance: {
+          plaidItems: [{ id: "item_legacy", accessToken: "access-legacy-123" }]
+        }
+      })
+    );
+
+    expect(await migratePlaidAccessTokens(filePath, { encryptionKey })).toEqual({ migrated: 1 });
+    const rawStore = await readFile(filePath, "utf8");
+    expect(rawStore).not.toContain("access-legacy-123");
+    expect(JSON.parse(rawStore).finance.plaidItems[0].accessTokenEncrypted).toMatchObject({
+      version: 1,
+      algorithm: "aes-256-gcm"
+    });
+    expect(await listPlaidItems(filePath, { encryptionKey })).toEqual([
+      expect.objectContaining({ id: "item_legacy", accessToken: "access-legacy-123" })
+    ]);
     await rm(filePath, { force: true });
   });
 
