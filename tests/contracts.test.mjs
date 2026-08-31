@@ -486,14 +486,21 @@ describe("contracts", () => {
 
   test("host adapter bundles keep browser auth at the host boundary", async () => {
     const adapterRoot = join(process.cwd(), "adapters");
-    const [hermesManifestRaw, hermesProxy, hermesScript, webuiManifestRaw, webuiScript] =
-      await Promise.all([
-        readFile(join(adapterRoot, "hermes-dashboard/dashboard/manifest.json"), "utf8"),
-        readFile(join(adapterRoot, "hermes-dashboard/dashboard/plugin_api.py"), "utf8"),
-        readFile(join(adapterRoot, "hermes-dashboard/dashboard/dist/index.js"), "utf8"),
-        readFile(join(adapterRoot, "hermes-webui/manifest.json"), "utf8"),
-        readFile(join(adapterRoot, "hermes-webui/assets/personal-dashboard-extension.js"), "utf8")
-      ]);
+    const [
+      hermesManifestRaw,
+      hermesProxy,
+      hermesScript,
+      hermesStyle,
+      webuiManifestRaw,
+      webuiScript
+    ] = await Promise.all([
+      readFile(join(adapterRoot, "hermes-dashboard/dashboard/manifest.json"), "utf8"),
+      readFile(join(adapterRoot, "hermes-dashboard/dashboard/plugin_api.py"), "utf8"),
+      readFile(join(adapterRoot, "hermes-dashboard/dashboard/dist/index.js"), "utf8"),
+      readFile(join(adapterRoot, "hermes-dashboard/dashboard/dist/style.css"), "utf8"),
+      readFile(join(adapterRoot, "hermes-webui/manifest.json"), "utf8"),
+      readFile(join(adapterRoot, "hermes-webui/assets/personal-dashboard-extension.js"), "utf8")
+    ]);
     const hermesManifest = JSON.parse(hermesManifestRaw);
     const webuiManifest = JSON.parse(webuiManifestRaw);
 
@@ -508,13 +515,23 @@ describe("contracts", () => {
     expect(hermesProxy).toContain('"overview": "/api/host-dashboard/overview"');
     expect(hermesProxy).toContain('@router.get("/hotel-rate-finder")');
     expect(hermesProxy).toContain('@router.get("/asia-travel-deals")');
+    expect(hermesProxy).toContain('@router.get("/app-links")');
+    expect(hermesProxy).toContain("PERSONAL_DASHBOARD_HOTEL_RATE_FINDER_UI_URL");
     expect(hermesProxy).toContain('@router.get("/summary")');
     expect(hermesProxy).not.toContain("PERSONAL_DASHBOARD_API_TOKEN");
     expect(hermesScript).toContain('"/api/plugins/personal-dashboard/overview"');
     expect(hermesScript).toContain('"/api/plugins/personal-dashboard/hotel-rate-finder"');
     expect(hermesScript).toContain('"/api/plugins/personal-dashboard/asia-travel-deals"');
+    expect(hermesScript).toContain('"/api/plugins/personal-dashboard/app-links"');
+    expect(hermesScript).toContain("window.open(porthole.externalUrl");
+    expect(hermesScript).toContain("personal-dashboard-hermes-porthole");
     expect(hermesScript).not.toContain("PERSONAL_DASHBOARD_API_TOKEN");
     expect(hermesScript).not.toContain("iframe");
+    expect(hermesStyle).toContain("var(--theme-font-sans");
+    expect(hermesStyle).toContain("var(--theme-font-mono");
+    expect(hermesStyle).toContain("var(--font-mondwest");
+    expect(hermesStyle).toContain("var(--color-card");
+    expect(hermesStyle).not.toContain("Instrument Sans");
 
     expect(webuiManifest).toMatchObject({
       id: "personal-dashboard",
