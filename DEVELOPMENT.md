@@ -43,6 +43,13 @@ scripts/archive-workspace.sh --dry-run
 - `HERMES_WEBHOOK_SECRET`: optional shared secret for future Hermes webhook validation.
 - `PERSONAL_DASHBOARD_API_TOKEN`: optional bearer token required by
   `/api/hermes/*` endpoints when configured.
+- `PERSONAL_DASHBOARD_TAILSCALE_ALLOWED_LOGINS`: comma-separated Tailscale
+  logins allowed to use the standalone web UI through Tailscale Serve. Leave
+  unset for local development.
+- `PERSONAL_DASHBOARD_TAILSCALE_ALLOWED_APP_CAPABILITIES`: comma-separated
+  Tailscale app capabilities accepted from tagged service clients. This is for
+  machine-to-machine access such as Hermes on a tagged Minibox; tagged devices
+  do not receive `Tailscale-User-Login` headers.
 - `OPENCLAW_API_BASE_URL`: optional future OpenClaw service URL.
 - `HOUSE_CALENDAR_BASE_URL`: optional browser URL for the House Calendar
   dashboard porthole (for example, `https://house.michaelmwu.com`).
@@ -62,6 +69,27 @@ The standard deployment does not need PostgreSQL or Redis. Configure Coolify
 to build the root `Dockerfile`, expose port `8811`, and use `/api/health` for
 health checks. Do not assign an ingress domain until private access control is
 in place.
+
+For the standalone MooHQ UI, bind the Coolify host port to loopback and expose
+it only with Tailscale Serve. Set
+`PERSONAL_DASHBOARD_TAILSCALE_ALLOWED_LOGINS` to your Tailscale login (for
+example, `michaelmwu@gmail.com`). Tailscale Serve strips spoofed identity
+headers before adding its own, but the web service must remain loopback-only so
+other tailnet peers cannot forge those headers by reaching it directly.
+
+Tagged clients such as Hermes do not receive a user-login header. Grant them a
+custom capability such as `michaelmwu.com/cap/moohq` in the tailnet policy,
+set `PERSONAL_DASHBOARD_TAILSCALE_ALLOWED_APP_CAPABILITIES` to that capability,
+and configure Serve to forward it:
+
+```sh
+sudo tailscale serve --bg --https=443 \
+  --accept-app-caps=michaelmwu.com/cap/moohq \
+  http://127.0.0.1:18811
+```
+
+The dashboard accepts either an allowed login or an allowed capability. Its
+normal endpoint-specific API bearer tokens remain required for service actions.
 
 Set integration endpoints as private service URLs and keep their tokens in
 Coolify secret environment variables. For example, a dashboard on Coolify's

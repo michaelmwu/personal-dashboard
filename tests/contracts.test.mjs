@@ -752,6 +752,72 @@ describe("contracts", () => {
     }
   });
 
+  test("web server restricts MooHQ to configured Tailscale identities", async () => {
+    const apiRequests = [];
+    const apiServer = http.createServer((request, response) => {
+      apiRequests.push(request.url);
+      response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ ok: true, path: request.url }));
+    });
+    const apiPort = await listen(apiServer);
+    const rootDir = await mkdtemp(join(tmpdir(), "personal-dashboard-web-"));
+    await writeFile(join(rootDir, "index.html"), "<!doctype html><html></html>");
+    const webServer = createWebServer({
+      rootDir,
+      proxyBaseUrl: `http://127.0.0.1:${apiPort}`,
+      tailscaleAllowedLogins: "michaelmwu@gmail.com",
+      tailscaleAllowedAppCapabilities: "michaelmwu.com/cap/moohq"
+    });
+    const webPort = await listen(webServer);
+    const baseUrl = `http://127.0.0.1:${webPort}`;
+
+    try {
+      const anonymous = await fetch(`${baseUrl}/config.json`);
+      expect(anonymous.status).toBe(403);
+      expect(await anonymous.json()).toEqual({
+        error: "tailscale_identity_required",
+        message: "This dashboard is restricted to an approved Tailscale identity."
+      });
+      expect(anonymous.headers.get("cache-control")).toBe("no-store");
+
+      const unapproved = await fetch(`${baseUrl}/config.json`, {
+        headers: { "Tailscale-User-Login": "someone-else@example.com" }
+      });
+      expect(unapproved.status).toBe(403);
+
+      const approvedBrowser = await fetch(`${baseUrl}/config.json`, {
+        headers: { "Tailscale-User-Login": "MICHAELMWU@GMAIL.COM" }
+      });
+      expect(approvedBrowser.status).toBe(200);
+      expect(await approvedBrowser.json()).toEqual({ apiBaseUrl: "" });
+
+      const approvedService = await fetch(`${baseUrl}/api/dashboard`, {
+        headers: {
+          "Tailscale-App-Capabilities": JSON.stringify({
+            "michaelmwu.com/cap/moohq": [{ access: "service" }]
+          })
+        }
+      });
+      expect(approvedService.status).toBe(200);
+      expect(await approvedService.json()).toEqual({ ok: true, path: "/api/dashboard" });
+
+      const malformedCapabilities = await fetch(`${baseUrl}/api/dashboard`, {
+        headers: { "Tailscale-App-Capabilities": "not-json" }
+      });
+      expect(malformedCapabilities.status).toBe(403);
+
+      const health = await fetch(`${baseUrl}/api/health`);
+      expect(health.status).toBe(200);
+      const nonGetHealth = await fetch(`${baseUrl}/api/health`, { method: "POST" });
+      expect(nonGetHealth.status).toBe(403);
+      expect(apiRequests).toEqual(["/api/dashboard", "/api/health"]);
+    } finally {
+      await closeServer(webServer);
+      await closeServer(apiServer);
+      await rm(rootDir, { recursive: true, force: true });
+    }
+  });
+
   test("finance overview API applies the trailing-year default and account scope", async () => {
     const apiServer = createApiServer({ apiToken: "dashboard-token" });
     const apiPort = await listen(apiServer);
