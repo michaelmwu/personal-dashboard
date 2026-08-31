@@ -9,6 +9,9 @@ const apiPort = Number.parseInt(process.env.API_PORT ?? "8810", 10);
 const host = process.env.WEB_HOST ?? "127.0.0.1";
 const configuredApiBaseUrl = process.env.PERSONAL_DASHBOARD_API_BASE_URL?.trim().replace(/\/$/, "");
 const apiBaseUrl = configuredApiBaseUrl || `http://127.0.0.1:${apiPort}`;
+const tailscaleAllowedLogins = process.env.PERSONAL_DASHBOARD_TAILSCALE_ALLOWED_LOGINS;
+const tailscaleAllowedAppCapabilities =
+  process.env.PERSONAL_DASHBOARD_TAILSCALE_ALLOWED_APP_CAPABILITIES;
 
 const contentTypes = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -18,6 +21,85 @@ const contentTypes = new Map([
 ]);
 
 const loopbackOnlyApiPaths = new Set(["/api/host-dashboard/summary"]);
+const healthcheckPath = "/api/health";
+
+function parseCommaSeparatedValues(value, { normalize = (item) => item } = {}) {
+  if (typeof value !== "string") {
+    return new Set();
+  }
+
+  return new Set(
+    value
+      .split(",")
+      .map((item) => normalize(item.trim()))
+      .filter(Boolean)
+  );
+}
+
+export function parseTailscaleAllowedLogins(value) {
+  return parseCommaSeparatedValues(value, { normalize: (login) => login.toLowerCase() });
+}
+
+export function parseTailscaleAllowedAppCapabilities(value) {
+  return parseCommaSeparatedValues(value);
+}
+
+function configuredTailscaleAccess({ allowedLogins, allowedAppCapabilities }) {
+  return allowedLogins.size > 0 || allowedAppCapabilities.size > 0;
+}
+
+function requestHasAllowedTailscaleLogin(request, allowedLogins) {
+  const login = request.headers["tailscale-user-login"];
+  if (typeof login !== "string" || login.includes(",")) {
+    return false;
+  }
+
+  return allowedLogins.has(login.trim().toLowerCase());
+}
+
+function requestHasAllowedTailscaleAppCapability(request, allowedAppCapabilities) {
+  const header = request.headers["tailscale-app-capabilities"];
+  if (typeof header !== "string") {
+    return false;
+  }
+
+  try {
+    const capabilities = JSON.parse(header);
+    if (!capabilities || Array.isArray(capabilities) || typeof capabilities !== "object") {
+      return false;
+    }
+
+    return [...allowedAppCapabilities].some(
+      (capability) => Array.isArray(capabilities[capability]) && capabilities[capability].length > 0
+    );
+  } catch {
+    return false;
+  }
+}
+
+function requestHasAllowedTailscaleIdentity(request, access) {
+  if (!configuredTailscaleAccess(access)) {
+    return true;
+  }
+
+  return (
+    requestHasAllowedTailscaleLogin(request, access.allowedLogins) ||
+    requestHasAllowedTailscaleAppCapability(request, access.allowedAppCapabilities)
+  );
+}
+
+function rejectUnapprovedTailscaleIdentity(response) {
+  response.writeHead(403, {
+    "Cache-Control": "no-store",
+    "Content-Type": "application/json; charset=utf-8"
+  });
+  response.end(
+    JSON.stringify({
+      error: "tailscale_identity_required",
+      message: "This dashboard is restricted to an approved Tailscale identity."
+    })
+  );
+}
 
 function safePath(pathname, rootDir = __dirname) {
   const routeFiles = new Map([
@@ -111,9 +193,28 @@ async function proxyApiRequest(request, response, { baseUrl = apiBaseUrl } = {})
   response.end(body);
 }
 
-export function createWebServer({ rootDir = __dirname, proxyBaseUrl = apiBaseUrl } = {}) {
+export function createWebServer({
+  rootDir = __dirname,
+  proxyBaseUrl = apiBaseUrl,
+  tailscaleAllowedLogins: configuredAllowedLogins = tailscaleAllowedLogins,
+  tailscaleAllowedAppCapabilities:
+    configuredAllowedAppCapabilities = tailscaleAllowedAppCapabilities
+} = {}) {
+  const tailscaleAccess = {
+    allowedLogins: parseTailscaleAllowedLogins(configuredAllowedLogins),
+    allowedAppCapabilities: parseTailscaleAllowedAppCapabilities(configuredAllowedAppCapabilities)
+  };
+
   return http.createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
+
+    // Docker and Coolify liveness checks run locally without a Serve identity.
+    // The endpoint is intentionally non-sensitive and is not a UI/API bypass.
+    const isHealthcheckRequest = request.method === "GET" && url.pathname === healthcheckPath;
+    if (!isHealthcheckRequest && !requestHasAllowedTailscaleIdentity(request, tailscaleAccess)) {
+      rejectUnapprovedTailscaleIdentity(response);
+      return;
+    }
 
     if (request.method === "GET" && url.pathname === "/config.json") {
       response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
