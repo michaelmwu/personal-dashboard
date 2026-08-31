@@ -122,6 +122,7 @@ import {
   listAppItems,
   listPlaidItems,
   loadDashboard,
+  migratePlaidAccessTokens,
   patchHermesAction,
   patchHotelReservation,
   removeFinanceBenefit,
@@ -1701,6 +1702,7 @@ async function syncPlaidItem(item) {
 }
 
 async function syncPlaidItems({ itemId } = {}) {
+  await migratePlaidAccessTokens(storePath);
   const items = await listPlaidItems(storePath);
   const selectedItems = itemId ? items.filter((item) => item.id === itemId) : items;
   if (selectedItems.length === 0) {

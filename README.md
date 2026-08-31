@@ -350,10 +350,12 @@ Plaid-facing endpoints:
 - `POST /api/integrations/plaid/webhook`: accept Plaid transaction webhooks and
   trigger sync on `SYNC_UPDATES_AVAILABLE`.
 
-Set `PLAID_CLIENT_ID`, `PLAID_SECRET`, and `PLAID_ENV` (`sandbox` or
-`production`). The access-token store is local ignored data and is written with
-owner-only file permissions; move it behind encrypted storage before using this
-outside a personal trusted host.
+Set `PLAID_CLIENT_ID`, `PLAID_SECRET`, `PLAID_TOKEN_ENCRYPTION_KEY`, and
+`PLAID_ENV` (`sandbox` or `production`). Generate the 32-byte base64 encryption
+key with `openssl rand -base64 32` and keep it in the deployment secret manager.
+Plaid access tokens are AES-256-GCM encrypted before they are written to the
+ignored local dashboard store; existing plaintext tokens are migrated on the
+next sync. The encryption key must remain available for every subsequent sync.
 
 Hotel Rate Finder endpoints:
 

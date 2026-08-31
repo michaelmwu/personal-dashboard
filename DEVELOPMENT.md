@@ -54,9 +54,10 @@ scripts/archive-workspace.sh --dry-run
 
 The production image runs the web UI, loopback API, and integration worker in
 one private container. Attach one persistent Coolify volume at `/data`; it
-contains the dashboard JSON store, Plaid access tokens, and coding-agent run
-evidence. The image starts the worker through the API, so the API remains the
-only writer for dashboard state.
+contains the dashboard JSON store, encrypted Plaid access-token envelopes, and
+coding-agent run evidence. Set `PLAID_TOKEN_ENCRYPTION_KEY` as a Coolify secret
+before linking an account. The image starts the worker through the API, so the
+API remains the only writer for dashboard state.
 
 The standard deployment does not need PostgreSQL or Redis. Configure Coolify
 to build the root `Dockerfile`, expose port `8811`, and use `/api/health` for
