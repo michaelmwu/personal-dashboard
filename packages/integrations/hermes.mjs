@@ -45,14 +45,39 @@ export function hermesCapabilities() {
     }),
     hermesCapability({
       id: "flight_search",
-      title: "Search flights",
+      title: "Search award flights",
       target: "flight-searcher",
-      description: "Trigger browser-driven Flight Searcher route watches.",
+      description:
+        "Start a Seats.aero, ANA, JAL, and EVA award search. ANA may include Star Alliance; JAL is international JAL-operated only.",
       inputSchema: {
-        origin: "IATA",
-        destination: "IATA",
-        dates: "string",
-        targetPrice: "number"
+        origins: "IATA[]",
+        destinations: "IATA[]",
+        departureStart: "YYYY-MM-DD",
+        departureEnd: "YYYY-MM-DD?",
+        returnStart: "YYYY-MM-DD?",
+        returnEnd: "YYYY-MM-DD?",
+        passengers: "number?",
+        cabins: "economy|premium|business|first[]?",
+        providers: "seats_aero|ana|jal|eva[]?",
+        maxStops: "number?"
+      }
+    }),
+    hermesCapability({
+      id: "flight_search_status",
+      title: "Check award search",
+      target: "flight-searcher",
+      description: "Read provider progress and pending human challenges for an award search.",
+      inputSchema: {
+        jobId: "string"
+      }
+    }),
+    hermesCapability({
+      id: "flight_search_cancel",
+      title: "Cancel award search",
+      target: "flight-searcher",
+      description: "Cancel a queued, running, or human-paused award search.",
+      inputSchema: {
+        jobId: "string"
       }
     }),
     hermesCapability({

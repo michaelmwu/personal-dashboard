@@ -50,6 +50,7 @@ function render(dashboard) {
   const transactions = dashboard.transactions ?? [];
   const intake = dashboard.intake?.items ?? [];
   const alerts = dashboard.alerts ?? [];
+  const flightWatches = travel.flightWatches ?? [];
   const financeRows = transactions
     .slice(0, 3)
     .map((item) => ({ label: `${item.merchant} · ${item.card}`, meta: money.format(item.amount) }));
@@ -78,6 +79,21 @@ function render(dashboard) {
             hotelWatches.map((watch) => ({ label: watch.property, meta: watch.status })),
             "No active rate watches."
           )
+    }),
+    appCard({
+      name: "Award flights",
+      mark: "FL",
+      href: "/flights",
+      badge: flightWatches.length ? `${flightWatches.length} searches` : "ready",
+      footer: "Search availability",
+      body: rows(
+        flightWatches.map((watch) => ({
+          label: watch.route,
+          meta: watch.status,
+          tone: watch.status === "waiting_human" ? "attention" : ""
+        })),
+        "Search Seats.aero, ANA, JAL, and EVA."
+      )
     }),
     appCard({
       name: "Finance",
