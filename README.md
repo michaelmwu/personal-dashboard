@@ -55,7 +55,8 @@ The dashboard now has placeholder contracts for the next personal surfaces:
 
 - Hotel rate watches from `~/dev/hotel_rate_finder`.
 - Award searches from the private `flight-searcher` service, which combines
-  Seats.aero with human-gated ANA, JAL, and EVA browser searches.
+  Seats.aero with ANA international (including eligible Star Alliance), JAL
+  international on JAL-operated flights only, and human-gated EVA searches.
 - Asia deal candidates from `~/dev/asiatraveldeals`.
 - Plaid account/transaction sync through the official Plaid Node SDK.
 - Gmail intake for reservations, statements, and important email.

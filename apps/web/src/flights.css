@@ -253,6 +253,10 @@ legend {
   cursor: not-allowed;
   opacity: 0.48;
 }
+.provider-choices .choice span {
+  max-width: 260px;
+  border-radius: 14px;
+}
 .loading-line {
   color: var(--faint);
   font-size: 12px;

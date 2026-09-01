@@ -71,7 +71,7 @@ function renderProviders(providers) {
         .join(", ");
       return `<label class="choice">
         <input type="checkbox" name="providers" value="${escapeHtml(provider.id)}" ${provider.configured ? "checked" : "disabled"}>
-        <span>${escapeHtml(provider.name)}${provider.configured ? "" : " · not configured"}${challenges ? `<small class="provider-note">Human: ${escapeHtml(challenges)}</small>` : ""}</span>
+        <span>${escapeHtml(provider.name)}${provider.configured ? "" : " · not configured"}${provider.scope ? `<small class="provider-note">${escapeHtml(provider.scope)}</small>` : ""}${challenges ? `<small class="provider-note">Human: ${escapeHtml(challenges)}</small>` : ""}</span>
       </label>`;
     })
     .join("");

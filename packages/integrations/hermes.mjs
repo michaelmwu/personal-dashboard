@@ -47,7 +47,8 @@ export function hermesCapabilities() {
       id: "flight_search",
       title: "Search award flights",
       target: "flight-searcher",
-      description: "Start a Seats.aero, ANA, JAL, and EVA award-availability search.",
+      description:
+        "Start a Seats.aero, ANA, JAL, and EVA award search. ANA may include Star Alliance; JAL is international JAL-operated only.",
       inputSchema: {
         origins: "IATA[]",
         destinations: "IATA[]",
