@@ -16,15 +16,44 @@
   "capabilities": [
     {
       "id": "flight_search",
-      "title": "Search flights",
-      "kind": "agentic",
+      "title": "Search award flights",
+      "kind": "deterministic",
       "target": "flight-searcher",
-      "description": "Trigger browser-driven Flight Searcher route watches.",
+      "endpoint": "/api/integrations/flight-searcher/searches",
+      "description": "Start a typed Seats.aero, ANA, JAL, and EVA award-availability search.",
       "inputSchema": {
-        "origin": "IATA",
-        "destination": "IATA",
-        "dates": "string",
-        "targetPrice": "number"
+        "origins": "IATA[]",
+        "destinations": "IATA[]",
+        "departureStart": "YYYY-MM-DD",
+        "departureEnd": "YYYY-MM-DD?",
+        "returnStart": "YYYY-MM-DD?",
+        "returnEnd": "YYYY-MM-DD?",
+        "passengers": "number?",
+        "cabins": "economy|premium|business|first[]?",
+        "providers": "seats_aero|ana|jal|eva[]?",
+        "maxStops": "number?"
+      }
+    },
+    {
+      "id": "flight_search_status",
+      "title": "Check award search",
+      "kind": "deterministic",
+      "target": "flight-searcher",
+      "endpoint": "/api/integrations/flight-searcher/status",
+      "description": "Read one award search, including provider progress and pending human challenges.",
+      "inputSchema": {
+        "jobId": "string"
+      }
+    },
+    {
+      "id": "flight_search_cancel",
+      "title": "Cancel award search",
+      "kind": "deterministic",
+      "target": "flight-searcher",
+      "endpoint": "/api/integrations/flight-searcher/cancel",
+      "description": "Cancel a queued, running, or human-paused award search.",
+      "inputSchema": {
+        "jobId": "string"
       }
     }
   ],

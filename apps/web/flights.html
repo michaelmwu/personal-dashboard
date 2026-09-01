@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Award flights · MooHQ</title>
+    <link rel="stylesheet" href="/src/flights.css">
+  </head>
+  <body>
+    <main class="flight-shell">
+      <header class="flight-nav">
+        <a class="wordmark" href="/" aria-label="MooHQ home">MooHQ</a>
+        <nav aria-label="Applications">
+          <a href="/">Home</a>
+          <a href="/finance">Finance</a>
+          <a class="active" href="/flights">Flights</a>
+        </nav>
+        <span class="service-state" id="service-state">Connecting</span>
+      </header>
+
+      <section class="hero" aria-labelledby="flight-title">
+        <div>
+          <p class="kicker">Award availability</p>
+          <h1 id="flight-title">Find the seat, then finish the human parts.</h1>
+        </div>
+        <p class="hero-note">Seats.aero + ANA + JAL + EVA. Verification codes and CAPTCHAs wait here; email is never read automatically.</p>
+      </section>
+
+      <section class="workspace">
+        <form class="panel search-panel" id="search-form">
+          <div class="panel-heading">
+            <div>
+              <p class="section-label">New search</p>
+              <h2>Where do you want to go?</h2>
+            </div>
+            <span class="quiet-label">Award seats only</span>
+          </div>
+
+          <div class="route-grid">
+            <label>
+              <span>From</span>
+              <input name="origins" required autocomplete="off" maxlength="39" placeholder="HND, NRT">
+              <small>Comma-separated IATA codes</small>
+            </label>
+            <label>
+              <span>To</span>
+              <input name="destinations" required autocomplete="off" maxlength="39" placeholder="JFK, SFO">
+              <small>Airports, not city names</small>
+            </label>
+          </div>
+
+          <div class="date-grid">
+            <label><span>Depart from</span><input name="departureStart" type="date" required></label>
+            <label><span>Depart through</span><input name="departureEnd" type="date" required></label>
+            <label><span>Return from</span><input name="returnStart" type="date"></label>
+            <label><span>Return through</span><input name="returnEnd" type="date"></label>
+          </div>
+
+          <div class="option-grid">
+            <label>
+              <span>Travelers</span>
+              <input name="passengers" type="number" min="1" max="9" value="1" required>
+            </label>
+            <label>
+              <span>Maximum stops</span>
+              <select name="maxStops">
+                <option value="">Any</option>
+                <option value="0">Nonstop</option>
+                <option value="1">Up to 1</option>
+                <option value="2">Up to 2</option>
+                <option value="3">Up to 3</option>
+              </select>
+            </label>
+            <label class="sources-field">
+              <span>Seats.aero programs</span>
+              <input name="seatsAeroSources" autocomplete="off" placeholder="Optional: aeroplan, united">
+            </label>
+          </div>
+
+          <fieldset>
+            <legend>Cabins</legend>
+            <div class="choice-row">
+              <label class="choice"><input type="checkbox" name="cabins" value="economy"><span>Economy</span></label>
+              <label class="choice"><input type="checkbox" name="cabins" value="premium"><span>Premium</span></label>
+              <label class="choice"><input type="checkbox" name="cabins" value="business" checked><span>Business</span></label>
+              <label class="choice"><input type="checkbox" name="cabins" value="first" checked><span>First</span></label>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Providers</legend>
+            <div class="choice-row provider-choices" id="provider-choices">
+              <span class="loading-line">Loading providers…</span>
+            </div>
+          </fieldset>
+
+          <div class="form-footer">
+            <p id="form-status" role="status">Credentials stay inside Flight Searcher.</p>
+            <button class="primary-button" type="submit" id="search-submit">Search availability</button>
+          </div>
+        </form>
+
+        <aside class="panel progress-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="section-label">Live run</p>
+              <h2 id="run-title">No search selected</h2>
+            </div>
+            <span class="status-pill" id="run-status">Idle</span>
+          </div>
+          <div class="provider-runs" id="provider-runs">
+            <p class="empty">Start a search to see each provider advance independently.</p>
+          </div>
+          <button class="secondary-button cancel-button" type="button" id="cancel-search" hidden>Cancel search</button>
+        </aside>
+      </section>
+
+      <section class="challenge-region" id="challenge-region" aria-live="polite"></section>
+
+      <section class="panel results-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">Availability</p>
+            <h2>Results</h2>
+          </div>
+          <span class="quiet-label" id="result-count">0 seats</span>
+        </div>
+        <div class="results" id="results">
+          <p class="empty">Award options will appear here as providers finish.</p>
+        </div>
+      </section>
+
+      <section class="panel history-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">Recent</p>
+            <h2>Search history</h2>
+          </div>
+          <button class="text-button" type="button" id="refresh-searches">Refresh</button>
+        </div>
+        <div class="history" id="search-history"><p class="empty">No searches yet.</p></div>
+      </section>
+    </main>
+    <script type="module" src="/src/flights.js"></script>
+  </body>
+</html>
