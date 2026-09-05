@@ -394,3 +394,13 @@ Asia Travel Deals ingestion:
 Set `ASIA_TRAVEL_DEALS_API_BASE_URL` and `ASIA_TRAVEL_DEALS_API_TOKEN` on the
 dashboard worker. `ASIA_TRAVEL_DEALS_PAGE_SIZE` and
 `ASIA_TRAVEL_DEALS_MAX_PAGES` bound each reconciliation run.
+
+### Award search filters
+
+The Flights form supports nonstop / maximum stops and an inclusive maximum
+points price per traveler (taxes extra). The points limit is passed through to
+Flight Searcher and Hermes as `maxPoints`; deploy the matching service change
+before using the new dashboard. Results can be sorted by date, points, or stops,
+with unknown points/stops last. Seats.aero uses cached outbound availability;
+search the reverse route separately for a return. Confirm prices with the
+program before transferring points.

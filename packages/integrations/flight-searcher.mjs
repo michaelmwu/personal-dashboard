@@ -111,6 +111,7 @@ export function normalizeFlightSearchRequest(payload = {}) {
   const returnStart = payload.returnStart ?? payload.return_start;
   const returnEnd = payload.returnEnd ?? payload.return_end ?? returnStart;
   const passengers = Number(payload.passengers ?? 1);
+  const maxPoints = payload.maxPoints ?? payload.max_points;
   const maxStops = payload.maxStops ?? payload.max_stops;
   const seatsAeroSources = list(payload.seatsAeroSources ?? payload.seats_aero_sources);
 
@@ -129,6 +130,9 @@ export function normalizeFlightSearchRequest(payload = {}) {
     ...(maxStops === undefined || maxStops === null || maxStops === ""
       ? {}
       : { maxStops: Number(maxStops) }),
+    ...(maxPoints === undefined || maxPoints === null || maxPoints === ""
+      ? {}
+      : { maxPoints: Number.isFinite(Number(maxPoints)) ? Number(maxPoints) : String(maxPoints) }),
     ...(seatsAeroSources.length ? { seatsAeroSources } : {})
   };
 }

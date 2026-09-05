@@ -27,6 +27,7 @@ describe("Flight Searcher integration", () => {
         cabins: ["business"],
         providers: ["seats_aero", "ana"],
         max_stops: "1",
+        max_points: "75000",
         seats_aero_sources: "aeroplan, united"
       })
     ).toEqual({
@@ -40,6 +41,7 @@ describe("Flight Searcher integration", () => {
       cabins: ["business"],
       providers: ["seats_aero", "ana"],
       maxStops: 1,
+      maxPoints: 75000,
       seatsAeroSources: ["aeroplan", "united"]
     });
   });
@@ -52,7 +54,9 @@ describe("Flight Searcher integration", () => {
         destinations: ["JFK"],
         departureStart: "2026-11-01",
         cabins: ["first"],
-        providers: ["seats_aero"]
+        providers: ["seats_aero"],
+        maxPoints: 75000,
+        maxStops: 0
       },
       {
         config,
@@ -71,7 +75,9 @@ describe("Flight Searcher integration", () => {
       origins: ["HND"],
       destinations: ["JFK"],
       departureStart: "2026-11-01",
-      providers: ["seats_aero"]
+      providers: ["seats_aero"],
+      maxPoints: 75000,
+      maxStops: 0
     });
   });
 
