@@ -9,6 +9,7 @@ const bridgeRunStorageKey = "personal-dashboard:bridge-run-id";
 let appConfig = { apiBaseUrl: "" };
 let bridgeEventStream = null;
 let currentDashboard = null;
+let plaidConnectionSettings = { browserLinkEnabled: false, onboarding: "unavailable" };
 
 function oneYearAgoInputValue(now = new Date()) {
   const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -164,7 +165,9 @@ function renderStatus(dashboard) {
         : sync.lastSync
           ? `Last updated ${new Date(sync.lastSync).toLocaleString()}`
           : "Your saved transactions are shown below.";
-    byId("plaid-sync").disabled = sync.state === "not-connected" || !sync.state;
+    byId("plaid-sync").disabled = !(
+      dashboard.finance?.plaidItems?.length || sync.state === "synced"
+    );
   }
 }
 
@@ -1045,10 +1048,12 @@ async function syncPlaidTransactions() {
   if (!response.ok) {
     throw new Error(payload.reason ?? payload.error ?? "Plaid sync failed.");
   }
-  status.textContent = payload.synced
-    ? `Synced ${number.format(payload.itemCount ?? 0)} connection${payload.itemCount === 1 ? "" : "s"}.`
-    : (payload.reason ?? "Plaid sync needs attention.");
   await refreshFinanceAfterMutation();
+  status.textContent = payload.synced
+    ? `Refreshed ${number.format(payload.itemCount ?? 0)} connection${payload.itemCount === 1 ? "" : "s"}.`
+    : (payload.results?.find((result) => !result.synced)?.message ??
+      payload.reason ??
+      "A bank connection needs attention. Try again or check its credential setup.");
 }
 
 async function connectPlaid() {
@@ -1265,6 +1270,11 @@ function setupTransactionControls() {
     });
   });
   byId("plaid-connect").addEventListener("click", () => {
+    if (!plaidConnectionSettings.browserLinkEnabled) {
+      byId("plaid-owner-setup").hidden = false;
+      byId("plaid-owner-setup").scrollIntoView({ block: "nearest" });
+      return;
+    }
     byId("plaid-connect").disabled = true;
     connectPlaid().catch((error) => {
       byId("plaid-status").textContent = error instanceof Error ? error.message : String(error);
@@ -1278,7 +1288,10 @@ function setupTransactionControls() {
         byId("plaid-status").textContent = error instanceof Error ? error.message : String(error);
       })
       .finally(() => {
-        byId("plaid-sync").disabled = currentDashboard?.finance?.sync?.state === "not-connected";
+        byId("plaid-sync").disabled = !(
+          currentDashboard?.finance?.plaidItems?.length ||
+          currentDashboard?.finance?.sync?.state === "synced"
+        );
       });
   });
   markActiveSortButton();
@@ -1329,6 +1342,27 @@ function setupHermesBridgeControls() {
   refreshBridge().catch((error) => renderBridgeEvent(String(error)));
 }
 
+async function setupPlaidConnectionSettings() {
+  try {
+    const response = await fetch(
+      `${appConfig.apiBaseUrl}/api/integrations/plaid/connection-settings`
+    );
+    if (!response.ok) throw new Error("unavailable");
+    const settings = await response.json();
+    if (
+      !["owner-tool", "browser"].includes(settings.onboarding) ||
+      typeof settings.browserLinkEnabled !== "boolean" ||
+      settings.browserLinkEnabled !== (settings.onboarding === "browser")
+    )
+      throw new Error("invalid");
+    plaidConnectionSettings = settings;
+    byId("plaid-connect").disabled = false;
+  } catch {
+    byId("plaid-connect").disabled = true;
+    byId("plaid-status").textContent = "Bank setup is unavailable. Reload this page to try again.";
+  }
+}
+
 async function main() {
   try {
     appConfig = await loadConfig();
@@ -1339,7 +1373,7 @@ async function main() {
     if (app === "finance") {
       renderAlerts(dashboard.alerts);
       setupTransactionControls();
-      await refreshTransactionView();
+      await Promise.all([refreshTransactionView(), setupPlaidConnectionSettings()]);
     } else if (app === "travel") {
       renderTravel(dashboard.travel);
     } else if (app === "coding") {

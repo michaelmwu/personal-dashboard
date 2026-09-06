@@ -86,13 +86,24 @@ function responseData(response) {
   return response?.data ?? response ?? {};
 }
 
-function errorResponse(error) {
+function errorResponse(error, secrets = []) {
+  const sensitive = secrets.filter((value) => typeof value === "string" && value.length > 0);
+  const redact = (value) => {
+    if (typeof value === "string")
+      return sensitive.reduce((text, secret) => text.replaceAll(secret, "[REDACTED]"), value);
+    if (Array.isArray(value)) return value.map(redact);
+    if (value && typeof value === "object")
+      return Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [redact(key), redact(item)])
+      );
+    return value;
+  };
   return {
     ok: false,
     status: error?.response?.status ?? 0,
-    body: error?.response?.data ?? {
-      error: error instanceof Error ? error.message : String(error)
-    }
+    body: redact(
+      error?.response?.data ?? { error: error instanceof Error ? error.message : String(error) }
+    )
   };
 }
 
@@ -207,7 +218,12 @@ async function plaidSdkCall(methodName, body, options = {}) {
     const response = await client[methodName](body);
     return { ok: true, status: response?.status ?? 200, body: responseData(response) };
   } catch (error) {
-    return errorResponse(error);
+    return errorResponse(error, [
+      config.clientId,
+      config.secret,
+      body.access_token,
+      body.public_token
+    ]);
   }
 }
 

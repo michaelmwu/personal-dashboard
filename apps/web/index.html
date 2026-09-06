@@ -23,7 +23,7 @@
       <header class="topbar">
         <h1>Finance</h1>
         <div class="plaid-actions">
-          <button type="button" id="plaid-connect">Connect a bank</button>
+          <button type="button" id="plaid-connect" disabled>Connect a bank</button>
           <button type="button" id="plaid-sync" disabled>Refresh transactions</button>
         </div>
       </header>
@@ -31,6 +31,13 @@
         <div class="status-strip" id="status-strip" role="status">Loading…</div>
         <p id="plaid-status" aria-live="polite">Checking your accounts…</p>
       </div>
+      <section id="plaid-owner-setup" class="connection-setup panel" hidden aria-labelledby="bank-setup-title">
+        <h2 id="bank-setup-title">Connect a bank with owner setup</h2>
+        <p>Your connection credentials stay in 1Password. Adding a bank requires the owner setup tool, which has separate permission to save credentials.</p>
+        <p>On the dashboard host, stop the API and worker, then run the tool using your owner provisioning credentials:</p>
+        <code>bun scripts/plaid-credentials.mjs link --offline --store /path/to/dashboard-store.json</code>
+        <p>Open the one-time setup URL it prints and connect through Plaid. Restart the dashboard services when finished, then refresh transactions here.</p>
+      </section>
       <p class="page-error" id="page-error" role="alert" hidden>Couldn’t load your finances. <button type="button" onclick="location.reload()">Try again</button></p>
       <details class="access-settings">
         <summary>API access</summary>

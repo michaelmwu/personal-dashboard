@@ -1244,3 +1244,18 @@ body[data-app="inbox"] .app-workspace {
     gap: 10px;
   }
 }
+
+.connection-setup {
+  padding: 20px;
+  margin: 16px 0;
+}
+.connection-setup p {
+  margin: 12px 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.connection-setup code {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}

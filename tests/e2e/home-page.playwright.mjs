@@ -23,6 +23,8 @@ async function withDashboard(page, run, dashboard = dashboardFixture()) {
     if (url.pathname === "/api/dashboard") {
       response.statusCode = state.failDashboard ? 503 : 200;
       payload = dashboard;
+    } else if (url.pathname === "/api/integrations/plaid/connection-settings") {
+      payload = { browserLinkEnabled: true, onboarding: "browser", tokenStorage: "local" };
     } else if (url.pathname === "/api/transactions") {
       response.statusCode = state.failTransactions ? 503 : 200;
       payload = queryTransactions(dashboard.transactions, query, dashboard.finance.accounts);
@@ -246,6 +248,7 @@ test("connecting a bank exchanges the Link token and refreshes the finance view"
   await page.route("**/api/integrations/plaid/*", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (path.endsWith("connection-settings")) return route.fallback();
     calls.push({ path, body: request.postDataJSON() });
     let payload = {};
     if (path.endsWith("link-token")) payload = { linkToken: "link-test-token" };
@@ -308,4 +311,44 @@ test("benefit setup stays out of the way until requested and preserves its save 
       descriptorPatterns: "airline fee reimbursement"
     });
   });
+});
+
+test("1Password connections use owner setup and preserve sync error guidance", async ({ page }) => {
+  const dashboard = dashboardFixture();
+  dashboard.finance.plaidItems = [{ id: "item_test", syncStatus: "linked" }];
+  await page.route("**/api/integrations/plaid/connection-settings", (route) =>
+    route.fulfill({
+      json: { tokenStorage: "onepassword", browserLinkEnabled: false, onboarding: "owner-tool" }
+    })
+  );
+  await page.route("**/api/integrations/plaid/sync", (route) =>
+    route.fulfill({
+      status: 207,
+      json: {
+        synced: false,
+        results: [
+          {
+            synced: false,
+            reason: "plaid_token_migration_required",
+            message: "This bank connection needs credential migration before it can sync."
+          }
+        ]
+      }
+    })
+  );
+  await withDashboard(
+    page,
+    async (base, state) => {
+      await page.goto(`${base}/finance`);
+      await page.getByRole("button", { name: "Connect a bank" }).click();
+      await expect(
+        page.getByRole("heading", { name: "Connect a bank with owner setup" })
+      ).toBeVisible();
+      expect(state.mutations).toHaveLength(0);
+      await page.getByRole("button", { name: "Refresh transactions" }).click();
+      await expect(page.locator("#plaid-status")).toContainText("needs credential migration");
+      await expect(page.getByRole("button", { name: "Refresh transactions" })).toBeEnabled();
+    },
+    dashboard
+  );
 });

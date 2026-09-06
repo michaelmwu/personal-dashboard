@@ -39,8 +39,9 @@ cards linking to each app:
 - `/inbox`: items received from email.
 - `/connections`: integrations and connected app panels.
 
-Finance shows sample data explicitly in development. Connect a bank through
-Plaid using **Connect a bank**; deployment credentials stay on the server.
+Finance shows sample data explicitly in development. **Connect a bank** opens
+Plaid in a local sandbox or explains owner provisioning in 1Password mode.
+Deployment credentials stay on the server.
 If your deployment requires a bearer token for changes, enter the dashboard
 access token under **API access**. Never enter Plaid credentials there.
 
@@ -352,20 +353,23 @@ Finance endpoints:
 
 Plaid-facing endpoints:
 
-- `POST /api/integrations/plaid/link-token`: create a Plaid Link token for the
-  browser Link flow.
-- `POST /api/integrations/plaid/exchange-public-token`: exchange Link's
-  `public_token` for an access token and store it in the ignored local
-  dashboard store.
+- `GET /api/integrations/plaid/connection-settings`: public credential-mode and
+  onboarding capabilities, without secrets or vault references.
+- `POST /api/integrations/plaid/link-token`: create a Link token in local
+  sandbox mode; 1Password mode requires the owner setup tool.
+- `POST /api/integrations/plaid/exchange-public-token`: exchange and store a
+  token only in local sandbox mode. Disabled in production/1Password mode.
 - `POST /api/integrations/plaid/sync`: run deterministic `/transactions/sync`
   for linked Items and upsert accounts/transactions into the dashboard.
 - `POST /api/integrations/plaid/webhook`: accept Plaid transaction webhooks and
   trigger sync on `SYNC_UPDATES_AVAILABLE`.
 
-Set `PLAID_CLIENT_ID`, `PLAID_SECRET`, and `PLAID_ENV` (`sandbox` or
-`production`). The access-token store is local ignored data and is written with
-owner-only file permissions; move it behind encrypted storage before using this
-outside a personal trusted host.
+Static `PLAID_CLIENT_ID` and `PLAID_SECRET` values are injected from 1Password
+by moo-infra's `op run` launcher. Production stores per-bank `accessTokenRef`
+references and resolves them using the shared read-only service account.
+An owner-operated tool provisions new connections and migrates legacy tokens
+with a separate writer identity. See [Dashboard credentials](docs/dashboard-credentials.md)
+for the deployment dependency, setup, migration, and local sandbox behavior.
 
 Hotel Rate Finder endpoints:
 
