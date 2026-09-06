@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Travel · MooHQ</title>
+    <link rel="stylesheet" href="/src/home.css">
+    <link rel="stylesheet" href="/src/styles.css">
+  </head>
+  <body data-app="travel">
+    <main class="shell">
+      <header class="home-nav">
+        <a class="wordmark" href="/" aria-label="MooHQ home">MooHQ<span class="brand-dot" aria-hidden="true">●</span></a>
+        <nav aria-label="Applications">
+          <a href="/">Home</a>
+          <a href="/finance">Finance</a>
+          <a href="/travel" aria-current="page" class="active">Travel</a>
+          <a href="/coding">Coding</a>
+          <a href="/inbox">Inbox</a>
+          <a href="/connections">Connections</a>
+        </nav>
+      </header>
+      <header class="topbar">
+        <h1>Travel</h1>
+        <div class="status-strip" id="status-strip" role="status">Loading…</div>
+      </header>
+      <p class="page-error" id="page-error" role="alert" hidden>Couldn’t load this page. <button type="button" onclick="location.reload()">Try again</button></p>
+      <section class="domain-grid app-workspace" aria-label="Travel">
+        <section class="panel">
+          <div class="panel-header">
+            <h2 id="rates" tabindex="-1">Rate watches</h2>
+            <span>Hotels and flights</span>
+          </div>
+          <div class="compact-list" id="travel-watches"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <h2 id="deals" tabindex="-1">Flight deals</h2>
+            <span id="deal-count"></span>
+          </div>
+          <div class="compact-list" id="deal-feed"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <h2 id="trips" tabindex="-1">Trips</h2>
+            <span>From email</span>
+          </div>
+          <div class="compact-list" id="reservations"></div>
+        </section>
+      </section>
+    </main>
+    <script type="module" src="/src/app.js"></script>
+  </body>
+</html>

@@ -4,7 +4,7 @@
   --card: #ffffff;
   --ink: #23211f;
   --muted: #78736d;
-  --faint: #9b968f;
+  --faint: #78736d;
   --line: #e7e4de;
   --blue: #5b7391;
   --green: #4f7a5e;
@@ -160,6 +160,7 @@ a.porthole:hover {
 }
 .porthole-body {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
 .headline-metric {
@@ -187,9 +188,11 @@ a.porthole:hover {
   white-space: nowrap;
 }
 .item-row strong {
-  color: var(--green);
-  font-weight: 600;
-  white-space: nowrap;
+  color: var(--ink);
+  font-weight: 500;
+  max-width: 50%;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 .porthole-footer {
   margin-top: auto;
@@ -239,4 +242,86 @@ a.porthole:hover {
   .porthole-featured {
     grid-column: auto;
   }
+}
+
+body [hidden] {
+  display: none;
+}
+.brand-dot {
+  color: #59806b;
+  font-size: 9px;
+  margin-left: 4px;
+  vertical-align: top;
+}
+.home-nav .wordmark {
+  white-space: nowrap;
+}
+.home-nav nav {
+  min-width: 0;
+  overflow-x: auto;
+}
+.home-nav nav a {
+  white-space: nowrap;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+}
+.home-notice {
+  margin: 0 0 22px;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: #655849;
+  background: #f6eee5;
+  font-size: 13px;
+  line-height: 1.5;
+}
+a:focus-visible,
+button:focus-visible {
+  outline: 3px solid var(--blue);
+  outline-offset: 4px;
+}
+#home-retry {
+  margin: 8px 12px 0 0;
+  padding: 10px 14px;
+  font: inherit;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+  .porthole {
+    transition: none;
+  }
+}
+@media (max-width: 760px) {
+  .home-nav {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 16px 0 10px;
+  }
+  .home-nav nav {
+    width: 100%;
+  }
+}
+
+.porthole {
+  min-width: 0;
+}
+.porthole-head {
+  flex-wrap: wrap;
+}
+@media (min-width: 761px) and (max-width: 1050px) {
+  .porthole-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.porthole-body,
+.item-row {
+  min-width: 0;
 }

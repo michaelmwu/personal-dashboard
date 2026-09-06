@@ -97,7 +97,7 @@ function mergeById(baseItems, overlayItems) {
 }
 
 function publicPlaidItem(item) {
-  const { accessToken, cursor, ...publicItem } = item;
+  const { accessToken, accessTokenRef, encryptedAccessToken, cursor, ...publicItem } = item;
   return publicItem;
 }
 
@@ -219,6 +219,28 @@ export async function upsertPlaidItem(filePath, item) {
       updatedAt: item.updatedAt ?? new Date().toISOString()
     });
     return overlay;
+  });
+}
+
+// Used only by the offline owner provisioning tool. A replacement removes all
+// legacy secret representations while retaining cursors and connection metadata.
+export async function replacePlaidItemCredential(filePath, itemId, accessTokenRef, metadata = {}) {
+  return mutateOverlay(filePath, (overlay) => {
+    const existing = (overlay.finance.plaidItems ?? []).find((item) => item.id === itemId) ?? {};
+    const { accessToken, encryptedAccessToken, ...retained } = existing;
+    const item = {
+      ...retained,
+      id: itemId,
+      accessTokenRef,
+      institutionName: metadata.institutionName ?? retained.institutionName,
+      linkedAt: retained.linkedAt ?? new Date().toISOString(),
+      syncStatus: retained.syncStatus ?? "linked",
+      updatedAt: new Date().toISOString()
+    };
+    overlay.finance.plaidItems = upsertById(overlay.finance.plaidItems ?? [], item).map(
+      (candidate) => (candidate.id === itemId ? item : candidate)
+    );
+    return item;
   });
 }
 

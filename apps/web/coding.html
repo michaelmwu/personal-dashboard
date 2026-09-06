@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Coding · MooHQ</title>
+    <link rel="stylesheet" href="/src/home.css">
+    <link rel="stylesheet" href="/src/styles.css">
+  </head>
+  <body data-app="coding">
+    <main class="shell">
+      <header class="home-nav">
+        <a class="wordmark" href="/" aria-label="MooHQ home">MooHQ<span class="brand-dot" aria-hidden="true">●</span></a>
+        <nav aria-label="Applications">
+          <a href="/">Home</a>
+          <a href="/finance">Finance</a>
+          <a href="/travel">Travel</a>
+          <a href="/coding" aria-current="page" class="active">Coding</a>
+          <a href="/inbox">Inbox</a>
+          <a href="/connections">Connections</a>
+        </nav>
+      </header>
+      <header class="topbar">
+        <h1>Coding</h1>
+        <div class="status-strip" id="status-strip" role="status">Loading…</div>
+      </header>
+      <p class="page-error" id="page-error" role="alert" hidden>Couldn’t load this page. <button type="button" onclick="location.reload()">Try again</button></p>
+      <section class="domain-grid app-workspace" aria-label="Coding">
+        <section class="panel">
+          <div class="panel-header">
+            <h2 id="tasks-heading" tabindex="-1">Tasks</h2>
+            <span id="openclaw-status"></span>
+          </div>
+          <div class="task-list" id="tasks"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <h2 id="agent-controls" tabindex="-1">Agent controls</h2>
+            <span id="hermes-status"></span>
+          </div>
+          <div class="compact-list" id="hermes"></div>
+          <div class="bridge-console" id="bridge-console">
+            <div class="bridge-status-row">
+              <span class="pill" id="bridge-status">Bridge</span>
+              <button type="button" id="bridge-refresh">Refresh</button>
+            </div>
+            <label>
+              <span>Token</span>
+              <input id="bridge-token" type="password" autocomplete="off">
+            </label>
+            <label>
+              <span>Prompt</span>
+              <textarea id="bridge-prompt" rows="4">Summarize current dashboard risks and ask for approval before making changes.</textarea>
+            </label>
+            <label>
+              <span>Run ID</span>
+              <input id="bridge-run-id" type="text" autocomplete="off">
+            </label>
+            <div class="bridge-actions">
+              <button type="button" id="bridge-start">Start</button>
+              <button type="button" id="bridge-stop">Stop</button>
+              <button type="button" id="bridge-approve">Approve</button>
+              <button type="button" id="bridge-reject">Reject</button>
+            </div>
+            <pre id="bridge-events" aria-live="polite"></pre>
+          </div>
+          <div class="operator-console" id="operator-console">
+            <div class="bridge-status-row">
+              <span class="pill" id="operator-status">Intake</span>
+            </div>
+            <div class="operator-grid">
+              <fieldset>
+                <legend>PR Pickup</legend>
+                <label>
+                  <span>Repo</span>
+                  <input id="pickup-repo" type="text" autocomplete="off" placeholder="michaelmwu/personal-dashboard">
+                </label>
+                <label>
+                  <span>PR</span>
+                  <input id="pickup-pr-number" type="number" min="1" inputmode="numeric">
+                </label>
+                <label>
+                  <span>Title</span>
+                  <input id="pickup-title" type="text" autocomplete="off">
+                </label>
+                <label>
+                  <span>Branch</span>
+                  <input id="pickup-branch" type="text" autocomplete="off">
+                </label>
+                <label>
+                  <span>Workspace</span>
+                  <select id="pickup-workspace-mode">
+                    <option value="">Repository default</option>
+                    <option value="worktree">Isolated worktree</option>
+                    <option value="root">Root checkout (exclusive)</option>
+                  </select>
+                </label>
+                <button type="button" id="pickup-submit">Pick Up</button>
+              </fieldset>
+              <fieldset>
+                <legend>Issue Triage</legend>
+                <label>
+                  <span>Repo</span>
+                  <input id="issue-repo" type="text" autocomplete="off" placeholder="michaelmwu/personal-dashboard">
+                </label>
+                <label>
+                  <span>Issue</span>
+                  <input id="issue-number" type="number" min="1" inputmode="numeric">
+                </label>
+                <label>
+                  <span>Title</span>
+                  <input id="issue-title" type="text" autocomplete="off">
+                </label>
+                <div class="operator-row">
+                  <label>
+                    <span>Author</span>
+                    <input id="issue-author" type="text" autocomplete="off">
+                  </label>
+                  <label>
+                    <span>Assoc.</span>
+                    <select id="issue-association">
+                      <option value="OWNER">OWNER</option>
+                      <option value="MEMBER">MEMBER</option>
+                      <option value="COLLABORATOR">COLLABORATOR</option>
+                      <option value="NONE">NONE</option>
+                    </select>
+                  </label>
+                </div>
+                <label>
+                  <span>Body</span>
+                  <textarea id="issue-body" rows="3"></textarea>
+                </label>
+                <button type="button" id="issue-submit">Triage</button>
+              </fieldset>
+            </div>
+            <pre id="operator-result" aria-live="polite"></pre>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script type="module" src="/src/app.js"></script>
+  </body>
+</html>

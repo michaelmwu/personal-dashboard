@@ -107,6 +107,10 @@ function safePath(pathname, rootDir = __dirname) {
     ["/", "home.html"],
     ["/finance", "index.html"],
     ["/finance.html", "index.html"],
+    ["/travel", "travel.html"],
+    ["/coding", "coding.html"],
+    ["/inbox", "inbox.html"],
+    ["/connections", "connections.html"],
     ["/flights", "flights.html"],
     ["/flights.html", "flights.html"]
   ]);

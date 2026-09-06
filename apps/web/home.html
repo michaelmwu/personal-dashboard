@@ -9,22 +9,27 @@
   <body>
     <main class="home-shell">
       <header class="home-nav">
-        <a class="wordmark" href="/" aria-label="MooHQ home">MooHQ</a>
+        <a class="wordmark" href="/" aria-label="MooHQ home">MooHQ<span class="brand-dot" aria-hidden="true">●</span></a>
         <nav aria-label="Applications">
-          <a class="active" href="/">Home</a>
+          <a href="/" aria-current="page" class="active">Home</a>
           <a href="/finance">Finance</a>
+          <a href="/travel">Travel</a>
+          <a href="/coding">Coding</a>
+          <a href="/inbox">Inbox</a>
+          <a href="/connections">Connections</a>
           <a href="/flights">Flights</a>
         </nav>
       </header>
 
       <section class="intro" aria-labelledby="home-title">
         <div>
-          <p class="kicker" id="today">Dashboard</p>
-          <h1 id="home-title">What needs attention</h1>
+          <p class="kicker" id="today">Your apps</p>
+          <h1 id="home-title">Welcome home, Moo.</h1>
         </div>
       </section>
 
-      <section class="porthole-grid" id="portholes" aria-label="Application portholes" aria-live="polite">
+      <p class="home-notice" id="home-notice" role="status" hidden></p>
+      <section class="porthole-grid" id="portholes" aria-label="Your apps" aria-live="polite">
         <article class="porthole porthole-featured skeleton"><div></div></article>
         <article class="porthole skeleton"><div></div></article>
         <article class="porthole skeleton"><div></div></article>

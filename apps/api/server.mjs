@@ -109,6 +109,11 @@ import {
   syncPlaidTransactions,
   verifyPlaidWebhook
 } from "../../packages/integrations/plaid.mjs";
+import { CredentialError } from "../../packages/integrations/onepassword.mjs";
+import {
+  plaidConnectionCapabilities,
+  resolvePlaidAccessToken
+} from "../../packages/integrations/plaid-credentials.mjs";
 import {
   financeAccountType,
   financeOverview,
@@ -1675,7 +1680,7 @@ async function syncHotelRateReservations({ reservationId, forceRefresh } = {}) {
 
 async function syncPlaidItem(item) {
   const sync = await syncPlaidTransactions({
-    accessToken: item.accessToken,
+    accessToken: await resolvePlaidAccessToken(item),
     cursor: item.cursor
   });
   const persistedDashboard = await loadDashboard(dashboardSeed(), storePath);
@@ -1724,7 +1729,17 @@ async function syncPlaidItems({ itemId } = {}) {
   }
   const results = [];
   for (const item of selectedItems) {
-    results.push({ itemId: item.id, ...(await syncPlaidItem(item)) });
+    try {
+      results.push({ itemId: item.id, ...(await syncPlaidItem(item)) });
+    } catch (caught) {
+      if (!(caught instanceof CredentialError)) throw caught;
+      results.push({
+        itemId: item.id,
+        synced: false,
+        reason: caught.code,
+        message: caught.message
+      });
+    }
   }
   return {
     synced: results.every((result) => result.synced),
@@ -2913,8 +2928,25 @@ export function createApiServer({
         return;
       }
 
+      if (
+        request.method === "GET" &&
+        url.pathname === "/api/integrations/plaid/connection-settings"
+      ) {
+        json(response, 200, plaidConnectionCapabilities());
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/api/integrations/plaid/link-token") {
         if (!requireAuth(request, response)) {
+          return;
+        }
+        if (!plaidConnectionCapabilities().browserLinkEnabled) {
+          error(
+            response,
+            409,
+            "owner_provisioning_required",
+            "Bank connections are managed through the owner setup tool."
+          );
           return;
         }
         const payload = await readJson(request);
@@ -2930,6 +2962,15 @@ export function createApiServer({
         url.pathname === "/api/integrations/plaid/exchange-public-token"
       ) {
         if (!requireAuth(request, response)) {
+          return;
+        }
+        if (!plaidConnectionCapabilities().browserLinkEnabled) {
+          error(
+            response,
+            409,
+            "owner_provisioning_required",
+            "Bank connections are managed through the owner setup tool."
+          );
           return;
         }
         const payload = await readJson(request);
