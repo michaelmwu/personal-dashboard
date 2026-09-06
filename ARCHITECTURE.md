@@ -188,11 +188,18 @@ for the same room class when the scraper identifies room names; otherwise the
 comparison is explicitly marked as the service's cheapest cancellable evidence.
 Failed jobs and provider errors are alertable states.
 
-`flight-searcher` should follow the same ownership pattern for flights: it owns
-Playwright/cloakbrowser execution, provider parsing, route-watch jobs, cache,
-and any deeper UI. `mooflights-extension` can remain a separate published
-open-source repository; it is not the dashboard ingestion path for private route
-watches.
+`flight-searcher` follows the same ownership pattern for flights: it owns the
+Seats.aero Partner API client, Playwright/CloakBrowser execution, provider
+parsing, persistent browser profiles, job state, and ephemeral human
+challenges. Personal Dashboard owns the `/flights` control surface and a thin
+typed proxy; it never parses airline pages or receives provider credentials.
+Hermes may start, inspect, and cancel searches through deterministic capability
+contracts. OTP, CAPTCHA, and restricted live-browser actions stay outside
+persisted Hermes envelopes so short-lived verification values are not written
+to the action store. No layer reads email automatically.
+
+`mooflights-extension` can remain a separate published open-source repository;
+it is not the dashboard ingestion path for private award searches.
 
 Plaid is the first provider client. `packages/integrations/plaid` wraps the
 official Plaid Node SDK for Link token creation, public-token exchange, and

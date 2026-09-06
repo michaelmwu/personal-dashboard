@@ -52,6 +52,7 @@ function render(dashboard) {
   const transactions = dashboard.transactions ?? [];
   const intake = dashboard.intake?.items ?? [];
   const alerts = dashboard.alerts ?? [];
+  const flightWatches = travel.flightWatches ?? [];
   const financeRows = [...transactions]
     .sort((a, b) => String(b.date).localeCompare(String(a.date)))
     .slice(0, 3)
@@ -76,6 +77,21 @@ function render(dashboard) {
   notice.hidden = !sample;
   notice.textContent = "Sample data is shown. Connect your accounts in Finance to get started.";
   document.querySelector("#portholes").innerHTML = [
+    appCard({
+      name: "Award flights",
+      mark: "FL",
+      href: "/flights",
+      badge: flightWatches.length ? `${flightWatches.length} searches` : "ready",
+      footer: "Search availability",
+      body: rows(
+        flightWatches.map((watch) => ({
+          label: watch.route,
+          meta: watch.status,
+          tone: watch.status === "waiting_human" ? "attention" : ""
+        })),
+        "Search Seats.aero, ANA, JAL, and EVA."
+      )
+    }),
     appCard({
       name: "Finance",
       mark: "FI",

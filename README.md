@@ -67,8 +67,9 @@ bun run check
 The dashboard now has placeholder contracts for the next personal surfaces:
 
 - Hotel rate watches from `~/dev/hotel_rate_finder`.
-- Flight watches from a future `~/dev/flight-searcher` service that owns
-  Playwright/cloakbrowser search execution.
+- Award searches from the private `flight-searcher` service, which combines
+  Seats.aero with ANA international (including eligible Star Alliance), JAL
+  international on JAL-operated flights only, and human-gated EVA searches.
 - Asia deal candidates from `~/dev/asiatraveldeals`.
 - Plaid account/transaction sync through the official Plaid Node SDK.
 - Gmail intake for reservations, statements, and important email.
@@ -129,6 +130,16 @@ Hermes-facing endpoints:
   `HERMES_BRIDGE_PASSWORD` are configured.
 - `GET /api/hermes/memory/context`: authenticated memory policy and curated
   source configuration. It deliberately exposes no memory body content.
+
+Flight Searcher is available at `/flights`. Configure
+`FLIGHT_SEARCHER_API_BASE_URL` and the shared `FLIGHT_SEARCHER_API_TOKEN` only
+in the server environment. The web server injects the dashboard API credential
+when it proxies an already-authorized Tailscale request, so neither token is
+placed in browser storage. Hermes can invoke the deterministic
+`flight_search`, `flight_search_status`, and `flight_search_cancel`
+capabilities. OTP and CAPTCHA submission deliberately bypasses stored Hermes
+action envelopes and is accepted only by the authenticated dashboard challenge
+route. The dashboard and Flight Searcher never read email automatically.
 
 ## Personal memory
 
@@ -399,3 +410,13 @@ Asia Travel Deals ingestion:
 Set `ASIA_TRAVEL_DEALS_API_BASE_URL` and `ASIA_TRAVEL_DEALS_API_TOKEN` on the
 dashboard worker. `ASIA_TRAVEL_DEALS_PAGE_SIZE` and
 `ASIA_TRAVEL_DEALS_MAX_PAGES` bound each reconciliation run.
+
+### Award search filters
+
+The Flights form supports nonstop / maximum stops and an inclusive maximum
+points price per traveler (taxes extra). The points limit is passed through to
+Flight Searcher and Hermes as `maxPoints`; deploy the matching service change
+before using the new dashboard. Results can be sorted by date, points, or stops,
+with unknown points/stops last. Seats.aero uses cached outbound availability;
+search the reverse route separately for a return. Confirm prices with the
+program before transferring points.
