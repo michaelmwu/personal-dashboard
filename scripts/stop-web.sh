@@ -85,6 +85,7 @@ candidate_process_pids() {
   ps -axo pid=,command= | awk '
     /apps\/api\/server\.mjs/ ||
     /apps\/web\/server\.mjs/ ||
+    /apps\/email-gateway\/server\.mjs/ ||
     /scripts\/dev\.mjs/ {
       print $1
     }
@@ -92,7 +93,7 @@ candidate_process_pids() {
 }
 
 candidate_port_pids() {
-  for port in ${API_PORT:-} ${WEB_PORT:-}; do
+  for port in ${API_PORT:-} ${WEB_PORT:-} ${EMAIL_GATEWAY_PORT:-}; do
     [ -n "$port" ] || continue
     lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true
   done

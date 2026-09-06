@@ -5,6 +5,7 @@ tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/personal-dashboard-typecheck.XXXXXX")"
 
 bun build \
   apps/api/server.mjs \
+  apps/email-gateway/server.mjs \
   apps/web/server.mjs \
   scripts/dev.mjs \
   scripts/production.mjs \
@@ -14,6 +15,7 @@ bun build \
   packages/integrations/coding-agent.mjs \
   packages/integrations/hermes-bridge.mjs \
   packages/integrations/hermes.mjs \
+  packages/integrations/gmail-proxy.mjs \
   packages/integrations/hotel-rates.mjs \
   packages/integrations/openclaw.mjs \
   packages/integrations/omp-rpc.mjs \

@@ -17,10 +17,12 @@ CONDUCTOR_PORT_RANGE_SIZE = 10
 OFFSETS = {
     "API_PORT": 10,
     "WEB_PORT": 20,
+    "EMAIL_GATEWAY_PORT": 30,
 }
 CONDUCTOR_OFFSETS = {
     "API_PORT": 0,
     "WEB_PORT": 1,
+    "EMAIL_GATEWAY_PORT": 2,
 }
 WEB_RESTRICTED_PORTS = frozenset(
     {
@@ -156,6 +158,13 @@ def ports_for_base(base: int) -> dict[str, int]:
         PORT_BLOCK_SIZE,
         "web",
     )
+    values["EMAIL_GATEWAY_PORT"] = allocate_safe_browser_port(
+        base,
+        {values["API_PORT"], values["WEB_PORT"]},
+        OFFSETS["EMAIL_GATEWAY_PORT"],
+        PORT_BLOCK_SIZE,
+        "email gateway",
+    )
     return values
 
 
@@ -175,6 +184,13 @@ def ports_for_conductor_base(base: int) -> dict[str, int]:
         CONDUCTOR_OFFSETS["WEB_PORT"],
         CONDUCTOR_PORT_RANGE_SIZE,
         "web",
+    )
+    values["EMAIL_GATEWAY_PORT"] = allocate_safe_browser_port(
+        base,
+        {values["API_PORT"], values["WEB_PORT"]},
+        CONDUCTOR_OFFSETS["EMAIL_GATEWAY_PORT"],
+        CONDUCTOR_PORT_RANGE_SIZE,
+        "email gateway",
     )
     return values
 
@@ -200,9 +216,11 @@ def env_values() -> dict[str, str]:
     values = ports()
     api = values["API_PORT"]
     web = values["WEB_PORT"]
+    email_gateway = values["EMAIL_GATEWAY_PORT"]
     return {
         "API_PORT": str(api),
         "WEB_PORT": str(web),
+        "EMAIL_GATEWAY_PORT": str(email_gateway),
         "PERSONAL_DASHBOARD_API_BASE_URL": f"http://127.0.0.1:{api}",
         "PERSONAL_DASHBOARD_WEB_BASE_URL": f"http://127.0.0.1:{web}",
     }

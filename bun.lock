@@ -18,6 +18,10 @@
       "name": "@personal-dashboard/api",
       "version": "0.1.0",
     },
+    "apps/email-gateway": {
+      "name": "@personal-dashboard/email-gateway",
+      "version": "0.1.0",
+    },
     "apps/web": {
       "name": "@personal-dashboard/web",
       "version": "0.1.0",
@@ -69,6 +73,8 @@
     "@personal-dashboard/api": ["@personal-dashboard/api@workspace:apps/api"],
 
     "@personal-dashboard/contracts": ["@personal-dashboard/contracts@workspace:packages/contracts"],
+
+    "@personal-dashboard/email-gateway": ["@personal-dashboard/email-gateway@workspace:apps/email-gateway"],
 
     "@personal-dashboard/finance": ["@personal-dashboard/finance@workspace:packages/finance"],
 

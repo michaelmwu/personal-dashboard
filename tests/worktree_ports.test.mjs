@@ -24,6 +24,7 @@ describe("worktree port allocation", () => {
     expect(worktreePortsEnv({ CONDUCTOR_PORT: "6000" })).toMatchObject({
       API_PORT: "6001",
       WEB_PORT: "6002",
+      EMAIL_GATEWAY_PORT: "6003",
       PERSONAL_DASHBOARD_API_BASE_URL: "http://127.0.0.1:6001",
       PERSONAL_DASHBOARD_WEB_BASE_URL: "http://127.0.0.1:6002"
     });
@@ -31,6 +32,7 @@ describe("worktree port allocation", () => {
     expect(worktreePortsEnv({ CONDUCTOR_PORT: "10080" })).toMatchObject({
       API_PORT: "10081",
       WEB_PORT: "10082",
+      EMAIL_GATEWAY_PORT: "10083",
       PERSONAL_DASHBOARD_API_BASE_URL: "http://127.0.0.1:10081",
       PERSONAL_DASHBOARD_WEB_BASE_URL: "http://127.0.0.1:10082"
     });
