@@ -4,34 +4,58 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Finance · MooHQ</title>
+    <link rel="stylesheet" href="/src/home.css">
     <link rel="stylesheet" href="/src/styles.css">
   </head>
-  <body>
+  <body data-app="finance">
     <main class="shell">
+      <header class="home-nav">
+        <a class="wordmark" href="/" aria-label="MooHQ home">MooHQ<span class="brand-dot" aria-hidden="true">●</span></a>
+        <nav aria-label="Applications">
+          <a href="/">Home</a>
+          <a href="/finance" aria-current="page" class="active">Finance</a>
+          <a href="/travel">Travel</a>
+          <a href="/coding">Coding</a>
+          <a href="/inbox">Inbox</a>
+          <a href="/connections">Connections</a>
+        </nav>
+      </header>
       <header class="topbar">
-        <div>
-          <p class="eyebrow"><a class="home-link" href="/">MooHQ</a> / Finance</p>
-          <h1>Cards, banks, and credits</h1>
-        </div>
-        <div class="status-strip" id="status-strip">
-          <span class="status-dot"></span>
-          Loading
+        <h1>Finance</h1>
+        <div class="plaid-actions">
+          <button type="button" id="plaid-connect">Connect a bank</button>
+          <button type="button" id="plaid-sync" disabled>Refresh transactions</button>
         </div>
       </header>
-
+      <div class="connection-notice">
+        <div class="status-strip" id="status-strip" role="status">Loading…</div>
+        <p id="plaid-status" aria-live="polite">Checking your accounts…</p>
+      </div>
+      <p class="page-error" id="page-error" role="alert" hidden>Couldn’t load your finances. <button type="button" onclick="location.reload()">Try again</button></p>
+      <details class="access-settings">
+        <summary>API access</summary>
+        <label>Dashboard access token <input id="finance-token" type="password" autocomplete="off"></label>
+        <p>Only needed if your deployment requires a token for changes. Kept for this tab’s session.</p>
+      </details>
+      <nav class="section-nav" aria-label="Finance sections">
+        <a href="#transaction-panel">Transactions</a>
+        <a href="#accounts-panel">Accounts</a>
+        <a href="#benefits-panel">Card benefits</a>
+      </nav>
+      <p class="overview-caption">Overview for the selected account type and dates. Search filters apply to the transaction list and spending breakdowns.</p>
       <section class="metric-grid" id="metrics" aria-label="Dashboard metrics"></section>
 
       <section class="workspace">
         <div class="primary-column">
           <section class="panel alert-panel">
             <div class="panel-header">
-              <h2>Audit Findings</h2>
+              <h2>Needs a look</h2>
               <span id="alert-count"></span>
             </div>
             <div class="alert-list" id="alerts"></div>
           </section>
 
-          <section class="panel transaction-panel">
+          <section class="panel transaction-panel" id="transaction-panel">
             <div class="panel-header transaction-header">
               <div>
                 <h2>Transactions</h2>
@@ -43,19 +67,9 @@
                   <button type="button" data-finance-scope="depository" aria-pressed="false">Bank accounts</button>
                   <button type="button" data-finance-scope="all" aria-pressed="false">All</button>
                 </div>
-                <div class="plaid-actions">
-                  <button type="button" id="plaid-connect">Connect Plaid</button>
-                  <button type="button" id="plaid-sync">Sync now</button>
-                </div>
-                <div class="sort-toolbar" aria-label="Sort transactions">
-                  <button type="button" data-sort="date">Date</button>
-                  <button type="button" data-sort="merchant">Merchant</button>
-                  <button type="button" data-sort="amount">Amount</button>
-                  <button type="button" data-sort="category">Category</button>
-                </div>
+
               </div>
             </div>
-            <div class="finance-notice" id="plaid-status" aria-live="polite">Connect Plaid to load live accounts and transactions.</div>
             <div class="date-presets" aria-label="Transaction date range">
               <span>Range</span>
               <button type="button" data-date-range="30" aria-pressed="false">30 days</button>
@@ -63,7 +77,7 @@
               <button type="button" data-date-range="365" aria-pressed="true">Past year</button>
               <button type="button" data-date-range="730" aria-pressed="false">2 years</button>
             </div>
-            <div class="filter-bar" aria-label="Transaction filters">
+            <div class="filter-bar primary-filters" aria-label="Transaction filters">
               <label>
                 <span>Search</span>
                 <input id="transaction-search" type="search" placeholder="Merchant, description, account, category">
@@ -72,6 +86,22 @@
                 <span>Account</span>
                 <select id="transaction-account"></select>
               </label>
+              <label>
+                <span>Sort by</span>
+                <select id="transaction-sort">
+                  <option value="date:desc">Newest first</option>
+                  <option value="date:asc">Oldest first</option>
+                  <option value="amount:desc">Amount: high to low</option>
+                  <option value="amount:asc">Amount: low to high</option>
+                  <option value="merchant:asc">Merchant: A to Z</option>
+                  <option value="category:asc">Category: A to Z</option>
+                </select>
+              </label>
+            </div>
+            <div class="filter-actions">
+              <details class="more-filters">
+                <summary>More filters</summary>
+                <div class="filter-bar advanced-filters">
               <label>
                 <span>Category</span>
                 <select id="transaction-category"></select>
@@ -88,15 +118,25 @@
                 <span>To</span>
                 <input id="transaction-end" type="date">
               </label>
+                </div>
+              </details>
+              <button type="button" class="quiet-button" id="transaction-reset">Reset filters</button>
             </div>
-            <div class="transaction-table" id="transactions"></div>
+            <p class="filter-summary" id="filter-summary" aria-live="polite"></p>
+            <p class="transaction-error" id="transaction-error" role="alert" hidden></p>
+            <div class="transaction-table" id="transactions" aria-label="Transactions" role="table"></div>
+            <div class="pagination" aria-label="Transaction pages">
+              <button type="button" id="transaction-previous" disabled>Previous</button>
+              <span id="transaction-page" aria-live="polite"></span>
+              <button type="button" id="transaction-next" disabled>Next</button>
+            </div>
           </section>
         </div>
 
         <aside class="side-column">
           <section class="panel">
             <div class="panel-header">
-              <h2>Category Spend</h2>
+              <h2>Spending by category</h2>
               <span>Posted + pending</span>
             </div>
             <div class="compact-list" id="aggregate-categories"></div>
@@ -104,15 +144,15 @@
 
           <section class="panel">
             <div class="panel-header">
-              <h2>Monthly Ledger</h2>
-              <span>Net movement</span>
+              <h2>Monthly activity</h2>
+              <span>Charges minus credits</span>
             </div>
             <div class="compact-list" id="aggregate-months"></div>
           </section>
 
           <section class="panel">
             <div class="panel-header">
-              <h2>Accounts</h2>
+              <h2 id="accounts-panel">Accounts</h2>
               <span id="finance-summary"></span>
             </div>
             <div class="finance-status"><span id="finance-sync"></span></div>
@@ -121,15 +161,15 @@
 
           <section class="panel">
             <div class="panel-header">
-              <h2>Fee Watch</h2>
+              <h2>Fees</h2>
               <span id="fee-count"></span>
             </div>
             <div class="compact-list" id="fee-watch"></div>
           </section>
 
-          <section class="panel benefit-panel">
+          <section class="panel benefit-panel" id="benefits-panel">
             <div class="panel-header">
-              <h2>Benefit Credits</h2>
+              <h2>Card benefits</h2>
               <span id="benefit-count"></span>
             </div>
             <div class="compact-list" id="benefits"></div>
@@ -140,6 +180,8 @@
               </div>
               <div class="compact-list" id="recent-credits"></div>
             </div>
+            <details class="benefit-disclosure">
+              <summary>Add a benefit</summary>
             <form class="benefit-form" id="benefit-form">
               <h3>Track a card benefit</h3>
               <label>
@@ -189,178 +231,18 @@
                 </label>
               </div>
               <label>
-                <span>Credit descriptors</span>
+                <span>Statement credit wording</span>
                 <textarea id="benefit-patterns" rows="2" placeholder="e.g. airline fee reimbursement, incidental credit"></textarea>
               </label>
-              <p>Use issuer credit wording, not the merchant charge. Matching is only against posted credits on this card.</p>
+              <p>Copy the wording your bank uses for the credit, such as “airline fee reimbursement”. We’ll look for posted credits on this card.</p>
               <button type="button" id="benefit-submit">Save benefit</button>
               <output id="benefit-status" aria-live="polite"></output>
             </form>
+            </details>
           </section>
         </aside>
       </section>
 
-      <section class="domain-grid" aria-label="Integration domains">
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Travel Watches</h2>
-            <span>Rates + fares</span>
-          </div>
-          <div class="compact-list" id="travel-watches"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Asia Deal Feed</h2>
-            <span id="deal-count"></span>
-          </div>
-          <div class="compact-list" id="deal-feed"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Reservations</h2>
-            <span>Gmail parsed</span>
-          </div>
-          <div class="compact-list" id="reservations"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Gmail Intake</h2>
-            <span id="intake-count"></span>
-          </div>
-          <div class="compact-list" id="intake"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Hermes Control</h2>
-            <span id="hermes-status"></span>
-          </div>
-          <div class="compact-list" id="hermes"></div>
-          <div class="bridge-console" id="bridge-console">
-            <div class="bridge-status-row">
-              <span class="pill" id="bridge-status">Bridge</span>
-              <button type="button" id="bridge-refresh">Refresh</button>
-            </div>
-            <label>
-              <span>Token</span>
-              <input id="bridge-token" type="password" autocomplete="off">
-            </label>
-            <label>
-              <span>Prompt</span>
-              <textarea id="bridge-prompt" rows="4">Summarize current dashboard risks and ask for approval before making changes.</textarea>
-            </label>
-            <label>
-              <span>Run ID</span>
-              <input id="bridge-run-id" type="text" autocomplete="off">
-            </label>
-            <div class="bridge-actions">
-              <button type="button" id="bridge-start">Start</button>
-              <button type="button" id="bridge-stop">Stop</button>
-              <button type="button" id="bridge-approve">Approve</button>
-              <button type="button" id="bridge-reject">Reject</button>
-            </div>
-            <pre id="bridge-events" aria-live="polite"></pre>
-          </div>
-          <div class="operator-console" id="operator-console">
-            <div class="bridge-status-row">
-              <span class="pill" id="operator-status">Intake</span>
-            </div>
-            <div class="operator-grid">
-              <fieldset>
-                <legend>PR Pickup</legend>
-                <label>
-                  <span>Repo</span>
-                  <input id="pickup-repo" type="text" autocomplete="off" placeholder="michaelmwu/personal-dashboard">
-                </label>
-                <label>
-                  <span>PR</span>
-                  <input id="pickup-pr-number" type="number" min="1" inputmode="numeric">
-                </label>
-                <label>
-                  <span>Title</span>
-                  <input id="pickup-title" type="text" autocomplete="off">
-                </label>
-                <label>
-                  <span>Branch</span>
-                  <input id="pickup-branch" type="text" autocomplete="off">
-                </label>
-                <label>
-                  <span>Workspace</span>
-                  <select id="pickup-workspace-mode">
-                    <option value="">Repository default</option>
-                    <option value="worktree">Isolated worktree</option>
-                    <option value="root">Root checkout (exclusive)</option>
-                  </select>
-                </label>
-                <button type="button" id="pickup-submit">Pick Up</button>
-              </fieldset>
-              <fieldset>
-                <legend>Issue Triage</legend>
-                <label>
-                  <span>Repo</span>
-                  <input id="issue-repo" type="text" autocomplete="off" placeholder="michaelmwu/personal-dashboard">
-                </label>
-                <label>
-                  <span>Issue</span>
-                  <input id="issue-number" type="number" min="1" inputmode="numeric">
-                </label>
-                <label>
-                  <span>Title</span>
-                  <input id="issue-title" type="text" autocomplete="off">
-                </label>
-                <div class="operator-row">
-                  <label>
-                    <span>Author</span>
-                    <input id="issue-author" type="text" autocomplete="off">
-                  </label>
-                  <label>
-                    <span>Assoc.</span>
-                    <select id="issue-association">
-                      <option value="OWNER">OWNER</option>
-                      <option value="MEMBER">MEMBER</option>
-                      <option value="COLLABORATOR">COLLABORATOR</option>
-                      <option value="NONE">NONE</option>
-                    </select>
-                  </label>
-                </div>
-                <label>
-                  <span>Body</span>
-                  <textarea id="issue-body" rows="3"></textarea>
-                </label>
-                <button type="button" id="issue-submit">Triage</button>
-              </fieldset>
-            </div>
-            <pre id="operator-result" aria-live="polite"></pre>
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Adapter Framework</h2>
-            <span id="integration-count"></span>
-          </div>
-          <div class="compact-list" id="integrations"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-header">
-            <h2>OpenClaw</h2>
-            <span id="openclaw-status"></span>
-          </div>
-          <div class="task-list" id="tasks"></div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Plugin Panels</h2>
-            <span id="plugin-panel-count"></span>
-          </div>
-          <div class="compact-list" id="plugin-panels"></div>
-        </section>
-      </section>
     </main>
 
     <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>

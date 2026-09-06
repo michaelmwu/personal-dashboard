@@ -30,7 +30,19 @@ bun install --frozen-lockfile --ignore-scripts --minimum-release-age=604800
 scripts/dev.sh
 ```
 
-Then open the dashboard URL printed by the dev script.
+Then open the dashboard URL printed by the dev script. MooHQ opens at `/`, with
+cards linking to each app:
+
+- `/finance`: accounts, transactions, fees, and card benefits.
+- `/travel`: rate watches, flight deals, and trips.
+- `/coding`: tasks, Hermes controls, and PR/issue intake.
+- `/inbox`: items received from email.
+- `/connections`: integrations and connected app panels.
+
+Finance shows sample data explicitly in development. Connect a bank through
+Plaid using **Connect a bank**; deployment credentials stay on the server.
+If your deployment requires a bearer token for changes, enter the dashboard
+access token under **API access**. Never enter Plaid credentials there.
 
 ## Verify
 

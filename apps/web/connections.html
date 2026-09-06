@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Connections · MooHQ</title>
+    <link rel="stylesheet" href="/src/home.css">
+    <link rel="stylesheet" href="/src/styles.css">
+  </head>
+  <body data-app="connections">
+    <main class="shell">
+      <header class="home-nav">
+        <a class="wordmark" href="/" aria-label="MooHQ home">MooHQ<span class="brand-dot" aria-hidden="true">●</span></a>
+        <nav aria-label="Applications">
+          <a href="/">Home</a>
+          <a href="/finance">Finance</a>
+          <a href="/travel">Travel</a>
+          <a href="/coding">Coding</a>
+          <a href="/inbox">Inbox</a>
+          <a href="/connections" aria-current="page" class="active">Connections</a>
+        </nav>
+      </header>
+      <header class="topbar">
+        <h1>Connections</h1>
+        <div class="status-strip" id="status-strip" role="status">Loading…</div>
+      </header>
+      <p class="page-error" id="page-error" role="alert" hidden>Couldn’t load this page. <button type="button" onclick="location.reload()">Try again</button></p>
+      <section class="domain-grid app-workspace" aria-label="Connections">
+        <section class="panel">
+          <div class="panel-header">
+            <h2 id="integrations-panel" tabindex="-1">Integrations</h2>
+            <span id="integration-count"></span>
+          </div>
+          <div class="compact-list" id="integrations"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <h2 id="connected-apps" tabindex="-1">Connected apps</h2>
+            <span id="plugin-panel-count"></span>
+          </div>
+          <div class="compact-list" id="plugin-panels"></div>
+        </section>
+      </section>
+    </main>
+    <script type="module" src="/src/app.js"></script>
+  </body>
+</html>

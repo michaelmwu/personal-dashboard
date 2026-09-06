@@ -1,7 +1,7 @@
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
-  maximumFractionDigits: 0
+  maximumFractionDigits: 2
 });
 
 const escapeHtml = (value) =>
@@ -15,7 +15,7 @@ const escapeHtml = (value) =>
 const appCard = ({
   name,
   mark,
-  href = "#",
+  href,
   state = "quiet",
   badge = "",
   featured = false,
@@ -46,51 +46,65 @@ function render(dashboard) {
   const travel = dashboard.travel ?? {};
   const hotelWatches = travel.hotelWatches ?? [];
   const deals = travel.dealFeed ?? [];
-  const tasks = dashboard.openclaw?.tasks ?? [];
+  const tasks = (dashboard.openclaw?.tasks ?? []).filter(
+    (task) => !["done", "completed", "cancelled"].includes(task.state)
+  );
   const transactions = dashboard.transactions ?? [];
   const intake = dashboard.intake?.items ?? [];
   const alerts = dashboard.alerts ?? [];
-  const financeRows = transactions
+  const financeRows = [...transactions]
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)))
     .slice(0, 3)
-    .map((item) => ({ label: `${item.merchant} · ${item.card}`, meta: money.format(item.amount) }));
+    .map((item) => ({
+      label: `${item.merchant} · ${item.card}`,
+      meta: new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: item.isoCurrencyCode || "USD"
+      }).format(item.amount)
+    }));
   const rateDrops = hotelWatches.filter(
     (watch) => watch.bestRate > 0 && watch.targetRate > watch.bestRate
   );
   const rate = rateDrops[0];
-  const attention =
-    alerts.length + rateDrops.length + tasks.filter((task) => task.state !== "done").length;
-
-  document.querySelector("#today").textContent = attention
-    ? `${attention} to review`
-    : "All caught up";
+  document.querySelector("#today").textContent = new Date().toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric"
+  });
+  const sample = transactions.some((item) => item.source === "fixture");
+  const notice = document.querySelector("#home-notice");
+  notice.hidden = !sample;
+  notice.textContent = "Sample data is shown. Connect your accounts in Finance to get started.";
   document.querySelector("#portholes").innerHTML = [
-    appCard({
-      name: "Rates",
-      mark: "RA",
-      featured: true,
-      state: rate ? "attention" : "quiet",
-      badge: rate ? "review" : `${hotelWatches.length} watches`,
-      href: "#travel",
-      footer: rate ? "Review rebooking" : "Rate watches",
-      body: rate
-        ? `<div class="headline-metric">−${money.format(rate.targetRate - rate.bestRate)}</div><span class="muted">below booked rate</span>${rows([{ label: rate.property, meta: `${rate.location} · ${rate.checkIn}` }], "")}`
-        : rows(
-            hotelWatches.map((watch) => ({ label: watch.property, meta: watch.status })),
-            "No active rate watches."
-          )
-    }),
     appCard({
       name: "Finance",
       mark: "FI",
       href: "/finance",
-      badge: `${transactions.length} transactions`,
+      badge: alerts.length ? `${alerts.length} to review` : `${transactions.length} transactions`,
       footer: "Review transactions",
       body: rows(financeRows, "No transactions yet.")
     }),
     appCard({
+      name: "Hotel rates",
+      mark: "RA",
+      state: rate ? "attention" : "quiet",
+      badge: rate ? "Price drop" : `${hotelWatches.length} watches`,
+      href: "/travel#rates",
+      footer: rate ? "Review rebooking" : "Rate watches",
+      body: rate
+        ? `<div class="headline-metric">−${money.format(rate.targetRate - rate.bestRate)}</div><span class="muted">below target rate</span>${rows([{ label: rate.property, meta: `${rate.location} · ${rate.checkIn}` }], "")}`
+        : rows(
+            hotelWatches.map((watch) => ({
+              label: watch.property,
+              meta: watch.status.replaceAll("-", " ")
+            })),
+            "No active rate watches."
+          )
+    }),
+    appCard({
       name: "Trips",
       mark: "TR",
-      href: "#travel",
+      href: "/travel#trips",
       badge: `${(travel.reservations ?? []).length} reservations`,
       footer: "Trip details",
       body: rows(
@@ -99,35 +113,35 @@ function render(dashboard) {
       )
     }),
     appCard({
-      name: "Deals",
+      name: "Flight deals",
       mark: "AD",
-      href: "#travel",
-      badge: deals.length ? `${deals.length} fares` : "quiet",
+      href: "/travel#deals",
+      badge: deals.length ? `${deals.length} fares` : "No new items",
       footer: "Browse fares",
       body: rows(
         deals.map((deal) => ({ label: deal.route, meta: money.format(deal.price) })),
-        "No fare candidates."
+        "No flight deals yet."
       )
     }),
     appCard({
       name: "Coding",
       mark: "CO",
-      href: "#operations",
-      badge: tasks.length ? `${tasks.length} active` : "quiet",
+      href: "/coding",
+      badge: tasks.length ? `${tasks.length} active` : "No new items",
       footer: "Review queue",
       body: rows(
-        tasks.map((task) => ({ label: task.title, meta: task.state })),
+        tasks.map((task) => ({ label: task.title, meta: task.state.replaceAll("-", " ") })),
         "Nothing running."
       )
     }),
     appCard({
       name: "Inbox",
       mark: "IN",
-      href: "#operations",
-      badge: intake.length ? `${intake.length} to review` : "quiet",
+      href: "/inbox",
+      badge: intake.length ? `${intake.length} items` : "No new items",
       footer: "Review inbox",
       body: rows(
-        intake.map((item) => ({ label: item.title, meta: item.state })),
+        intake.map((item) => ({ label: item.title, meta: item.state.replaceAll("-", " ") })),
         "Inbox is clear."
       )
     })
@@ -136,15 +150,17 @@ function render(dashboard) {
 
 async function main() {
   try {
-    const [configResponse] = await Promise.all([fetch("/config.json")]);
+    const configResponse = await fetch("/config.json");
+    if (!configResponse.ok) throw new Error("Couldn’t load your apps.");
     const config = await configResponse.json();
     const response = await fetch(`${config.apiBaseUrl}/api/dashboard`);
     if (!response.ok) throw new Error("Dashboard data is unavailable");
     render(await response.json());
-  } catch (error) {
+  } catch {
     document.querySelector("#today").textContent = "Dashboard unavailable";
     document.querySelector("#portholes").innerHTML =
-      `<p class="empty">${escapeHtml(error instanceof Error ? error.message : error)}</p>`;
+      `<div class="empty"><p>Couldn’t load your apps. Try again in a moment.</p><button type="button" id="home-retry">Try again</button> <a href="/finance">Go to Finance →</a></div>`;
+    document.querySelector("#home-retry").addEventListener("click", main);
   }
 }
 

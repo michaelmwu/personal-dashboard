@@ -105,7 +105,11 @@ function safePath(pathname, rootDir = __dirname) {
   const routeFiles = new Map([
     ["/", "home.html"],
     ["/finance", "index.html"],
-    ["/finance.html", "index.html"]
+    ["/finance.html", "index.html"],
+    ["/travel", "travel.html"],
+    ["/coding", "coding.html"],
+    ["/inbox", "inbox.html"],
+    ["/connections", "connections.html"]
   ]);
   const relative = routeFiles.get(pathname) ?? pathname.slice(1);
   const normalized = normalize(relative);
