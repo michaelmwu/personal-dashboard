@@ -160,7 +160,7 @@ test("load failures show recovery actions instead of empty financial totals", as
     await page.getByRole("button", { name: "Try again" }).waitFor();
     state.failDashboard = false;
     await page.getByRole("button", { name: "Try again" }).click();
-    await expect(page.locator(".porthole")).toHaveCount(6);
+    await expect(page.locator(".porthole")).toHaveCount(7);
     state.failTransactions = true;
     await page.goto(`${base}/finance`);
     await expect(page.locator("#transaction-error")).toBeVisible();
@@ -210,7 +210,7 @@ test("desktop and mobile keep amounts and account details readable without page 
         true
       );
       await page.goto(base);
-      await expect(page.locator(".porthole")).toHaveCount(6);
+      await expect(page.locator(".porthole")).toHaveCount(7);
       expect(
         await page
           .locator(".item-row")
