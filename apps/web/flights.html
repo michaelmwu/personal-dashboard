@@ -21,7 +21,7 @@
       <section class="hero" aria-labelledby="flight-title">
         <div>
           <p class="kicker">Award availability</p>
-          <h1 id="flight-title">Find the seat, then finish the human parts.</h1>
+          <h1 id="flight-title">Find your next award flight.</h1>
         </div>
         <p class="hero-note">Seats.aero + ANA + JAL + EVA. ANA may include eligible Star Alliance awards; JAL searches international JAL-operated flights only. Verification codes and CAPTCHAs wait here, and email is never read automatically.</p>
       </section>
@@ -52,9 +52,11 @@
           <div class="date-grid">
             <label><span>Depart from</span><input name="departureStart" type="date" required></label>
             <label><span>Depart through</span><input name="departureEnd" type="date" required></label>
-            <label><span>Return from</span><input name="returnStart" type="date"></label>
-            <label><span>Return through</span><input name="returnEnd" type="date"></label>
+            <label><span>Return from (airline searches)</span><input name="returnStart" type="date"></label>
+            <label><span>Return through (airline searches)</span><input name="returnEnd" type="date"></label>
           </div>
+
+          <p class="quiet-label">Seats.aero searches outbound flights only. Search the reverse route separately for your return.</p>
 
           <div class="option-grid">
             <label>
@@ -65,11 +67,16 @@
               <span>Maximum stops</span>
               <select name="maxStops">
                 <option value="">Any</option>
-                <option value="0">Nonstop</option>
+                <option value="0">Nonstop only (direct)</option>
                 <option value="1">Up to 1</option>
                 <option value="2">Up to 2</option>
                 <option value="3">Up to 3</option>
               </select>
+            </label>
+            <label>
+              <span>Maximum points per traveler</span>
+              <input name="maxPoints" type="number" min="1" max="100000000" step="1" placeholder="Any · e.g. 75000">
+              <small>Excludes unknown prices. Taxes are extra.</small>
             </label>
             <label class="sources-field">
               <span>Seats.aero programs</span>
@@ -123,8 +130,14 @@
             <p class="section-label">Availability</p>
             <h2>Results</h2>
           </div>
-          <span class="quiet-label" id="result-count">0 seats</span>
+          <label><span>Sort by</span><select id="result-sort">
+            <option value="date">Departure date</option>
+            <option value="points">Lowest points</option>
+            <option value="stops">Fewest stops</option>
+          </select></label>
+          <span class="quiet-label" id="result-count">0 options</span>
         </div>
+        <p class="quiet-label">Points are per traveler. Seats.aero availability is cached; confirm the itinerary and price with the program before transferring points. Stop limits and points caps exclude unverified summaries.</p>
         <div class="results" id="results">
           <p class="empty">Award options will appear here as providers finish.</p>
         </div>

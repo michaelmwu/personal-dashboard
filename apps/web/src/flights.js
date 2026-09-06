@@ -1,3 +1,5 @@
+import { sortAwardResults } from "./flight-results.js";
+
 const apiRoot = "/api/integrations/flight-searcher";
 const activeStatuses = new Set(["queued", "running", "waiting_human"]);
 const terminalStatuses = new Set(["completed", "partial", "failed", "canceled"]);
@@ -107,7 +109,7 @@ function renderRun(job) {
 }
 
 function resultPrice(result) {
-  const miles = result.mileage ? `${number.format(result.mileage)} mi` : "Mileage n/a";
+  const miles = result.mileage ? `${number.format(result.mileage)} pts` : "Points not reported";
   if (result.taxes === null || result.taxes === undefined) return miles;
   let taxes = `${result.taxes} ${result.taxCurrency ?? ""}`.trim();
   try {
@@ -121,7 +123,7 @@ function resultPrice(result) {
 }
 
 function renderResults(job) {
-  const results = job?.results ?? [];
+  const results = sortAwardResults(job?.results ?? [], byId("result-sort").value);
   byId("result-count").textContent = `${results.length} option${results.length === 1 ? "" : "s"}`;
   byId("results").innerHTML = results.length
     ? results
@@ -146,7 +148,11 @@ function renderChallenges(job) {
   const challenges = Object.values(job?.providers ?? {})
     .map((run) => run.challenge)
     .filter((challenge) => challenge?.status === "pending");
-  byId("challenge-region").innerHTML = challenges
+  const region = byId("challenge-region");
+  const renderKey = JSON.stringify([job?.id, challenges]);
+  if (region.dataset.renderKey === renderKey) return;
+  region.dataset.renderKey = renderKey;
+  region.innerHTML = challenges
     .map((challenge) => {
       const acknowledgement = challenge.responseFormat === "acknowledge";
       const inputLabel = acknowledgement
@@ -257,6 +263,7 @@ byId("search-form").addEventListener("submit", async (event) => {
   };
   if (data.get("returnStart")) payload.returnStart = data.get("returnStart");
   if (data.get("returnEnd")) payload.returnEnd = data.get("returnEnd");
+  if (data.get("maxPoints") !== "") payload.maxPoints = Number(data.get("maxPoints"));
   if (data.get("maxStops") !== "") payload.maxStops = Number(data.get("maxStops"));
   const submit = byId("search-submit");
   submit.disabled = true;
@@ -340,6 +347,8 @@ byId("challenge-region").addEventListener("click", async (event) => {
     byId("service-state").className = "service-state error";
   }
 });
+
+byId("result-sort").addEventListener("change", () => renderResults(selectedJob()));
 
 byId("refresh-searches").addEventListener("click", refreshSearches);
 

@@ -59,7 +59,9 @@ export function hermesCapabilities() {
         passengers: "number?",
         cabins: "economy|premium|business|first[]?",
         providers: "seats_aero|ana|jal|eva[]?",
-        maxStops: "number?"
+        maxStops: "number?",
+        maxPoints: "positive integer?",
+        seatsAeroSources: "string[]?"
       }
     }),
     hermesCapability({
