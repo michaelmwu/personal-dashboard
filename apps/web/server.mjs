@@ -9,6 +9,7 @@ const apiPort = Number.parseInt(process.env.API_PORT ?? "8810", 10);
 const host = process.env.WEB_HOST ?? "127.0.0.1";
 const configuredApiBaseUrl = process.env.PERSONAL_DASHBOARD_API_BASE_URL?.trim().replace(/\/$/, "");
 const apiBaseUrl = configuredApiBaseUrl || `http://127.0.0.1:${apiPort}`;
+const dashboardApiToken = process.env.PERSONAL_DASHBOARD_API_TOKEN ?? "";
 const tailscaleAllowedLogins = process.env.PERSONAL_DASHBOARD_TAILSCALE_ALLOWED_LOGINS;
 const tailscaleAllowedAppCapabilities =
   process.env.PERSONAL_DASHBOARD_TAILSCALE_ALLOWED_APP_CAPABILITIES;
@@ -105,7 +106,9 @@ function safePath(pathname, rootDir = __dirname) {
   const routeFiles = new Map([
     ["/", "home.html"],
     ["/finance", "index.html"],
-    ["/finance.html", "index.html"]
+    ["/finance.html", "index.html"],
+    ["/flights", "flights.html"],
+    ["/flights.html", "flights.html"]
   ]);
   const relative = routeFiles.get(pathname) ?? pathname.slice(1);
   const normalized = normalize(relative);
@@ -141,12 +144,19 @@ async function requestBody(request) {
   return chunks.length ? Buffer.concat(chunks) : undefined;
 }
 
-async function proxyApiRequest(request, response, { baseUrl = apiBaseUrl } = {}) {
+async function proxyApiRequest(
+  request,
+  response,
+  { baseUrl = apiBaseUrl, apiToken = dashboardApiToken } = {}
+) {
   const upstreamUrl = new URL(request.url ?? "/", baseUrl);
   const headers = new Headers(request.headers);
   headers.delete("host");
   headers.delete("connection");
   headers.delete("content-length");
+  if (apiToken && !headers.has("authorization")) {
+    headers.set("authorization", `Bearer ${apiToken}`);
+  }
   const abortController = new AbortController();
   response.on("close", () => {
     abortController.abort();
@@ -196,6 +206,7 @@ async function proxyApiRequest(request, response, { baseUrl = apiBaseUrl } = {})
 export function createWebServer({
   rootDir = __dirname,
   proxyBaseUrl = apiBaseUrl,
+  dashboardApiToken: configuredApiToken = dashboardApiToken,
   tailscaleAllowedLogins: configuredAllowedLogins = tailscaleAllowedLogins,
   tailscaleAllowedAppCapabilities:
     configuredAllowedAppCapabilities = tailscaleAllowedAppCapabilities
@@ -230,7 +241,10 @@ export function createWebServer({
 
     if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
       try {
-        await proxyApiRequest(request, response, { baseUrl: proxyBaseUrl });
+        await proxyApiRequest(request, response, {
+          baseUrl: proxyBaseUrl,
+          apiToken: configuredApiToken
+        });
       } catch {
         if (!response.headersSent && !response.destroyed) {
           response.writeHead(502);

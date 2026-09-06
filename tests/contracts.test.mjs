@@ -588,6 +588,16 @@ describe("contracts", () => {
           endpoint: "/api/integrations/hotel-rate-finder/sync"
         }),
         expect.objectContaining({
+          id: "flight_search",
+          kind: "deterministic",
+          endpoint: "/api/integrations/flight-searcher/searches"
+        }),
+        expect.objectContaining({
+          id: "flight_search_status",
+          kind: "deterministic",
+          endpoint: "/api/integrations/flight-searcher/status"
+        }),
+        expect.objectContaining({
           id: "finance_overview",
           kind: "deterministic",
           target: "finance-dashboard",
@@ -718,7 +728,8 @@ describe("contracts", () => {
     await writeFile(join(rootDir, "index.html"), "<!doctype html><html></html>");
     const webServer = createWebServer({
       rootDir,
-      proxyBaseUrl: `http://127.0.0.1:${apiPort}`
+      proxyBaseUrl: `http://127.0.0.1:${apiPort}`,
+      dashboardApiToken: "server-side-token"
     });
     const webPort = await listen(webServer);
 
@@ -735,6 +746,11 @@ describe("contracts", () => {
       expect(proxied.ok).toBe(true);
       expect(await proxied.json()).toEqual({ ok: true, path: "/api/dashboard?source=test" });
 
+      const serverAuthenticated = await fetch(
+        `http://127.0.0.1:${webPort}/api/integrations/flight-searcher/searches`
+      );
+      expect(serverAuthenticated.ok).toBe(true);
+
       const hostSummary = await fetch(`http://127.0.0.1:${webPort}/api/host-dashboard/summary`);
       expect(hostSummary.status).toBe(404);
 
@@ -743,6 +759,11 @@ describe("contracts", () => {
           method: "GET",
           url: "/api/dashboard?source=test",
           authorization: "Bearer dashboard-token"
+        },
+        {
+          method: "GET",
+          url: "/api/integrations/flight-searcher/searches",
+          authorization: "Bearer server-side-token"
         }
       ]);
     } finally {
@@ -1473,6 +1494,12 @@ describe("contracts", () => {
       "/api/integrations/plaid/webhook",
       "/api/integrations/asia-travel-deals/state",
       "/api/integrations/hotel-rate-finder/sync",
+      "/api/integrations/flight-searcher/searches",
+      "/api/integrations/flight-searcher/status",
+      "/api/integrations/flight-searcher/cancel",
+      "/api/integrations/flight-searcher/searches/job_auth/cancel",
+      "/api/integrations/flight-searcher/searches/job_auth/challenges/challenge_auth/respond",
+      "/api/integrations/flight-searcher/searches/job_auth/challenges/challenge_auth/browser-actions",
       "/api/hermes/bridge/runs",
       "/api/hermes/bridge/runs/run_auth/approval",
       "/api/hermes/bridge/runs/run_auth/stop",
