@@ -27,6 +27,7 @@ bun build \
   packages/storage/run-evidence.mjs \
   scripts/integration-worker.mjs \
   scripts/migrate-coding-agent-state.mjs \
+  scripts/plaid-credentials.mjs \
   tests/contracts.test.mjs \
   tests/dev_script.test.mjs \
   tests/worktree_ports.test.mjs \

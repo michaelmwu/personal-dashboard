@@ -95,6 +95,17 @@ import {
   recallPersonalMemories
 } from "../../packages/integrations/personal-memory.mjs";
 import {
+  cancelFlightSearch,
+  createFlightSearch,
+  flightSearcherHermesContext,
+  getFlightChallengeScreenshot,
+  getFlightSearch,
+  listFlightSearchProviders,
+  listFlightSearches,
+  respondToFlightChallenge,
+  sendFlightBrowserAction
+} from "../../packages/integrations/flight-searcher.mjs";
+import {
   createPlaidLinkToken,
   exchangePlaidPublicToken,
   normalizePlaidAccount,
@@ -103,6 +114,11 @@ import {
   syncPlaidTransactions,
   verifyPlaidWebhook
 } from "../../packages/integrations/plaid.mjs";
+import { CredentialError } from "../../packages/integrations/onepassword.mjs";
+import {
+  plaidConnectionCapabilities,
+  resolvePlaidAccessToken
+} from "../../packages/integrations/plaid-credentials.mjs";
 import {
   financeAccountType,
   financeOverview,
@@ -1671,7 +1687,7 @@ async function syncHotelRateReservations({ reservationId, forceRefresh } = {}) {
 
 async function syncPlaidItem(item) {
   const sync = await syncPlaidTransactions({
-    accessToken: item.accessToken,
+    accessToken: await resolvePlaidAccessToken(item),
     cursor: item.cursor
   });
   const persistedDashboard = await loadDashboard(dashboardSeed(), storePath);
@@ -1720,7 +1736,17 @@ async function syncPlaidItems({ itemId } = {}) {
   }
   const results = [];
   for (const item of selectedItems) {
-    results.push({ itemId: item.id, ...(await syncPlaidItem(item)) });
+    try {
+      results.push({ itemId: item.id, ...(await syncPlaidItem(item)) });
+    } catch (caught) {
+      if (!(caught instanceof CredentialError)) throw caught;
+      results.push({
+        itemId: item.id,
+        synced: false,
+        reason: caught.code,
+        message: caught.message
+      });
+    }
   }
   return {
     synced: results.every((result) => result.synced),
@@ -1901,6 +1927,42 @@ async function dispatchDeterministicCapability(action, capability) {
       forceRefresh: action.payload.forceRefresh ?? action.payload.force_refresh
     });
     return { dispatched: response.synced, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/integrations/flight-searcher/searches") {
+    const response = await createFlightSearch(action.payload);
+    return {
+      dispatched: response.ok,
+      target: capability.target,
+      response: response.body,
+      statusCode: response.status
+    };
+  }
+  if (capability.endpoint === "/api/integrations/flight-searcher/status") {
+    const jobId = action.payload.jobId ?? action.payload.job_id;
+    if (!jobId) {
+      return { dispatched: false, target: capability.target, reason: "missing_flight_search_id" };
+    }
+    const response = await getFlightSearch(jobId);
+    return {
+      dispatched: response.ok,
+      target: capability.target,
+      response: response.body,
+      statusCode: response.status,
+      readOnly: true
+    };
+  }
+  if (capability.endpoint === "/api/integrations/flight-searcher/cancel") {
+    const jobId = action.payload.jobId ?? action.payload.job_id;
+    if (!jobId) {
+      return { dispatched: false, target: capability.target, reason: "missing_flight_search_id" };
+    }
+    const response = await cancelFlightSearch(jobId);
+    return {
+      dispatched: response.ok,
+      target: capability.target,
+      response: response.body,
+      statusCode: response.status
+    };
   }
   if (capability.endpoint === "/api/apps/personal-memory/proposals") {
     const response = await proposePersonalMemory(action.payload);
@@ -3056,8 +3118,25 @@ export function createApiServer({
         return;
       }
 
+      if (
+        request.method === "GET" &&
+        url.pathname === "/api/integrations/plaid/connection-settings"
+      ) {
+        json(response, 200, plaidConnectionCapabilities());
+        return;
+      }
+
       if (request.method === "POST" && url.pathname === "/api/integrations/plaid/link-token") {
         if (!requireAuth(request, response)) {
+          return;
+        }
+        if (!plaidConnectionCapabilities().browserLinkEnabled) {
+          error(
+            response,
+            409,
+            "owner_provisioning_required",
+            "Bank connections are managed through the owner setup tool."
+          );
           return;
         }
         const payload = await readJson(request);
@@ -3073,6 +3152,15 @@ export function createApiServer({
         url.pathname === "/api/integrations/plaid/exchange-public-token"
       ) {
         if (!requireAuth(request, response)) {
+          return;
+        }
+        if (!plaidConnectionCapabilities().browserLinkEnabled) {
+          error(
+            response,
+            409,
+            "owner_provisioning_required",
+            "Bank connections are managed through the owner setup tool."
+          );
           return;
         }
         const payload = await readJson(request);
@@ -3194,11 +3282,156 @@ export function createApiServer({
         return;
       }
 
+      if (
+        request.method === "GET" &&
+        url.pathname === "/api/integrations/flight-searcher/providers"
+      ) {
+        if (!requireAuth(request, response)) return;
+        const result = await listFlightSearchProviders();
+        json(response, result.status, result.body);
+        return;
+      }
+
+      if (
+        request.method === "GET" &&
+        url.pathname === "/api/integrations/flight-searcher/searches"
+      ) {
+        if (!requireAuth(request, response)) return;
+        const limit = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
+        const result = await listFlightSearches({
+          limit: Number.isInteger(limit) && limit > 0 ? Math.min(limit, 200) : 50
+        });
+        json(response, result.status, result.body);
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/integrations/flight-searcher/searches"
+      ) {
+        if (!requireAuth(request, response)) return;
+        const result = await createFlightSearch(await readJson(request));
+        json(response, result.status, result.body);
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/integrations/flight-searcher/status"
+      ) {
+        if (!requireAuth(request, response)) return;
+        const payload = await readJson(request);
+        const jobId = payload.jobId ?? payload.job_id;
+        if (!jobId) {
+          error(response, 400, "missing_flight_search_id", "Flight search job id is required.");
+          return;
+        }
+        const result = await getFlightSearch(jobId);
+        json(response, result.status, result.body);
+        return;
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/api/integrations/flight-searcher/cancel"
+      ) {
+        if (!requireAuth(request, response)) return;
+        const payload = await readJson(request);
+        const jobId = payload.jobId ?? payload.job_id;
+        if (!jobId) {
+          error(response, 400, "missing_flight_search_id", "Flight search job id is required.");
+          return;
+        }
+        const result = await cancelFlightSearch(jobId);
+        json(response, result.status, result.body);
+        return;
+      }
+
+      const flightChallengeScreenshotMatch = url.pathname.match(
+        /^\/api\/integrations\/flight-searcher\/searches\/([^/]+)\/challenges\/([^/]+)\/screenshot$/
+      );
+      if (request.method === "GET" && flightChallengeScreenshotMatch) {
+        if (!requireAuth(request, response)) return;
+        const result = await getFlightChallengeScreenshot(
+          decodeURIComponent(flightChallengeScreenshotMatch[1]),
+          decodeURIComponent(flightChallengeScreenshotMatch[2])
+        );
+        if (!result.ok) {
+          json(response, result.status, result.body);
+          return;
+        }
+        response.writeHead(result.status, {
+          "Cache-Control": "no-store, max-age=0",
+          "Content-Type": result.contentType,
+          "X-Content-Type-Options": "nosniff"
+        });
+        response.end(result.body);
+        return;
+      }
+
+      const flightChallengeResponseMatch = url.pathname.match(
+        /^\/api\/integrations\/flight-searcher\/searches\/([^/]+)\/challenges\/([^/]+)\/respond$/
+      );
+      if (request.method === "POST" && flightChallengeResponseMatch) {
+        if (!requireAuth(request, response)) return;
+        const payload = await readJson(request);
+        const result = await respondToFlightChallenge(
+          decodeURIComponent(flightChallengeResponseMatch[1]),
+          decodeURIComponent(flightChallengeResponseMatch[2]),
+          payload.value
+        );
+        json(response, result.status, result.body);
+        return;
+      }
+
+      const flightBrowserActionMatch = url.pathname.match(
+        /^\/api\/integrations\/flight-searcher\/searches\/([^/]+)\/challenges\/([^/]+)\/browser-actions$/
+      );
+      if (request.method === "POST" && flightBrowserActionMatch) {
+        if (!requireAuth(request, response)) return;
+        const result = await sendFlightBrowserAction(
+          decodeURIComponent(flightBrowserActionMatch[1]),
+          decodeURIComponent(flightBrowserActionMatch[2]),
+          await readJson(request)
+        );
+        json(response, result.status, result.body);
+        return;
+      }
+
+      const flightCancelMatch = url.pathname.match(
+        /^\/api\/integrations\/flight-searcher\/searches\/([^/]+)\/cancel$/
+      );
+      if (request.method === "POST" && flightCancelMatch) {
+        if (!requireAuth(request, response)) return;
+        const result = await cancelFlightSearch(decodeURIComponent(flightCancelMatch[1]));
+        json(response, result.status, result.body);
+        return;
+      }
+
+      const flightSearchMatch = url.pathname.match(
+        /^\/api\/integrations\/flight-searcher\/searches\/([^/]+)$/
+      );
+      if (request.method === "GET" && flightSearchMatch) {
+        if (!requireAuth(request, response)) return;
+        const result = await getFlightSearch(decodeURIComponent(flightSearchMatch[1]));
+        json(response, result.status, result.body);
+        return;
+      }
+
       if (request.method === "GET" && url.pathname === "/api/hermes/context") {
         if (!requireAuth(request, response)) {
           return;
         }
-        json(response, 200, hermesContextFromDashboard(await dashboardSnapshot()));
+        const context = hermesContextFromDashboard(await dashboardSnapshot());
+        const flightSearch = await flightSearcherHermesContext();
+        json(response, 200, {
+          ...context,
+          travel: {
+            ...context.travel,
+            awardSearches: flightSearch.searches
+          },
+          flightSearch
+        });
         return;
       }
 

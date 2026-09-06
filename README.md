@@ -32,7 +32,20 @@ bun install --frozen-lockfile --ignore-scripts --minimum-release-age=604800
 scripts/dev.sh
 ```
 
-Then open the dashboard URL printed by the dev script.
+Then open the dashboard URL printed by the dev script. MooHQ opens at `/`, with
+cards linking to each app:
+
+- `/finance`: accounts, transactions, fees, and card benefits.
+- `/travel`: rate watches, flight deals, and trips.
+- `/coding`: tasks, Hermes controls, and PR/issue intake.
+- `/inbox`: items received from email.
+- `/connections`: integrations and connected app panels.
+
+Finance shows sample data explicitly in development. **Connect a bank** opens
+Plaid in a local sandbox or explains owner provisioning in 1Password mode.
+Deployment credentials stay on the server.
+If your deployment requires a bearer token for changes, enter the dashboard
+access token under **API access**. Never enter Plaid credentials there.
 
 ## Verify
 
@@ -56,8 +69,9 @@ bun run check
 The dashboard now has placeholder contracts for the next personal surfaces:
 
 - Hotel rate watches from `~/dev/hotel_rate_finder`.
-- Flight watches from a future `~/dev/flight-searcher` service that owns
-  Playwright/cloakbrowser search execution.
+- Award searches from the private `flight-searcher` service, which combines
+  Seats.aero with ANA international (including eligible Star Alliance), JAL
+  international on JAL-operated flights only, and human-gated EVA searches.
 - Asia deal candidates from `~/dev/asiatraveldeals`.
 - Plaid account/transaction sync through the official Plaid Node SDK.
 - Gmail intake for reservations, statements, and important email.
@@ -118,6 +132,16 @@ Hermes-facing endpoints:
   `HERMES_BRIDGE_PASSWORD` are configured.
 - `GET /api/hermes/memory/context`: authenticated memory policy and curated
   source configuration. It deliberately exposes no memory body content.
+
+Flight Searcher is available at `/flights`. Configure
+`FLIGHT_SEARCHER_API_BASE_URL` and the shared `FLIGHT_SEARCHER_API_TOKEN` only
+in the server environment. The web server injects the dashboard API credential
+when it proxies an already-authorized Tailscale request, so neither token is
+placed in browser storage. Hermes can invoke the deterministic
+`flight_search`, `flight_search_status`, and `flight_search_cancel`
+capabilities. OTP and CAPTCHA submission deliberately bypasses stored Hermes
+action envelopes and is accepted only by the authenticated dashboard challenge
+route. The dashboard and Flight Searcher never read email automatically.
 
 ## Personal memory
 
@@ -342,20 +366,23 @@ Finance endpoints:
 
 Plaid-facing endpoints:
 
-- `POST /api/integrations/plaid/link-token`: create a Plaid Link token for the
-  browser Link flow.
-- `POST /api/integrations/plaid/exchange-public-token`: exchange Link's
-  `public_token` for an access token and store it in the ignored local
-  dashboard store.
+- `GET /api/integrations/plaid/connection-settings`: public credential-mode and
+  onboarding capabilities, without secrets or vault references.
+- `POST /api/integrations/plaid/link-token`: create a Link token in local
+  sandbox mode; 1Password mode requires the owner setup tool.
+- `POST /api/integrations/plaid/exchange-public-token`: exchange and store a
+  token only in local sandbox mode. Disabled in production/1Password mode.
 - `POST /api/integrations/plaid/sync`: run deterministic `/transactions/sync`
   for linked Items and upsert accounts/transactions into the dashboard.
 - `POST /api/integrations/plaid/webhook`: accept Plaid transaction webhooks and
   trigger sync on `SYNC_UPDATES_AVAILABLE`.
 
-Set `PLAID_CLIENT_ID`, `PLAID_SECRET`, and `PLAID_ENV` (`sandbox` or
-`production`). The access-token store is local ignored data and is written with
-owner-only file permissions; move it behind encrypted storage before using this
-outside a personal trusted host.
+Static `PLAID_CLIENT_ID` and `PLAID_SECRET` values are injected from 1Password
+by moo-infra's `op run` launcher. Production stores per-bank `accessTokenRef`
+references and resolves them using the shared read-only service account.
+An owner-operated tool provisions new connections and migrates legacy tokens
+with a separate writer identity. See [Dashboard credentials](docs/dashboard-credentials.md)
+for the deployment dependency, setup, migration, and local sandbox behavior.
 
 Hotel Rate Finder endpoints:
 
@@ -385,3 +412,13 @@ Asia Travel Deals ingestion:
 Set `ASIA_TRAVEL_DEALS_API_BASE_URL` and `ASIA_TRAVEL_DEALS_API_TOKEN` on the
 dashboard worker. `ASIA_TRAVEL_DEALS_PAGE_SIZE` and
 `ASIA_TRAVEL_DEALS_MAX_PAGES` bound each reconciliation run.
+
+### Award search filters
+
+The Flights form supports nonstop / maximum stops and an inclusive maximum
+points price per traveler (taxes extra). The points limit is passed through to
+Flight Searcher and Hermes as `maxPoints`; deploy the matching service change
+before using the new dashboard. Results can be sorted by date, points, or stops,
+with unknown points/stops last. Seats.aero uses cached outbound availability;
+search the reverse route separately for a return. Confirm prices with the
+program before transferring points.

@@ -279,3 +279,10 @@ The checked-in `conductor.json` configures:
 - Run mode: `concurrent`
 
 Multiple workspaces can run concurrently because ports are isolated per worktree.
+
+## Dashboard credential provisioning
+
+Production Plaid credentials use 1Password references and a read-only runtime
+identity. Owner setup and migration run separately from the deployed service.
+See [Dashboard credentials](docs/dashboard-credentials.md) for the environment
+contract, coordinated moo-infra deployment, owner workflow, and tests.
