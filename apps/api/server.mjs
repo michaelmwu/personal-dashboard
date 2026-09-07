@@ -74,7 +74,11 @@ import {
   streamHermesBridgeRunEvents
 } from "../../packages/integrations/hermes-bridge.mjs";
 import {
+  cancelHotelJob,
+  createHotelAgentSearch,
   createHotelSavedSearch,
+  getHotelJob,
+  hotelAgentSearchRequestFromPayload,
   hotelRateDropAlert,
   hotelRateFailureAlert,
   hotelRatesConfig,
@@ -1920,6 +1924,45 @@ async function dispatchDeterministicCapability(action, capability) {
       itemId: action.payload.itemId ?? action.payload.item_id
     });
     return { dispatched: response.synced, target: capability.target, response };
+  }
+  if (capability.endpoint === "/api/integrations/hotel-rate-finder/searches") {
+    const response = await createHotelAgentSearch(
+      hotelAgentSearchRequestFromPayload(action.payload),
+      { config: hotelRateFinderConfig }
+    );
+    return {
+      dispatched: response.ok,
+      target: capability.target,
+      response: response.body,
+      statusCode: response.status
+    };
+  }
+  if (capability.endpoint === "/api/integrations/hotel-rate-finder/status") {
+    const jobId = action.payload.jobId ?? action.payload.job_id;
+    if (!jobId) {
+      return { dispatched: false, target: capability.target, reason: "missing_hotel_search_id" };
+    }
+    const response = await getHotelJob(jobId, { config: hotelRateFinderConfig });
+    return {
+      dispatched: response.ok,
+      target: capability.target,
+      response: response.body,
+      statusCode: response.status,
+      readOnly: true
+    };
+  }
+  if (capability.endpoint === "/api/integrations/hotel-rate-finder/cancel") {
+    const jobId = action.payload.jobId ?? action.payload.job_id;
+    if (!jobId) {
+      return { dispatched: false, target: capability.target, reason: "missing_hotel_search_id" };
+    }
+    const response = await cancelHotelJob(jobId, { config: hotelRateFinderConfig });
+    return {
+      dispatched: response.ok,
+      target: capability.target,
+      response: response.body,
+      statusCode: response.status
+    };
   }
   if (capability.endpoint === "/api/integrations/hotel-rate-finder/sync") {
     const response = await syncHotelRateReservations({
