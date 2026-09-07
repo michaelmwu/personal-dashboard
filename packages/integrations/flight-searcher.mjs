@@ -62,7 +62,7 @@ async function flightSearcherFetch(path, options = {}) {
   }
 
   const timeoutMs = Number.isFinite(config.timeoutMs) ? config.timeoutMs : DEFAULT_TIMEOUT_MS;
-  const apiToken = options.owner ? config.ownerApiToken : config.apiToken;
+  const apiToken = options.owner ? config.ownerApiToken || config.apiToken : config.apiToken;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {

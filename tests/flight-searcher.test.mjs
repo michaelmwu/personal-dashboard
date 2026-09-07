@@ -166,4 +166,17 @@ describe("Flight Searcher integration", () => {
       expect(request.options.headers.Authorization).not.toContain(config.apiToken);
     }
   });
+
+  test("retains legacy challenge auth when no owner token is configured", async () => {
+    const legacyConfig = { ...config, ownerApiToken: "" };
+    const result = await respondToFlightChallenge("job", "challenge", "123456", {
+      config: legacyConfig,
+      fetch: async (_url, options) => {
+        expect(options.headers.Authorization).toBe(`Bearer ${config.apiToken}`);
+        return Response.json({ status: "ok" });
+      }
+    });
+
+    expect(result.ok).toBe(true);
+  });
 });

@@ -135,9 +135,10 @@ Hermes-facing endpoints:
 
 Flight Searcher is available at `/flights`. Configure
 `FLIGHT_SEARCHER_API_BASE_URL`, the shared `FLIGHT_SEARCHER_API_TOKEN`, and the
-separate `FLIGHT_SEARCHER_OWNER_API_TOKEN` only in the server environment. The
-owner token is used solely for challenge screenshots, responses, and remote
-browser actions. The web server injects the appropriate credential when it
+separate `FLIGHT_SEARCHER_OWNER_API_TOKEN` only in the server environment. When
+configured, the owner token is used solely for challenge screenshots,
+responses, and remote browser actions; legacy deployments fall back to the
+service token for those routes. The web server injects the appropriate credential when it
 proxies an already-authorized Tailscale request, so neither token is placed in
 browser storage. Hermes receives only the shared service token and can invoke the deterministic
 `flight_search`, `flight_search_status`, and `flight_search_cancel`
