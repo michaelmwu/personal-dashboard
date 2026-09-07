@@ -1013,6 +1013,9 @@ describe("contracts", () => {
 
     expect(context.capabilities).toHaveLength(hermesCapabilities().length);
     expect(hermesCapabilities().map((capability) => capability.id)).toContain("finance_overview");
+    expect(
+      hermesCapabilities().find((capability) => capability.id === "plaid_sync")?.inputSchema
+    ).toEqual({ itemId: "string?" });
     expect(context.version).toBe("dashboard.v1");
     expect(context.travel.reservationsNeedingReview).toHaveLength(1);
     expect(context.intake.needsReview).toHaveLength(2);

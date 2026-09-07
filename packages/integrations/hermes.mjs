@@ -156,8 +156,7 @@ export function hermesCapabilities() {
       target: "plaid",
       description: "Pull latest card transactions and queue reconciliation work.",
       inputSchema: {
-        accountId: "string?",
-        since: "YYYY-MM-DD?"
+        itemId: "string?"
       }
     }),
     hermesCapability({
