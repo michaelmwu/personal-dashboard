@@ -5,12 +5,15 @@ import {
   createFlightSearch,
   flightSearcherHermesContext,
   getFlightChallengeScreenshot,
-  normalizeFlightSearchRequest
+  normalizeFlightSearchRequest,
+  respondToFlightChallenge,
+  sendFlightBrowserAction
 } from "../packages/integrations/flight-searcher.mjs";
 
 const config = {
   baseUrl: "http://127.0.0.1:8730",
   apiToken: "flight-service-secret",
+  ownerApiToken: "flight-owner-secret",
   timeoutMs: 1_000
 };
 
@@ -127,8 +130,9 @@ describe("Flight Searcher integration", () => {
     const png = Uint8Array.from([137, 80, 78, 71]);
     const result = await getFlightChallengeScreenshot("job/unsafe", "challenge 1", {
       config,
-      fetch: async (url) => {
+      fetch: async (url, options) => {
         expect(String(url)).toContain("job%2Funsafe/challenges/challenge%201/screenshot");
+        expect(options.headers.Authorization).toBe(`Bearer ${config.ownerApiToken}`);
         return new Response(png, { headers: { "Content-Type": "image/png" } });
       }
     });
@@ -136,5 +140,30 @@ describe("Flight Searcher integration", () => {
     expect(result.ok).toBe(true);
     expect(result.contentType).toBe("image/png");
     expect([...result.body]).toEqual([...png]);
+  });
+
+  test("uses the owner token only for human-verification mutations", async () => {
+    const observed = [];
+    const fetch = async (url, options) => {
+      observed.push({ url: String(url), options });
+      return Response.json({ status: "ok" });
+    };
+
+    await respondToFlightChallenge("job", "challenge", "123456", { config, fetch });
+    await sendFlightBrowserAction(
+      "job",
+      "challenge",
+      { kind: "key", key: "Enter" },
+      {
+        config,
+        fetch
+      }
+    );
+
+    expect(observed).toHaveLength(2);
+    for (const request of observed) {
+      expect(request.options.headers.Authorization).toBe(`Bearer ${config.ownerApiToken}`);
+      expect(request.options.headers.Authorization).not.toContain(config.apiToken);
+    }
   });
 });

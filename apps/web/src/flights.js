@@ -1,3 +1,4 @@
+import { createDateRangePicker, futureDateValue } from "./date-range-picker.js";
 import { sortAwardResults } from "./flight-results.js";
 
 const apiRoot = "/api/integrations/flight-searcher";
@@ -15,14 +16,6 @@ const escapeHtml = (value) =>
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
-
-function dateValue(offsetDays) {
-  const date = new Date();
-  date.setHours(12, 0, 0, 0);
-  date.setDate(date.getDate() + offsetDays);
-  const pad = (value) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-}
 
 async function api(path, options = {}) {
   const headers = new Headers(options.headers);
@@ -251,6 +244,10 @@ byId("search-form").addEventListener("submit", async (event) => {
     byId("form-status").textContent = "Choose at least one cabin and one configured provider.";
     return;
   }
+  if (!data.get("departureStart") || !data.get("departureEnd")) {
+    byId("form-status").textContent = "Choose a complete departure date range.";
+    return;
+  }
   const payload = {
     origins: commaValues(data.get("origins")),
     destinations: commaValues(data.get("destinations")),
@@ -353,9 +350,33 @@ byId("result-sort").addEventListener("change", () => renderResults(selectedJob()
 byId("refresh-searches").addEventListener("click", refreshSearches);
 
 async function main() {
-  const form = byId("search-form");
-  form.elements.departureStart.value = dateValue(30);
-  form.elements.departureEnd.value = dateValue(37);
+  let returnPicker;
+  const departurePicker = createDateRangePicker(
+    document.querySelector('[data-date-range-picker="departure"]'),
+    {
+      label: "Departure window",
+      startName: "departureStart",
+      endName: "departureEnd",
+      start: futureDateValue(30),
+      end: futureDateValue(37),
+      min: futureDateValue(0),
+      emptyLabel: "Choose departure dates",
+      emptyMeta: "Flexible outbound window",
+      onChange: ({ end }) => returnPicker?.setMin(end)
+    }
+  );
+  returnPicker = createDateRangePicker(
+    document.querySelector('[data-date-range-picker="return"]'),
+    {
+      label: "Return window",
+      startName: "returnStart",
+      endName: "returnEnd",
+      min: departurePicker.getRange().end,
+      emptyLabel: "Add return dates",
+      emptyMeta: "For ANA and JAL searches",
+      optional: true
+    }
+  );
   try {
     renderProviders(await api("/providers"));
     await refreshSearches();
