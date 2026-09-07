@@ -58,6 +58,10 @@ function selectedJob() {
   return state.jobs.find((job) => job.id === state.selectedId) ?? state.jobs[0] ?? null;
 }
 
+function debugReportUrl(jobId, provider) {
+  return `${apiRoot}/searches/${encodeURIComponent(jobId)}/providers/${encodeURIComponent(provider)}/debug-html`;
+}
+
 function renderProviders(providers) {
   byId("provider-choices").innerHTML = providers
     .map((provider) => {
@@ -96,6 +100,7 @@ function renderRun(job) {
       <div class="provider-run-head"><span>${escapeHtml(providerNames[id] ?? id)}</span>${statusPill(run.state)}</div>
       <p>${escapeHtml(run.message ?? (run.resultCount ? `${run.resultCount} result(s)` : "Waiting to start"))}</p>
       ${run.errorCode ? `<p class="provider-error-code">Error code: <code>${escapeHtml(run.errorCode)}</code></p>` : ""}
+      ${run.debugHtmlAvailable ? `<a class="debug-report-link" href="${debugReportUrl(job.id, id)}" download>Download sanitized selector report</a>` : ""}
       ${run.rateLimitRemaining === null || run.rateLimitRemaining === undefined ? "" : `<p>${number.format(run.rateLimitRemaining)} Seats.aero calls remaining today</p>`}
     </div>`
     )

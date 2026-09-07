@@ -140,7 +140,9 @@ test("browser handoff keeps recovery controls clear and optional", async ({ page
       ana: {
         state: "failed",
         message: "ANA's current international award launch link was not recognized.",
-        errorCode: "ana_award_launch_unrecognized"
+        errorCode: "ana_award_launch_unrecognized",
+        debugHtmlAvailable: true,
+        debugHtmlCapturedAt: "2026-11-01T10:00:30Z"
       },
       jal: {
         state: "waiting_human",
@@ -167,6 +169,12 @@ test("browser handoff keeps recovery controls clear and optional", async ({ page
     if (url.includes("/screenshot")) {
       return route.fulfill({ status: 404, body: "" });
     }
+    if (url.endsWith("/providers/ana/debug-html")) {
+      return route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>Sanitized selector report</title>"
+      });
+    }
     if (url.endsWith("/browser-actions")) {
       browserActions.push(request.postDataJSON());
       return route.fulfill({ json: {} });
@@ -181,6 +189,12 @@ test("browser handoff keeps recovery controls clear and optional", async ({ page
   try {
     await page.goto(`${base}/flights`);
     await expect(page.getByText("ana_award_launch_unrecognized")).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "Download sanitized selector report" })
+    ).toHaveAttribute(
+      "href",
+      "/api/integrations/flight-searcher/searches/search_handoff/providers/ana/debug-html"
+    );
     await expect(page.getByRole("button", { name: "I finished — continue search" })).toBeVisible();
     await expect(page.locator("[data-browser-text]")).toBeHidden();
 

@@ -103,6 +103,7 @@ import {
   createFlightSearch,
   flightSearcherHermesContext,
   getFlightChallengeScreenshot,
+  getFlightProviderDebugHtml,
   getFlightSearch,
   listFlightSearchProviders,
   listFlightSearches,
@@ -3406,6 +3407,39 @@ export function createApiServer({
         response.writeHead(result.status, {
           "Cache-Control": "no-store, max-age=0",
           "Content-Type": result.contentType,
+          "X-Content-Type-Options": "nosniff"
+        });
+        response.end(result.body);
+        return;
+      }
+
+      const flightProviderDebugMatch = url.pathname.match(
+        /^\/api\/integrations\/flight-searcher\/searches\/([^/]+)\/providers\/([^/]+)\/debug-html$/
+      );
+      if (request.method === "GET" && flightProviderDebugMatch) {
+        if (!requireAuth(request, response)) return;
+        const result = await getFlightProviderDebugHtml(
+          decodeURIComponent(flightProviderDebugMatch[1]),
+          decodeURIComponent(flightProviderDebugMatch[2])
+        );
+        if (!result.ok) {
+          json(response, result.status, result.body);
+          return;
+        }
+        if (!result.contentType.toLowerCase().startsWith("text/html")) {
+          error(
+            response,
+            502,
+            "invalid_flight_debug_report",
+            "Flight Searcher returned an invalid selector report."
+          );
+          return;
+        }
+        response.writeHead(result.status, {
+          "Cache-Control": "no-store, max-age=0",
+          "Content-Disposition": 'attachment; filename="airline-selector-report.html"',
+          "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+          "Content-Type": "text/html; charset=utf-8",
           "X-Content-Type-Options": "nosniff"
         });
         response.end(result.body);

@@ -69,7 +69,9 @@ async function flightSearcherFetch(path, options = {}) {
     const response = await (options.fetch ?? fetch)(serviceUrl(config.baseUrl, path), {
       method: options.method ?? "GET",
       headers: {
-        Accept: options.responseType === "bytes" ? "image/png" : "application/json",
+        Accept:
+          options.accept ??
+          (options.responseType === "bytes" ? "application/octet-stream" : "application/json"),
         ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
         ...(apiToken ? { Authorization: `Bearer ${apiToken}` } : {})
       },
@@ -77,11 +79,15 @@ async function flightSearcherFetch(path, options = {}) {
       signal: controller.signal
     });
     if (options.responseType === "bytes") {
+      const contentType = response.headers.get("content-type") ?? "application/octet-stream";
+      if (!response.ok && contentType.includes("application/json")) {
+        return parseJsonResponse(response);
+      }
       return {
         ok: response.ok,
         status: response.status,
         body: Buffer.from(await response.arrayBuffer()),
-        contentType: response.headers.get("content-type") ?? "application/octet-stream"
+        contentType
       };
     }
     return parseJsonResponse(response);
@@ -198,6 +204,13 @@ export function getFlightChallengeScreenshot(jobId, challengeId, options = {}) {
   );
 }
 
+export function getFlightProviderDebugHtml(jobId, provider, options = {}) {
+  return flightSearcherFetch(
+    `api/searches/${encodeURIComponent(jobId)}/providers/${encodeURIComponent(provider)}/debug-html`,
+    { ...options, owner: true, responseType: "bytes", accept: "text/html" }
+  );
+}
+
 export function compactFlightSearchJob(job) {
   return {
     id: job.id,
@@ -211,6 +224,8 @@ export function compactFlightSearchJob(job) {
           resultCount: run.resultCount,
           message: run.message,
           errorCode: run.errorCode,
+          debugHtmlAvailable: run.debugHtmlAvailable === true,
+          debugHtmlCapturedAt: run.debugHtmlCapturedAt,
           rateLimitRemaining: run.rateLimitRemaining,
           challenge: run.challenge
             ? {

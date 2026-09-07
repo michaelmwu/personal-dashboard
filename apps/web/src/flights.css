@@ -595,6 +595,14 @@ legend {
 .provider-error-code code {
   font-size: inherit;
 }
+.provider-run .debug-report-link {
+  width: fit-content;
+  color: var(--blue);
+  font-size: 10.5px;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .cancel-button {
   width: 100%;
   margin-top: 16px;
