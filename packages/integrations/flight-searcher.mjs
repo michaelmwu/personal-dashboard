@@ -4,6 +4,7 @@ export function flightSearcherConfig(env = process.env) {
   return {
     baseUrl: String(env.FLIGHT_SEARCHER_API_BASE_URL ?? "").trim(),
     apiToken: String(env.FLIGHT_SEARCHER_API_TOKEN ?? "").trim(),
+    ownerApiToken: String(env.FLIGHT_SEARCHER_OWNER_API_TOKEN ?? "").trim(),
     timeoutMs: Number.parseInt(
       env.FLIGHT_SEARCHER_REQUEST_TIMEOUT_MS ?? `${DEFAULT_TIMEOUT_MS}`,
       10
@@ -61,6 +62,7 @@ async function flightSearcherFetch(path, options = {}) {
   }
 
   const timeoutMs = Number.isFinite(config.timeoutMs) ? config.timeoutMs : DEFAULT_TIMEOUT_MS;
+  const apiToken = options.owner ? config.ownerApiToken || config.apiToken : config.apiToken;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -69,7 +71,7 @@ async function flightSearcherFetch(path, options = {}) {
       headers: {
         Accept: options.responseType === "bytes" ? "image/png" : "application/json",
         ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
-        ...(config.apiToken ? { Authorization: `Bearer ${config.apiToken}` } : {})
+        ...(apiToken ? { Authorization: `Bearer ${apiToken}` } : {})
       },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: controller.signal
@@ -170,6 +172,7 @@ export function respondToFlightChallenge(jobId, challengeId, value, options = {}
     `api/searches/${encodeURIComponent(jobId)}/challenges/${encodeURIComponent(challengeId)}/respond`,
     {
       ...options,
+      owner: true,
       method: "POST",
       body: { value }
     }
@@ -181,6 +184,7 @@ export function sendFlightBrowserAction(jobId, challengeId, action, options = {}
     `api/searches/${encodeURIComponent(jobId)}/challenges/${encodeURIComponent(challengeId)}/browser-actions`,
     {
       ...options,
+      owner: true,
       method: "POST",
       body: action
     }
@@ -190,7 +194,7 @@ export function sendFlightBrowserAction(jobId, challengeId, action, options = {}
 export function getFlightChallengeScreenshot(jobId, challengeId, options = {}) {
   return flightSearcherFetch(
     `api/searches/${encodeURIComponent(jobId)}/challenges/${encodeURIComponent(challengeId)}/screenshot`,
-    { ...options, responseType: "bytes" }
+    { ...options, owner: true, responseType: "bytes" }
   );
 }
 

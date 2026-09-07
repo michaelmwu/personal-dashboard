@@ -63,11 +63,46 @@ test("award filters, result sorting and challenge input survive refresh", async 
     await page.goto(`${base}/flights`);
     await page.locator('[name="origins"]').fill("NRT");
     await page.locator('[name="destinations"]').fill("TPE");
+    const initialDeparture = await page.locator('[name="departureStart"]').inputValue();
+    const initialDate = new Date(`${initialDeparture}T00:00:00Z`);
+    const lastDay = new Date(
+      Date.UTC(initialDate.getUTCFullYear(), initialDate.getUTCMonth() + 1, 0)
+    ).getUTCDate();
+    const offset = initialDate.getUTCDate() <= lastDay - 2 ? 2 : -2;
+    const otherDate = new Date(initialDate);
+    otherDate.setUTCDate(initialDate.getUTCDate() + offset);
+    const otherDeparture = otherDate.toISOString().slice(0, 10);
+    const departureStart = offset > 0 ? initialDeparture : otherDeparture;
+    const departureEnd = offset > 0 ? otherDeparture : initialDeparture;
+    const departurePicker = page.locator('[data-date-range-picker="departure"]');
+    await departurePicker.locator(".date-range-trigger").click();
+    await departurePicker.locator(`[data-date="${departureStart}"]`).click();
+    await departurePicker.locator(`[data-date="${departureEnd}"]`).click();
+    await departurePicker.getByRole("button", { name: "Apply dates" }).click();
+    await expect(page.locator('[name="departureStart"]')).toHaveValue(departureStart);
+    await expect(page.locator('[name="departureEnd"]')).toHaveValue(departureEnd);
+
+    const returnPicker = page.locator('[data-date-range-picker="return"]');
+    await returnPicker.locator(".date-range-trigger").click();
+    if (departureStart !== departureEnd) {
+      await expect(returnPicker.locator(`[data-date="${departureStart}"]`)).toBeDisabled();
+    }
+    await returnPicker.locator(`[data-date="${departureEnd}"]`).click();
+    await returnPicker.locator(`[data-date="${departureEnd}"]`).click();
+    await returnPicker.getByRole("button", { name: "Apply dates" }).click();
     await page.locator('[name="maxStops"]').selectOption("0");
     await page.locator('[name="maxPoints"]').fill("75000");
     await page.getByRole("button", { name: "Search availability" }).click();
     await expect(page.locator(".result-row")).toHaveCount(2);
-    expect(submitted).toMatchObject({ maxStops: 0, maxPoints: 75000, providers: ["seats_aero"] });
+    expect(submitted).toMatchObject({
+      departureStart,
+      departureEnd,
+      returnStart: departureEnd,
+      returnEnd: departureEnd,
+      maxStops: 0,
+      maxPoints: 75000,
+      providers: ["seats_aero"]
+    });
     await page.locator("#result-sort").selectOption("points");
     await expect(page.locator(".result-row").first()).toContainText("50,000 pts");
     await page.locator("[data-challenge-value]").fill("123456");

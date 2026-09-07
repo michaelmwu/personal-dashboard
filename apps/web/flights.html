@@ -50,10 +50,33 @@
           </div>
 
           <div class="date-grid">
-            <label><span>Depart from</span><input name="departureStart" type="date" required></label>
-            <label><span>Depart through</span><input name="departureEnd" type="date" required></label>
-            <label><span>Return from (airline searches)</span><input name="returnStart" type="date"></label>
-            <label><span>Return through (airline searches)</span><input name="returnEnd" type="date"></label>
+            <div class="date-range-field" data-date-range-picker="departure">
+              <span class="control-label" id="departure-range-label">Departure window</span>
+              <input name="departureStart" type="hidden">
+              <input name="departureEnd" type="hidden">
+              <button class="date-range-trigger" type="button" aria-labelledby="departure-range-label departure-range-value" aria-describedby="departure-range-help" aria-haspopup="dialog" aria-expanded="false">
+                <span>
+                  <strong id="departure-range-value" data-range-value>Choose dates</strong>
+                  <small data-range-meta>Flexible outbound window</small>
+                </span>
+                <span class="calendar-mark" aria-hidden="true"></span>
+              </button>
+              <small class="field-help" id="departure-range-help">Choose the first and last departure dates together.</small>
+            </div>
+
+            <div class="date-range-field" data-date-range-picker="return">
+              <span class="control-label" id="return-range-label">Return window <em>optional</em></span>
+              <input name="returnStart" type="hidden">
+              <input name="returnEnd" type="hidden">
+              <button class="date-range-trigger" type="button" aria-labelledby="return-range-label return-range-value" aria-describedby="return-range-help" aria-haspopup="dialog" aria-expanded="false">
+                <span>
+                  <strong id="return-range-value" data-range-value>Add return dates</strong>
+                  <small data-range-meta>For ANA and JAL searches</small>
+                </span>
+                <span class="calendar-mark" aria-hidden="true"></span>
+              </button>
+              <small class="field-help" id="return-range-help">Linked to the departure window; used by airline searches.</small>
+            </div>
           </div>
 
           <p class="quiet-label">Seats.aero searches outbound flights only. Search the reverse route separately for your return.</p>
