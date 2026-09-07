@@ -95,6 +95,7 @@ function renderRun(job) {
       ([id, run]) => `<div class="provider-run">
       <div class="provider-run-head"><span>${escapeHtml(providerNames[id] ?? id)}</span>${statusPill(run.state)}</div>
       <p>${escapeHtml(run.message ?? (run.resultCount ? `${run.resultCount} result(s)` : "Waiting to start"))}</p>
+      ${run.errorCode ? `<p class="provider-error-code">Error code: <code>${escapeHtml(run.errorCode)}</code></p>` : ""}
       ${run.rateLimitRemaining === null || run.rateLimitRemaining === undefined ? "" : `<p>${number.format(run.rateLimitRemaining)} Seats.aero calls remaining today</p>`}
     </div>`
     )
@@ -148,11 +149,7 @@ function renderChallenges(job) {
   region.innerHTML = challenges
     .map((challenge) => {
       const acknowledgement = challenge.responseFormat === "acknowledge";
-      const inputLabel = acknowledgement
-        ? "Type into the focused browser field"
-        : challenge.kind.includes("otp")
-          ? "One-time code"
-          : "CAPTCHA response";
+      const inputLabel = challenge.kind.includes("otp") ? "One-time code" : "CAPTCHA response";
       return `<article class="challenge-card" data-job-id="${escapeHtml(job.id)}" data-challenge-id="${escapeHtml(challenge.id)}">
         <div class="challenge-copy">
           <p class="section-label">${escapeHtml(providerNames[challenge.provider] ?? challenge.provider)} · ${escapeHtml(challenge.kind.replaceAll("_", " "))}</p>
@@ -161,10 +158,20 @@ function renderChallenges(job) {
           <span class="challenge-expiry">Expires ${escapeHtml(new Date(challenge.expiresAt).toLocaleString())}. Nothing entered here is stored by the dashboard.</span>
         </div>
         ${challenge.screenshotAvailable ? `<div class="browser-frame"><img class="browser-shot" data-interactive="${acknowledgement}" src="${screenshotUrl(job.id, challenge.id)}" alt="Redacted live ${escapeHtml(challenge.provider)} browser preview"></div>` : ""}
-        <div class="challenge-controls">
-          ${acknowledgement ? `<input data-browser-text type="password" autocomplete="off" placeholder="${escapeHtml(inputLabel)}"><button class="secondary-button" type="button" data-browser-type>Type securely</button>` : `<input data-challenge-value autocomplete="one-time-code" inputmode="text" placeholder="${escapeHtml(inputLabel)}"><button class="primary-button" type="button" data-challenge-submit>Submit</button>`}
-          ${acknowledgement ? `<div class="browser-buttons"><button class="control-button" type="button" data-browser-key="Tab">Tab</button><button class="control-button" type="button" data-browser-key="Enter">Enter</button><button class="control-button" type="button" data-browser-scroll="-650">Scroll up</button><button class="control-button" type="button" data-browser-scroll="650">Scroll down</button><button class="control-button" type="button" data-browser-refresh>Refresh page</button><button class="primary-button" type="button" data-challenge-submit>Continue search</button></div><small>Click the screenshot to click the remote browser. Password and username fields are masked in every preview.</small>` : `<small>Copy the code from your own email or phone. This app does not access either inbox.</small>`}
-        </div>
+        ${
+          acknowledgement
+            ? `<div class="challenge-controls acknowledgement-controls">
+          <button class="primary-button" type="button" data-challenge-submit>I finished — continue search</button>
+          <small>Only use the controls below if the airline page still needs a manual correction. Login credentials are handled automatically.</small>
+          <details class="browser-tools">
+            <summary>Manual browser controls</summary>
+            <p>Click the preview to choose a field or control. Send only ordinary search text such as an airport code—never a password or verification code.</p>
+            <div class="browser-type-row"><label>Text for the selected airline field<input data-browser-text type="text" autocomplete="off" placeholder="For example, SFO"></label><button class="secondary-button" type="button" data-browser-type>Send to browser</button></div>
+            <div class="browser-buttons"><button class="control-button" type="button" data-browser-key="Tab">Tab</button><button class="control-button" type="button" data-browser-key="Enter">Enter</button><button class="control-button" type="button" data-browser-scroll="-650">Scroll up</button><button class="control-button" type="button" data-browser-scroll="650">Scroll down</button><button class="control-button" type="button" data-browser-refresh>Refresh preview</button></div>
+          </details>
+        </div>`
+            : `<div class="challenge-controls"><input data-challenge-value autocomplete="one-time-code" inputmode="text" placeholder="${escapeHtml(inputLabel)}"><button class="primary-button" type="button" data-challenge-submit>Submit</button><small>Copy the code from your own email or phone. This app does not access either inbox.</small></div>`
+        }
       </article>`;
     })
     .join("");

@@ -119,3 +119,80 @@ test("award filters, result sorting and challenge input survive refresh", async 
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("browser handoff keeps recovery controls clear and optional", async ({ page }) => {
+  const server = createWebServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const browserActions = [];
+  const challengeResponses = [];
+  const job = {
+    id: "search_handoff",
+    status: "waiting_human",
+    request: {
+      origins: ["HND"],
+      destinations: ["SFO"],
+      departureStart: "2026-11-01",
+      departureEnd: "2026-11-09",
+      providers: ["ana", "jal"]
+    },
+    providers: {
+      ana: {
+        state: "failed",
+        message: "ANA's current international award launch link was not recognized.",
+        errorCode: "ana_award_launch_unrecognized"
+      },
+      jal: {
+        state: "waiting_human",
+        challenge: {
+          id: "browser",
+          provider: "jal",
+          status: "pending",
+          kind: "browser_handoff",
+          prompt: "Correct the airline search only if needed, then continue.",
+          responseFormat: "acknowledge",
+          screenshotAvailable: true,
+          expiresAt: "2026-12-01T12:00:00Z"
+        }
+      }
+    },
+    results: []
+  };
+  await page.route("**/api/integrations/flight-searcher/**", async (route) => {
+    const request = route.request();
+    const url = request.url();
+    if (url.endsWith("/providers")) {
+      return route.fulfill({ json: [] });
+    }
+    if (url.includes("/screenshot")) {
+      return route.fulfill({ status: 404, body: "" });
+    }
+    if (url.endsWith("/browser-actions")) {
+      browserActions.push(request.postDataJSON());
+      return route.fulfill({ json: {} });
+    }
+    if (url.endsWith("/respond")) {
+      challengeResponses.push(request.postDataJSON());
+      job.providers.jal.challenge.status = "answered";
+      return route.fulfill({ json: job });
+    }
+    return route.fulfill({ json: [job] });
+  });
+  try {
+    await page.goto(`${base}/flights`);
+    await expect(page.getByText("ana_award_launch_unrecognized")).toBeVisible();
+    await expect(page.getByRole("button", { name: "I finished — continue search" })).toBeVisible();
+    await expect(page.locator("[data-browser-text]")).toBeHidden();
+
+    await page.getByText("Manual browser controls").click();
+    await page.locator("[data-browser-text]").fill("SFO");
+    await page.getByRole("button", { name: "Send to browser" }).click();
+    await expect.poll(() => browserActions).toEqual([{ kind: "type", text: "SFO" }]);
+
+    await page.getByRole("button", { name: "I finished — continue search" }).click();
+    await expect.poll(() => challengeResponses).toEqual([{ value: "continue" }]);
+  } finally {
+    await page.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
