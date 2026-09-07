@@ -38,10 +38,12 @@ test("award filters, result sorting and challenge input survive refresh", async 
             origin: "NRT",
             destination: "TPE",
             departureDate: "2026-11-01",
+            availabilityStatus: "available",
             mileage: 70000,
             stops: 0,
             cabin: "business",
-            program: "aeroplan"
+            program: "aeroplan",
+            provider: "seats_aero"
           },
           {
             id: "b",
@@ -51,7 +53,20 @@ test("award filters, result sorting and challenge input survive refresh", async 
             mileage: 50000,
             stops: 0,
             cabin: "business",
-            program: "united"
+            program: "united",
+            provider: "seats_aero"
+          },
+          {
+            id: "waitlist",
+            origin: "NRT",
+            destination: "TPE",
+            departureDate: "2026-10-31",
+            availabilityStatus: "waitlist",
+            mileage: 10000,
+            stops: 0,
+            cabin: "business",
+            program: "eva infinity mileage lands",
+            provider: "eva"
           }
         ]
       };
@@ -105,11 +120,34 @@ test("award filters, result sorting and challenge input survive refresh", async 
     });
     await page.locator("#result-sort").selectOption("points");
     await expect(page.locator(".result-row").first()).toContainText("50,000 pts");
+    await expect(page.locator("#result-count")).toHaveText("2 available · 1 waitlist hidden");
+    await expect(page.getByText("Waitlist · not bookable")).toHaveCount(0);
+    await page.locator("#show-waitlist").check();
+    await expect(page.locator(".result-row")).toHaveCount(3);
+    await expect(page.locator(".result-row").last()).toContainText("10,000 pts");
+    await expect(page.getByText("Waitlist · not bookable")).toBeVisible();
+    await expect(page.locator("#result-count")).toHaveText("2 available · 1 waitlist");
     await page.locator("[data-challenge-value]").fill("123456");
     const refreshed = page.waitForResponse((r) => r.url().includes("/searches?limit="));
     await page.locator("#refresh-searches").click();
     await refreshed;
     await expect(page.locator("[data-challenge-value]")).toHaveValue("123456");
+
+    await page.locator('[name="origins"]').fill("SEA");
+    await page.locator('[name="destinations"]').fill("HND");
+    await page.locator('[name="maxStops"]').selectOption("");
+    await page.locator('[name="maxPoints"]').fill("");
+    await page.getByRole("button", { name: "Use as search" }).click();
+    await expect(page.locator('[name="origins"]')).toHaveValue("NRT");
+    await expect(page.locator('[name="destinations"]')).toHaveValue("TPE");
+    await expect(page.locator('[name="departureStart"]')).toHaveValue(departureStart);
+    await expect(page.locator('[name="departureEnd"]')).toHaveValue(departureEnd);
+    await expect(page.locator('[name="returnStart"]')).toHaveValue(departureEnd);
+    await expect(page.locator('[name="returnEnd"]')).toHaveValue(departureEnd);
+    await expect(page.locator('[name="maxStops"]')).toHaveValue("0");
+    await expect(page.locator('[name="maxPoints"]')).toHaveValue("75000");
+    await expect(page.locator('input[name="providers"][value="seats_aero"]')).toBeChecked();
+    await expect(page.locator("#form-status")).toContainText("Recent search copied");
     await page.setViewportSize({ width: 390, height: 844 });
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)

@@ -153,14 +153,17 @@
             <p class="section-label">Availability</p>
             <h2>Results</h2>
           </div>
-          <label><span>Sort by</span><select id="result-sort">
-            <option value="date">Departure date</option>
-            <option value="points">Lowest points</option>
-            <option value="stops">Fewest stops</option>
-          </select></label>
-          <span class="quiet-label" id="result-count">0 options</span>
+          <div class="results-heading-controls">
+            <label class="waitlist-toggle"><input type="checkbox" id="show-waitlist"><span>Show waitlist</span></label>
+            <label class="result-sort-control"><span>Sort by</span><select id="result-sort">
+              <option value="date">Departure date</option>
+              <option value="points">Lowest points</option>
+              <option value="stops">Fewest stops</option>
+            </select></label>
+            <span class="quiet-label" id="result-count">0 available</span>
+          </div>
         </div>
-        <p class="quiet-label">Points are per traveler. Seats.aero availability is cached; confirm the itinerary and price with the program before transferring points. Stop limits and points caps exclude unverified summaries.</p>
+        <p class="quiet-label">Waitlist inventory is hidden by default and never presented as bookable. Points are per traveler. Seats.aero availability is cached; confirm the itinerary and price with the program before transferring points. Stop limits and points caps exclude unverified summaries.</p>
         <div class="results" id="results">
           <p class="empty">Award options will appear here as providers finish.</p>
         </div>

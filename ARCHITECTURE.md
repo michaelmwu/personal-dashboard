@@ -201,6 +201,10 @@ Seats.aero Partner API client, Playwright/CloakBrowser execution, provider
 parsing, persistent browser profiles, job state, and ephemeral human
 challenges. Personal Dashboard owns the `/flights` control surface and a thin
 typed proxy; it never parses airline pages or receives provider credentials.
+The provider contract distinguishes bookable from waitlist inventory. The
+dashboard hides waitlists by default, preserves that status when shown, and
+uses structured saved requests—not rendered result text—for recent-search
+quick-fill actions.
 Hermes may start, inspect, and cancel searches through deterministic capability
 contracts. OTP, CAPTCHA, and restricted live-browser actions stay outside
 persisted Hermes envelopes so short-lived verification values are not written
