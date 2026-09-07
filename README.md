@@ -72,6 +72,8 @@ The dashboard now has placeholder contracts for the next personal surfaces:
 - Award searches from the private `flight-searcher` service, which combines
   Seats.aero with ANA international (including eligible Star Alliance), JAL
   international on JAL-operated flights only, and human-gated EVA searches.
+  Bookable and waitlist inventory remain typed separately; `/flights` hides
+  waitlists by default and can quick-fill a new search from recent history.
 - Asia deal candidates from `~/dev/asiatraveldeals`.
 - Plaid account/transaction sync through the official Plaid Node SDK.
 - Gmail intake for reservations, statements, and important email.

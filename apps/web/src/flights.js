@@ -1,5 +1,5 @@
 import { createDateRangePicker, futureDateValue } from "./date-range-picker.js";
-import { sortAwardResults } from "./flight-results.js";
+import { isWaitlistResult, partitionAwardResults, sortAwardResults } from "./flight-results.js";
 
 const apiRoot = "/api/integrations/flight-searcher";
 const activeStatuses = new Set(["queued", "running", "waiting_human"]);
@@ -7,6 +7,8 @@ const terminalStatuses = new Set(["completed", "partial", "failed", "canceled"])
 const providerNames = { seats_aero: "Seats.aero", ana: "ANA", jal: "JAL", eva: "EVA" };
 const state = { jobs: [], selectedId: null, refreshing: false, timer: null };
 const number = new Intl.NumberFormat("en-US");
+let departurePicker;
+let returnPicker;
 
 const byId = (id) => document.getElementById(id);
 const escapeHtml = (value) =>
@@ -122,21 +124,33 @@ function resultPrice(result) {
 }
 
 function renderResults(job) {
-  const results = sortAwardResults(job?.results ?? [], byId("result-sort").value);
-  byId("result-count").textContent = `${results.length} option${results.length === 1 ? "" : "s"}`;
+  const sorted = sortAwardResults(job?.results ?? [], byId("result-sort").value);
+  const partitioned = partitionAwardResults(sorted);
+  const showWaitlist = byId("show-waitlist").checked;
+  const results = showWaitlist ? sorted : partitioned.available;
+  const waitlistSummary = partitioned.waitlist.length
+    ? ` · ${partitioned.waitlist.length} waitlist${showWaitlist ? "" : " hidden"}`
+    : "";
+  byId("result-count").textContent = `${partitioned.available.length} available${waitlistSummary}`;
+  const emptyMessage =
+    !showWaitlist && partitioned.waitlist.length
+      ? "Only waitlist inventory was returned. Turn on Show waitlist to inspect it."
+      : job && terminalStatuses.has(job.status)
+        ? "No matching award options were returned."
+        : "Award options will appear here as providers finish.";
   byId("results").innerHTML = results.length
     ? results
         .map(
-          (result) => `<article class="result-row">
+          (result) => `<article class="result-row${isWaitlistResult(result) ? " waitlist" : ""}">
         <div class="result-route"><strong>${escapeHtml(result.origin)} → ${escapeHtml(result.destination)}</strong><span>${escapeHtml(result.departureDate)}${result.flightNumbers?.length ? ` · ${escapeHtml(result.flightNumbers.join(", "))}` : ""}</span></div>
         <div class="result-cell"><strong>${escapeHtml(resultPrice(result))}</strong><span>${escapeHtml(result.program)}</span></div>
         <div class="result-cell"><strong>${escapeHtml(result.cabin)}</strong><span>${result.seats ? `${escapeHtml(result.seats)} seat(s)` : "Seats not reported"}</span></div>
         <div class="result-cell"><strong>${result.stops === 0 ? "Nonstop" : result.stops === null || result.stops === undefined ? "Stops n/a" : `${escapeHtml(result.stops)} stop(s)`}</strong><span>${escapeHtml((result.carriers ?? []).join(", ") || "Carrier n/a")}</span></div>
-        <div class="result-cell result-provider">${escapeHtml(providerNames[result.provider] ?? result.provider)}</div>
+        <div class="result-cell result-provider">${escapeHtml(providerNames[result.provider] ?? result.provider)}${isWaitlistResult(result) ? '<span class="availability-badge">Waitlist · not bookable</span>' : ""}</div>
       </article>`
         )
         .join("")
-    : `<p class="empty">${job && terminalStatuses.has(job.status) ? "No matching award options were returned." : "Award options will appear here as providers finish."}</p>`;
+    : `<p class="empty">${emptyMessage}</p>`;
 }
 
 function screenshotUrl(jobId, challengeId) {
@@ -187,15 +201,69 @@ function renderHistory() {
     ? state.jobs
         .map((job) => {
           const request = job.request ?? {};
-          return `<button class="history-row ${job.id === state.selectedId ? "selected" : ""}" type="button" data-select-job="${escapeHtml(job.id)}">
+          return `<div class="history-row ${job.id === state.selectedId ? "selected" : ""}">
+          <button class="history-select" type="button" data-select-job="${escapeHtml(job.id)}" aria-label="View ${escapeHtml((request.origins ?? []).join(", "))} to ${escapeHtml((request.destinations ?? []).join(", "))} search">
           <strong>${escapeHtml((request.origins ?? []).join(", "))} → ${escapeHtml((request.destinations ?? []).join(", "))}</strong>
           <span>${escapeHtml(request.departureStart ?? "")}${request.departureEnd && request.departureEnd !== request.departureStart ? ` – ${escapeHtml(request.departureEnd)}` : ""}</span>
           <span>${escapeHtml((request.providers ?? []).map((id) => providerNames[id] ?? id).join(", "))}</span>
           ${statusPill(job.status)}
-        </button>`;
+          </button>
+          <button class="history-quickfill" type="button" data-fill-job="${escapeHtml(job.id)}">Use as search</button>
+        </div>`;
         })
         .join("")
     : '<p class="empty">No searches yet.</p>';
+}
+
+function fillSearchFromJob(job) {
+  const request = job?.request ?? {};
+  const form = byId("search-form");
+  form.elements.origins.value = (request.origins ?? []).join(", ");
+  form.elements.destinations.value = (request.destinations ?? []).join(", ");
+  form.elements.passengers.value = String(request.passengers ?? 1);
+  form.elements.maxStops.value = request.maxStops ?? "";
+  form.elements.maxPoints.value = request.maxPoints ?? "";
+  form.elements.seatsAeroSources.value = (request.seatsAeroSources ?? []).join(", ");
+
+  const departureStart = request.departureStart ?? "";
+  const departureEnd = request.departureEnd ?? departureStart;
+  departurePicker?.setRange(departureStart, departureEnd, { emit: true });
+  if (request.returnStart) {
+    returnPicker?.setRange(request.returnStart, request.returnEnd ?? request.returnStart, {
+      emit: true
+    });
+  } else {
+    returnPicker?.setRange("", "", { emit: true });
+  }
+
+  const cabins = new Set(request.cabins ?? []);
+  for (const input of document.querySelectorAll('input[name="cabins"]')) {
+    input.checked = cabins.has(input.value);
+  }
+  const providers = new Set(request.providers ?? []);
+  const unavailableProviders = [];
+  for (const provider of providers) {
+    const input = document.querySelector(
+      `input[name="providers"][value="${CSS.escape(provider)}"]`
+    );
+    if (!input || input.disabled) unavailableProviders.push(providerNames[provider] ?? provider);
+  }
+  for (const input of document.querySelectorAll('input[name="providers"]')) {
+    input.checked = !input.disabled && providers.has(input.value);
+  }
+
+  state.selectedId = job.id;
+  render();
+  const restoredRange = departurePicker?.getRange();
+  const note =
+    restoredRange?.start !== departureStart
+      ? " The saved dates are no longer selectable."
+      : unavailableProviders.length
+        ? ` ${unavailableProviders.join(", ")} is not currently configured.`
+        : "";
+  byId("form-status").textContent =
+    `Recent search copied. Review it, then start a new search.${note}`;
+  form.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function render() {
@@ -292,6 +360,12 @@ byId("search-form").addEventListener("submit", async (event) => {
 });
 
 byId("search-history").addEventListener("click", (event) => {
+  const quickfill = event.target.closest("[data-fill-job]");
+  if (quickfill) {
+    const job = state.jobs.find((item) => item.id === quickfill.dataset.fillJob);
+    if (job) fillSearchFromJob(job);
+    return;
+  }
   const button = event.target.closest("[data-select-job]");
   if (!button) return;
   state.selectedId = button.dataset.selectJob;
@@ -358,12 +432,12 @@ byId("challenge-region").addEventListener("click", async (event) => {
 });
 
 byId("result-sort").addEventListener("change", () => renderResults(selectedJob()));
+byId("show-waitlist").addEventListener("change", () => renderResults(selectedJob()));
 
 byId("refresh-searches").addEventListener("click", refreshSearches);
 
 async function main() {
-  let returnPicker;
-  const departurePicker = createDateRangePicker(
+  departurePicker = createDateRangePicker(
     document.querySelector('[data-date-range-picker="departure"]'),
     {
       label: "Departure window",
