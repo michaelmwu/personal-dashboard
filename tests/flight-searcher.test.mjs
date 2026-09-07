@@ -5,6 +5,7 @@ import {
   createFlightSearch,
   flightSearcherHermesContext,
   getFlightChallengeScreenshot,
+  getFlightProviderDebugHtml,
   normalizeFlightSearchRequest,
   respondToFlightChallenge,
   sendFlightBrowserAction
@@ -93,6 +94,8 @@ describe("Flight Searcher integration", () => {
         jal: {
           state: "waiting_human",
           resultCount: 0,
+          debugHtmlAvailable: true,
+          debugHtmlCapturedAt: "2026-11-01T10:00:30Z",
           challenge: {
             id: "challenge_sms",
             provider: "jal",
@@ -112,6 +115,10 @@ describe("Flight Searcher integration", () => {
 
     const compact = compactFlightSearchJob(job);
     expect(compact.providers.jal.challenge).not.toHaveProperty("handoffUrl");
+    expect(compact.providers.jal).toMatchObject({
+      debugHtmlAvailable: true,
+      debugHtmlCapturedAt: "2026-11-01T10:00:30Z"
+    });
 
     const context = await flightSearcherHermesContext({
       config,
@@ -140,6 +147,23 @@ describe("Flight Searcher integration", () => {
     expect(result.ok).toBe(true);
     expect(result.contentType).toBe("image/png");
     expect([...result.body]).toEqual([...png]);
+  });
+
+  test("uses the owner token for sanitized selector reports", async () => {
+    const report = new TextEncoder().encode("<!doctype html><title>Safe report</title>");
+    const result = await getFlightProviderDebugHtml("job/unsafe", "jal", {
+      config,
+      fetch: async (url, options) => {
+        expect(String(url)).toContain("job%2Funsafe/providers/jal/debug-html");
+        expect(options.headers.Authorization).toBe(`Bearer ${config.ownerApiToken}`);
+        expect(options.headers.Accept).toBe("text/html");
+        return new Response(report, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.contentType).toMatch(/^text\/html/);
+    expect(new TextDecoder().decode(result.body)).toContain("Safe report");
   });
 
   test("uses the owner token only for human-verification mutations", async () => {

@@ -80,7 +80,11 @@ import {
   startHermesBridgeRun
 } from "../packages/integrations/hermes-bridge.mjs";
 import {
+  cancelHotelJob,
+  createHotelAgentSearch,
   createHotelSavedSearch,
+  getHotelJob,
+  hotelAgentSearchRequestFromPayload,
   hotelRateDropAlert,
   hotelRateWatchFromJobResponse,
   hotelSearchRequestFromReservation,
@@ -587,6 +591,16 @@ describe("contracts", () => {
     expect(registry.capabilities).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
+          id: "hotel_search",
+          kind: "deterministic",
+          endpoint: "/api/integrations/hotel-rate-finder/searches"
+        }),
+        expect.objectContaining({
+          id: "hotel_search_status",
+          kind: "deterministic",
+          endpoint: "/api/integrations/hotel-rate-finder/status"
+        }),
+        expect.objectContaining({
           id: "hotel_rate_search",
           kind: "deterministic",
           endpoint: "/api/integrations/hotel-rate-finder/sync"
@@ -999,6 +1013,9 @@ describe("contracts", () => {
 
     expect(context.capabilities).toHaveLength(hermesCapabilities().length);
     expect(hermesCapabilities().map((capability) => capability.id)).toContain("finance_overview");
+    expect(
+      hermesCapabilities().find((capability) => capability.id === "plaid_sync")?.inputSchema
+    ).toEqual({ itemId: "string?" });
     expect(context.version).toBe("dashboard.v1");
     expect(context.travel.reservationsNeedingReview).toHaveLength(1);
     expect(context.intake.needsReview).toHaveLength(2);
@@ -7490,6 +7507,59 @@ describe("contracts", () => {
       "http://127.0.0.1:8720/api/saved-searches",
       "http://127.0.0.1:8720/api/saved-searches/saved_hotel_001/run",
       "http://127.0.0.1:8720/api/jobs/job_hotel_001"
+    ]);
+  });
+
+  test("Hotel agent searches expose bounded start, status, and cancel operations", async () => {
+    const calls = [];
+    const fetch = async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url.endsWith("/cancel")) {
+        return Response.json({ id: "job_hotel_agent_001", status: "cancelled" });
+      }
+      if (url.endsWith("/api/jobs/job_hotel_agent_001")) {
+        return Response.json({ id: "job_hotel_agent_001", status: "completed", report: {} });
+      }
+      return Response.json({ job_id: "job_hotel_agent_001", status: "queued" }, { status: 202 });
+    };
+    const config = { baseUrl: "http://127.0.0.1:8720" };
+    const request = hotelAgentSearchRequestFromPayload({
+      providers: ["hyatt", "ihg"],
+      mode: "region",
+      area: "Paris, France",
+      checkIn: "2026-09-12",
+      checkOut: "2026-09-15",
+      adults: 2,
+      displayCurrency: "EUR",
+      forceRefresh: true,
+      ignored: "never-forwarded"
+    });
+
+    const search = await createHotelAgentSearch(request, { fetch, config });
+    const status = await getHotelJob("job_hotel_agent_001", { fetch, config });
+    const cancel = await cancelHotelJob("job_hotel_agent_001", { fetch, config });
+
+    expect(request).toEqual({
+      providers: ["hyatt", "ihg"],
+      mode: "region",
+      area: "Paris, France",
+      checkin: "2026-09-12",
+      checkout: "2026-09-15",
+      adults: 2,
+      display_currency: "EUR",
+      force_refresh: true
+    });
+    expect(search).toMatchObject({
+      ok: true,
+      status: 202,
+      body: { job_id: "job_hotel_agent_001" }
+    });
+    expect(status.body).toMatchObject({ status: "completed" });
+    expect(cancel.body).toMatchObject({ status: "cancelled" });
+    expect(calls.map((call) => [call.options.method ?? "GET", call.url])).toEqual([
+      ["POST", "http://127.0.0.1:8720/api/agent/search"],
+      ["GET", "http://127.0.0.1:8720/api/jobs/job_hotel_agent_001"],
+      ["POST", "http://127.0.0.1:8720/api/jobs/job_hotel_agent_001/cancel"]
     ]);
   });
 

@@ -74,7 +74,11 @@ import {
   streamHermesBridgeRunEvents
 } from "../../packages/integrations/hermes-bridge.mjs";
 import {
+  cancelHotelJob,
+  createHotelAgentSearch,
   createHotelSavedSearch,
+  getHotelJob,
+  hotelAgentSearchRequestFromPayload,
   hotelRateDropAlert,
   hotelRateFailureAlert,
   hotelRatesConfig,
@@ -99,6 +103,7 @@ import {
   createFlightSearch,
   flightSearcherHermesContext,
   getFlightChallengeScreenshot,
+  getFlightProviderDebugHtml,
   getFlightSearch,
   listFlightSearchProviders,
   listFlightSearches,
@@ -1921,6 +1926,45 @@ async function dispatchDeterministicCapability(action, capability) {
     });
     return { dispatched: response.synced, target: capability.target, response };
   }
+  if (capability.endpoint === "/api/integrations/hotel-rate-finder/searches") {
+    const response = await createHotelAgentSearch(
+      hotelAgentSearchRequestFromPayload(action.payload),
+      { config: hotelRateFinderConfig }
+    );
+    return {
+      dispatched: response.ok,
+      target: capability.target,
+      response: response.body,
+      statusCode: response.status
+    };
+  }
+  if (capability.endpoint === "/api/integrations/hotel-rate-finder/status") {
+    const jobId = action.payload.jobId ?? action.payload.job_id;
+    if (!jobId) {
+      return { dispatched: false, target: capability.target, reason: "missing_hotel_search_id" };
+    }
+    const response = await getHotelJob(jobId, { config: hotelRateFinderConfig });
+    return {
+      dispatched: response.ok,
+      target: capability.target,
+      response: response.body,
+      statusCode: response.status,
+      readOnly: true
+    };
+  }
+  if (capability.endpoint === "/api/integrations/hotel-rate-finder/cancel") {
+    const jobId = action.payload.jobId ?? action.payload.job_id;
+    if (!jobId) {
+      return { dispatched: false, target: capability.target, reason: "missing_hotel_search_id" };
+    }
+    const response = await cancelHotelJob(jobId, { config: hotelRateFinderConfig });
+    return {
+      dispatched: response.ok,
+      target: capability.target,
+      response: response.body,
+      statusCode: response.status
+    };
+  }
   if (capability.endpoint === "/api/integrations/hotel-rate-finder/sync") {
     const response = await syncHotelRateReservations({
       reservationId: action.payload.reservationId ?? action.payload.reservation_id,
@@ -3363,6 +3407,39 @@ export function createApiServer({
         response.writeHead(result.status, {
           "Cache-Control": "no-store, max-age=0",
           "Content-Type": result.contentType,
+          "X-Content-Type-Options": "nosniff"
+        });
+        response.end(result.body);
+        return;
+      }
+
+      const flightProviderDebugMatch = url.pathname.match(
+        /^\/api\/integrations\/flight-searcher\/searches\/([^/]+)\/providers\/([^/]+)\/debug-html$/
+      );
+      if (request.method === "GET" && flightProviderDebugMatch) {
+        if (!requireAuth(request, response)) return;
+        const result = await getFlightProviderDebugHtml(
+          decodeURIComponent(flightProviderDebugMatch[1]),
+          decodeURIComponent(flightProviderDebugMatch[2])
+        );
+        if (!result.ok) {
+          json(response, result.status, result.body);
+          return;
+        }
+        if (!result.contentType.toLowerCase().startsWith("text/html")) {
+          error(
+            response,
+            502,
+            "invalid_flight_debug_report",
+            "Flight Searcher returned an invalid selector report."
+          );
+          return;
+        }
+        response.writeHead(result.status, {
+          "Cache-Control": "no-store, max-age=0",
+          "Content-Disposition": 'attachment; filename="airline-selector-report.html"',
+          "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+          "Content-Type": "text/html; charset=utf-8",
           "X-Content-Type-Options": "nosniff"
         });
         response.end(result.body);

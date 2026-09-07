@@ -31,6 +31,41 @@ export function normalizeHermesEvent(payload) {
 export function hermesCapabilities() {
   return [
     hermesCapability({
+      id: "hotel_search",
+      title: "Search hotel availability",
+      target: "hotel-rate-finder",
+      description: "Start a Hyatt or IHG availability and rate search without booking.",
+      inputSchema: {
+        providers: "hyatt|ihg[]?",
+        mode: "region|hotel|url",
+        area: "string?",
+        hotelId: "string?",
+        url: "string?",
+        checkIn: "YYYY-MM-DD",
+        checkOut: "YYYY-MM-DD",
+        rooms: "positive integer?",
+        adults: "positive integer?",
+        kids: "non-negative integer?",
+        displayCurrency: "ISO 4217?",
+        excludeResortFees: "boolean?",
+        forceRefresh: "boolean?"
+      }
+    }),
+    hermesCapability({
+      id: "hotel_search_status",
+      title: "Check hotel search",
+      target: "hotel-rate-finder",
+      description: "Read one hotel availability search and its results.",
+      inputSchema: { jobId: "string" }
+    }),
+    hermesCapability({
+      id: "hotel_search_cancel",
+      title: "Cancel hotel search",
+      target: "hotel-rate-finder",
+      description: "Cancel a queued or running hotel availability search.",
+      inputSchema: { jobId: "string" }
+    }),
+    hermesCapability({
       id: "hotel_rate_search",
       title: "Search hotel rates",
       target: "hotel-rate-finder",
@@ -121,8 +156,7 @@ export function hermesCapabilities() {
       target: "plaid",
       description: "Pull latest card transactions and queue reconciliation work.",
       inputSchema: {
-        accountId: "string?",
-        since: "YYYY-MM-DD?"
+        itemId: "string?"
       }
     }),
     hermesCapability({

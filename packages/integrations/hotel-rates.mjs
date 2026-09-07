@@ -87,6 +87,31 @@ export async function createHotelAgentSearch(request, options = {}) {
   });
 }
 
+export function hotelAgentSearchRequestFromPayload(payload = {}) {
+  const request = {};
+  const copy = (target, ...sources) => {
+    const value = sources
+      .map((source) => payload[source])
+      .find((candidate) => candidate !== undefined);
+    if (value !== undefined) request[target] = value;
+  };
+
+  copy("providers", "providers");
+  copy("mode", "mode");
+  copy("area", "area");
+  copy("hotel_id", "hotelId", "hotel_id");
+  copy("url", "url");
+  copy("checkin", "checkIn", "checkin");
+  copy("checkout", "checkOut", "checkout");
+  copy("rooms", "rooms");
+  copy("adults", "adults");
+  copy("kids", "kids");
+  copy("display_currency", "displayCurrency", "display_currency");
+  copy("exclude_resort_fees", "excludeResortFees", "exclude_resort_fees");
+  copy("force_refresh", "forceRefresh", "force_refresh");
+  return request;
+}
+
 export async function listHotelSavedSearches(options = {}) {
   return hotelRatesFetch("/api/saved-searches", options);
 }

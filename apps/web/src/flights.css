@@ -588,6 +588,21 @@ legend {
   font-size: 10.5px;
   line-height: 1.4;
 }
+.provider-run .provider-error-code {
+  margin-top: 5px;
+  color: var(--red);
+}
+.provider-error-code code {
+  font-size: inherit;
+}
+.provider-run .debug-report-link {
+  width: fit-content;
+  color: var(--blue);
+  font-size: 10.5px;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .cancel-button {
   width: 100%;
   margin-top: 16px;
@@ -668,6 +683,48 @@ legend {
   grid-column: 1 / -1;
   color: var(--faint);
   font-size: 10.5px;
+}
+.acknowledgement-controls {
+  grid-template-columns: 1fr;
+}
+.acknowledgement-controls > .primary-button {
+  justify-self: start;
+}
+.browser-tools {
+  border-top: 1px solid #e0d2c4;
+  padding-top: 12px;
+}
+.browser-tools summary {
+  width: fit-content;
+  cursor: pointer;
+  color: #765f49;
+  font-size: 11px;
+  font-weight: 700;
+}
+.browser-tools p {
+  margin: 10px 0;
+  color: var(--faint);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.browser-type-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+.browser-type-row label {
+  display: grid;
+  gap: 5px;
+  color: #765f49;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.browser-type-row input {
+  font-weight: 500;
+}
+.browser-tools .browser-buttons {
+  margin-top: 10px;
 }
 
 .results-panel,
@@ -793,6 +850,9 @@ legend {
     width: 100%;
   }
   .challenge-controls {
+    grid-template-columns: 1fr;
+  }
+  .browser-type-row {
     grid-template-columns: 1fr;
   }
   .result-row {

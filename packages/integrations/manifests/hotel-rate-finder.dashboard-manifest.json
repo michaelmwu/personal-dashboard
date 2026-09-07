@@ -22,6 +22,51 @@
   ],
   "capabilities": [
     {
+      "id": "hotel_search",
+      "title": "Search hotel availability",
+      "kind": "deterministic",
+      "target": "hotel-rate-finder",
+      "endpoint": "/api/integrations/hotel-rate-finder/searches",
+      "description": "Start a typed Hyatt or IHG availability and rate search without booking.",
+      "inputSchema": {
+        "providers": "hyatt|ihg[]?",
+        "mode": "region|hotel|url",
+        "area": "string?",
+        "hotelId": "string?",
+        "url": "string?",
+        "checkIn": "YYYY-MM-DD",
+        "checkOut": "YYYY-MM-DD",
+        "rooms": "positive integer?",
+        "adults": "positive integer?",
+        "kids": "non-negative integer?",
+        "displayCurrency": "ISO 4217?",
+        "excludeResortFees": "boolean?",
+        "forceRefresh": "boolean?"
+      }
+    },
+    {
+      "id": "hotel_search_status",
+      "title": "Check hotel search",
+      "kind": "deterministic",
+      "target": "hotel-rate-finder",
+      "endpoint": "/api/integrations/hotel-rate-finder/status",
+      "description": "Read one hotel availability search and its results.",
+      "inputSchema": {
+        "jobId": "string"
+      }
+    },
+    {
+      "id": "hotel_search_cancel",
+      "title": "Cancel hotel search",
+      "kind": "deterministic",
+      "target": "hotel-rate-finder",
+      "endpoint": "/api/integrations/hotel-rate-finder/cancel",
+      "description": "Cancel a queued or running hotel availability search.",
+      "inputSchema": {
+        "jobId": "string"
+      }
+    },
+    {
       "id": "hotel_rate_search",
       "title": "Search hotel rates",
       "kind": "deterministic",
