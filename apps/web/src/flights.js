@@ -684,9 +684,9 @@ function renderChallenges(job) {
             ? `<div class="challenge-controls acknowledgement-controls">
           <details class="browser-tools" open>
             <summary>Manual browser controls</summary>
-            <p>Correct the airline form here. Login credentials are filled automatically.</p>
-            <div class="browser-type-row"><label>Text for the selected airline field<input data-browser-text type="text" autocomplete="off" placeholder="For example, SFO"></label><button class="secondary-button" type="button" data-browser-type>Send to browser</button></div>
-            <div class="browser-buttons"><button class="control-button" type="button" data-browser-key="Tab">Tab</button><button class="control-button" type="button" data-browser-key="Enter">Enter</button><button class="control-button" type="button" data-browser-key="Escape">Escape</button><button class="control-button" type="button" data-browser-key="Backspace">Backspace</button><button class="control-button" type="button" data-browser-key="Delete">Delete</button><button class="control-button" type="button" data-browser-key="ArrowUp">↑</button><button class="control-button" type="button" data-browser-key="ArrowDown">↓</button></div>
+            <p>Correct the airline form here. Account and password fields are filled automatically and intentionally hidden.</p>
+            <div class="browser-type-row"><label>Text for selected field<input data-browser-text type="text" autocomplete="off" placeholder="For example, SFO"></label><div class="browser-type-actions"><button class="primary-button" type="button" data-browser-replace>Replace field</button><button class="secondary-button" type="button" data-browser-type>Append</button></div></div>
+            <div class="browser-buttons"><button class="control-button" type="button" data-browser-key="Tab">Tab</button><button class="control-button" type="button" data-browser-key="Enter">Enter</button><button class="control-button" type="button" data-browser-key="Escape">Escape</button><button class="control-button" type="button" data-browser-key="Backspace" title="Delete one character to the left">← Backspace</button><button class="control-button" type="button" data-browser-key="Delete" title="Delete one character to the right">Delete →</button><button class="control-button" type="button" data-browser-key="ArrowUp">↑</button><button class="control-button" type="button" data-browser-key="ArrowDown">↓</button></div>
             <button class="danger-button" type="button" data-browser-reload>Reload airline page…</button>
           </details>
           <button class="secondary-button continue-button" type="button" data-challenge-submit>I finished — continue search</button>
@@ -893,10 +893,10 @@ function addBrowserFocusMarker(card, left, top) {
   marker.style.left = typeof left === "number" ? `${left}%` : left;
   marker.style.top = typeof top === "number" ? `${top}%` : top;
   marker.setAttribute("aria-hidden", "true");
-  marker.innerHTML = "<span>Selected</span>";
+  marker.innerHTML = "<span>Selected field</span>";
   canvas.append(marker);
   const label = card.querySelector("[data-browser-focus]");
-  if (label) label.textContent = "Field targeted · type or paste directly into the preview";
+  if (label) label.textContent = "Field selected · Replace field overwrites its current value";
 }
 
 function markBrowserFocus(card, image, clientX, clientY) {
@@ -1092,6 +1092,11 @@ byId("challenge-region").addEventListener("click", async (event) => {
       const text = input.value;
       input.value = "";
       if (text) await browserAction(card, { kind: "type", text });
+    } else if (event.target.matches("[data-browser-replace]")) {
+      const input = card.querySelector("[data-browser-text]");
+      const text = input.value;
+      input.value = "";
+      if (text) await browserAction(card, { kind: "replace", text });
     } else if (event.target.matches("[data-browser-key]")) {
       await browserAction(card, { kind: "key", key: event.target.dataset.browserKey });
     } else if (event.target.matches("[data-browser-scroll]")) {
@@ -1118,7 +1123,11 @@ byId("challenge-region").addEventListener("click", async (event) => {
       markBrowserFocus(card, event.target, event.clientX, event.clientY);
       await browserAction(card, { kind: "click", x, y });
     }
-    if (event.target.matches("[data-browser-type], [data-browser-key], [data-browser-scroll]")) {
+    if (
+      event.target.matches(
+        "[data-browser-type], [data-browser-replace], [data-browser-key], [data-browser-scroll]"
+      )
+    ) {
       setChallengeStatus(card, "Browser action sent. Preview will update shortly.", "success");
     }
   } catch (error) {
