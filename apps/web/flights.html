@@ -23,7 +23,7 @@
           <p class="kicker">Award availability</p>
           <h1 id="flight-title">Find your next award flight.</h1>
         </div>
-        <p class="hero-note">Seats.aero + ANA + JAL + EVA. ANA may include eligible Star Alliance awards; JAL searches international JAL-operated flights only. Verification codes and CAPTCHAs wait here, and email is never read automatically.</p>
+        <p class="hero-note">Search Seats.aero and airline award sites together. Human verification pauses safely here; this app never reads your email.</p>
       </section>
 
       <section class="workspace">
@@ -39,13 +39,23 @@
           <div class="route-grid">
             <label>
               <span>From</span>
-              <input name="origins" required autocomplete="off" maxlength="39" placeholder="HND, NRT">
-              <small>Comma-separated IATA codes</small>
+              <div class="token-input" data-token-field="origins">
+                <div class="token-list" data-token-list></div>
+                <input data-token-entry autocomplete="off" placeholder="Type a city or code, then press Enter" aria-describedby="origins-help origins-error">
+                <input name="origins" type="hidden" data-token-value>
+              </div>
+              <small id="origins-help">Airport and metro codes work, including HND, NRT, and TYO.</small>
+              <small class="field-error" id="origins-error" data-token-error role="alert"></small>
             </label>
             <label>
               <span>To</span>
-              <input name="destinations" required autocomplete="off" maxlength="39" placeholder="JFK, SFO">
-              <small>Airports, not city names</small>
+              <div class="token-input" data-token-field="destinations">
+                <div class="token-list" data-token-list></div>
+                <input data-token-entry autocomplete="off" placeholder="Type a city or code, then press Enter" aria-describedby="destinations-help destinations-error">
+                <input name="destinations" type="hidden" data-token-value>
+              </div>
+              <small id="destinations-help">Choose a suggestion or enter any three-letter IATA code.</small>
+              <small class="field-error" id="destinations-error" data-token-error role="alert"></small>
             </label>
           </div>
 
@@ -79,8 +89,6 @@
             </div>
           </div>
 
-          <p class="quiet-label">Seats.aero searches outbound flights only. Search the reverse route separately for your return.</p>
-
           <div class="option-grid">
             <label>
               <span>Travelers</span>
@@ -103,9 +111,20 @@
             </label>
             <label class="sources-field">
               <span>Seats.aero programs</span>
-              <input name="seatsAeroSources" autocomplete="off" placeholder="Optional: aeroplan, united">
+              <div class="token-input" data-token-field="programs">
+                <div class="token-list" data-token-list></div>
+                <input data-token-entry autocomplete="off" placeholder="All programs, or start typing" aria-describedby="programs-help programs-error">
+                <input name="seatsAeroSources" type="hidden" data-token-value>
+              </div>
+              <small id="programs-help">Optional. Leave empty to search every supported program.</small>
+              <small class="field-error" id="programs-error" data-token-error role="alert"></small>
             </label>
           </div>
+
+          <details class="search-notes">
+            <summary>Search scope and pricing notes</summary>
+            <p>Seats.aero searches outbound flights only; search the reverse route separately for the return. ANA may include eligible Star Alliance awards. JAL is limited to international JAL-operated flights. Points are per traveler, taxes are extra, and cached availability must be confirmed before transferring points.</p>
+          </details>
 
           <fieldset>
             <legend>Cabins</legend>
@@ -155,15 +174,20 @@
           </div>
           <div class="results-heading-controls">
             <label class="waitlist-toggle"><input type="checkbox" id="show-waitlist"><span>Show waitlist</span></label>
+            <label class="result-filter-control"><span>Provider</span><select id="result-provider-filter"><option value="">All</option></select></label>
+            <label class="result-filter-control"><span>Cabin</span><select id="result-cabin-filter"><option value="">All</option></select></label>
+            <label class="result-filter-control"><span>Program</span><select id="result-program-filter"><option value="">All</option></select></label>
             <label class="result-sort-control"><span>Sort by</span><select id="result-sort">
               <option value="date">Departure date</option>
               <option value="points">Lowest points</option>
               <option value="stops">Fewest stops</option>
             </select></label>
+            <button class="control-button sort-direction" type="button" id="sort-direction" data-direction="asc" aria-label="Sort ascending">↑</button>
+            <label class="result-filter-control"><span>View</span><select id="result-view"><option value="table">List</option><option value="grid">Date grid</option></select></label>
             <span class="quiet-label" id="result-count">0 available</span>
           </div>
         </div>
-        <p class="quiet-label">Waitlist inventory is hidden by default and never presented as bookable. Points are per traveler. Seats.aero availability is cached; confirm the itinerary and price with the program before transferring points. Stop limits and points caps exclude unverified summaries.</p>
+        <p class="quiet-label">Waitlists stay hidden unless requested and are never presented as bookable.</p>
         <div class="results" id="results">
           <p class="empty">Award options will appear here as providers finish.</p>
         </div>

@@ -1,14 +1,45 @@
 import { createDateRangePicker, futureDateValue } from "./date-range-picker.js";
 import { isWaitlistResult, partitionAwardResults, sortAwardResults } from "./flight-results.js";
+import { createTokenInput } from "./token-input.js";
 
 const apiRoot = "/api/integrations/flight-searcher";
 const activeStatuses = new Set(["queued", "running", "waiting_human"]);
 const terminalStatuses = new Set(["completed", "partial", "failed", "canceled"]);
 const providerNames = { seats_aero: "Seats.aero", ana: "ANA", jal: "JAL", eva: "EVA" };
-const state = { jobs: [], selectedId: null, refreshing: false, timer: null };
+const state = { jobs: [], selectedId: null, refreshing: false, timer: null, previewTimer: null };
 const number = new Intl.NumberFormat("en-US");
+const airportChoices = [
+  { id: "TYO", name: "Tokyo (all airports)", aliases: ["Tokyo"] },
+  { id: "HND", name: "Tokyo Haneda", aliases: ["Haneda"] },
+  { id: "NRT", name: "Tokyo Narita", aliases: ["Narita"] },
+  { id: "OSA", name: "Osaka (all airports)", aliases: ["Osaka"] },
+  { id: "KIX", name: "Osaka Kansai" },
+  { id: "SEA", name: "Seattle–Tacoma", aliases: ["Seattle"] },
+  { id: "SFO", name: "San Francisco" },
+  { id: "LAX", name: "Los Angeles" },
+  { id: "JFK", name: "New York JFK", aliases: ["New York"] },
+  { id: "NYC", name: "New York (all airports)" },
+  { id: "ORD", name: "Chicago O'Hare", aliases: ["Chicago"] },
+  { id: "DFW", name: "Dallas–Fort Worth", aliases: ["Dallas"] },
+  { id: "BOS", name: "Boston" },
+  { id: "TPE", name: "Taipei Taoyuan", aliases: ["Taipei"] },
+  { id: "HKG", name: "Hong Kong" },
+  { id: "SIN", name: "Singapore Changi", aliases: ["Singapore"] },
+  { id: "BKK", name: "Bangkok Suvarnabhumi", aliases: ["Bangkok"] },
+  { id: "ICN", name: "Seoul Incheon", aliases: ["Seoul"] },
+  { id: "SEL", name: "Seoul (all airports)" },
+  { id: "LHR", name: "London Heathrow", aliases: ["London"] },
+  { id: "LON", name: "London (all airports)" },
+  { id: "CDG", name: "Paris Charles de Gaulle", aliases: ["Paris"] },
+  { id: "SYD", name: "Sydney" },
+  { id: "MEL", name: "Melbourne" },
+  { id: "YVR", name: "Vancouver" }
+];
 let departurePicker;
 let returnPicker;
+let originInput;
+let destinationInput;
+let programInput;
 
 const byId = (id) => document.getElementById(id);
 const escapeHtml = (value) =>
@@ -45,13 +76,6 @@ function checkedValues(name) {
   );
 }
 
-function commaValues(value) {
-  return String(value ?? "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
 function statusPill(status) {
   return `<span class="status-pill ${escapeHtml(status)}">${escapeHtml(String(status).replaceAll("_", " "))}</span>`;
 }
@@ -76,6 +100,8 @@ function renderProviders(providers) {
       </label>`;
     })
     .join("");
+  const seatsAero = providers.find((provider) => provider.id === "seats_aero");
+  programInput?.setOptions(seatsAero?.programs ?? []);
 }
 
 function renderRun(job) {
@@ -123,38 +149,207 @@ function resultPrice(result) {
   return `${miles} + ${taxes}`;
 }
 
+function safeBookingUrl(value) {
+  try {
+    const url = new URL(value);
+    return new Set(["http:", "https:"]).has(url.protocol) ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function setFilterOptions(id, values, label) {
+  const select = byId(id);
+  const selected = select.value;
+  const options = [`<option value="">All ${escapeHtml(label)}</option>`].concat(
+    values.map(
+      (value) =>
+        `<option value="${escapeHtml(value)}">${escapeHtml(
+          id === "result-provider-filter" ? (providerNames[value] ?? value) : value
+        )}</option>`
+    )
+  );
+  const key = JSON.stringify(values);
+  if (select.dataset.optionsKey !== key) {
+    select.dataset.optionsKey = key;
+    select.innerHTML = options.join("");
+    if (values.includes(selected)) select.value = selected;
+  }
+}
+
+function syncResultFilters(results) {
+  setFilterOptions(
+    "result-provider-filter",
+    [...new Set(results.map((result) => result.provider).filter(Boolean))].sort(),
+    "providers"
+  );
+  setFilterOptions(
+    "result-cabin-filter",
+    [...new Set(results.map((result) => result.cabin).filter(Boolean))].sort(),
+    "cabins"
+  );
+  setFilterOptions(
+    "result-program-filter",
+    [...new Set(results.map((result) => result.program).filter(Boolean))].sort(),
+    "programs"
+  );
+}
+
+function resultMatchesFilters(result) {
+  const provider = byId("result-provider-filter").value;
+  const cabin = byId("result-cabin-filter").value;
+  const program = byId("result-program-filter").value;
+  return (
+    (!provider || result.provider === provider) &&
+    (!cabin || result.cabin === cabin) &&
+    (!program || result.program === program)
+  );
+}
+
+function renderResultTable(results) {
+  return `<div class="result-table-wrap"><table class="result-table">
+    <thead><tr><th scope="col">Route and date</th><th scope="col">Price and program</th><th scope="col">Cabin and seats</th><th scope="col">Routing</th><th scope="col">Provider</th><th scope="col">Book</th></tr></thead>
+    <tbody>${results
+      .map((result) => {
+        const bookingUrl = safeBookingUrl(result.bookingUrl);
+        return `<tr class="result-row${isWaitlistResult(result) ? " waitlist" : ""}">
+          <td class="result-route"><strong>${escapeHtml(result.origin)} → ${escapeHtml(result.destination)}</strong><span>${escapeHtml(result.departureDate)}${result.flightNumbers?.length ? ` · ${escapeHtml(result.flightNumbers.join(", "))}` : ""}</span></td>
+          <td class="result-cell"><strong>${escapeHtml(resultPrice(result))}</strong><span>${escapeHtml(result.program)}</span></td>
+          <td class="result-cell"><strong>${escapeHtml(result.cabin)}</strong><span>${result.seats ? `${escapeHtml(result.seats)} seat(s)` : "Seats not reported"}</span></td>
+          <td class="result-cell"><strong>${result.stops === 0 ? "Nonstop" : result.stops === null || result.stops === undefined ? "Stops n/a" : `${escapeHtml(result.stops)} stop(s)`}</strong><span>${escapeHtml((result.carriers ?? []).join(", ") || "Carrier n/a")}</span></td>
+          <td class="result-cell result-provider">${escapeHtml(providerNames[result.provider] ?? result.provider)}${isWaitlistResult(result) ? '<span class="availability-badge">Waitlist · not bookable</span>' : ""}</td>
+          <td class="result-cell">${bookingUrl && !isWaitlistResult(result) ? `<a class="booking-link" href="${escapeHtml(bookingUrl)}" target="_blank" rel="noopener noreferrer">Open</a>` : "—"}</td>
+        </tr>`;
+      })
+      .join("")}</tbody>
+  </table></div>`;
+}
+
+function renderDateGrid(results) {
+  const dates = [...new Set(results.map((result) => result.departureDate).filter(Boolean))].sort();
+  const cabins = [...new Set(results.map((result) => result.cabin).filter(Boolean))];
+  const cabinOrder = ["economy", "premium", "business", "first"];
+  cabins.sort((left, right) => cabinOrder.indexOf(left) - cabinOrder.indexOf(right));
+  const best = new Map();
+  for (const result of results) {
+    const key = `${result.departureDate}:${result.cabin}`;
+    const current = best.get(key);
+    if (
+      !current ||
+      (result.mileage ?? Number.POSITIVE_INFINITY) < (current.mileage ?? Number.POSITIVE_INFINITY)
+    ) {
+      best.set(key, result);
+    }
+  }
+  return `<div class="result-table-wrap"><table class="date-result-grid">
+    <thead><tr><th scope="col">Date</th>${cabins.map((cabin) => `<th scope="col">${escapeHtml(cabin)}</th>`).join("")}</tr></thead>
+    <tbody>${dates
+      .map(
+        (date) =>
+          `<tr><th scope="row">${escapeHtml(date)}</th>${cabins
+            .map((cabin) => {
+              const result = best.get(`${date}:${cabin}`);
+              if (!result) return "<td>—</td>";
+              const bookingUrl = safeBookingUrl(result.bookingUrl);
+              const content = `<strong>${escapeHtml(resultPrice(result))}</strong><span>${escapeHtml(providerNames[result.provider] ?? result.provider)} · ${escapeHtml(result.program)}</span>`;
+              return `<td class="${isWaitlistResult(result) ? "waitlist" : ""}">${bookingUrl && !isWaitlistResult(result) ? `<a href="${escapeHtml(bookingUrl)}" target="_blank" rel="noopener noreferrer">${content}</a>` : content}</td>`;
+            })
+            .join("")}</tr>`
+      )
+      .join("")}</tbody>
+  </table></div>`;
+}
+
 function renderResults(job) {
-  const sorted = sortAwardResults(job?.results ?? [], byId("result-sort").value);
+  const allResults = job?.results ?? [];
+  syncResultFilters(allResults);
+  const direction = byId("sort-direction").dataset.direction;
+  const sorted = sortAwardResults(allResults, byId("result-sort").value, direction);
   const partitioned = partitionAwardResults(sorted);
   const showWaitlist = byId("show-waitlist").checked;
-  const results = showWaitlist ? sorted : partitioned.available;
+  const visibleByAvailability = showWaitlist ? sorted : partitioned.available;
+  const results = visibleByAvailability.filter(resultMatchesFilters);
   const waitlistSummary = partitioned.waitlist.length
     ? ` · ${partitioned.waitlist.length} waitlist${showWaitlist ? "" : " hidden"}`
     : "";
-  byId("result-count").textContent = `${partitioned.available.length} available${waitlistSummary}`;
+  const filteredSummary =
+    results.length === visibleByAvailability.length ? "" : ` · ${results.length} shown`;
+  byId("result-count").textContent =
+    `${partitioned.available.length} available${waitlistSummary}${filteredSummary}`;
   const emptyMessage =
     !showWaitlist && partitioned.waitlist.length
       ? "Only waitlist inventory was returned. Turn on Show waitlist to inspect it."
       : job && terminalStatuses.has(job.status)
         ? "No matching award options were returned."
         : "Award options will appear here as providers finish.";
-  byId("results").innerHTML = results.length
-    ? results
-        .map(
-          (result) => `<article class="result-row${isWaitlistResult(result) ? " waitlist" : ""}">
-        <div class="result-route"><strong>${escapeHtml(result.origin)} → ${escapeHtml(result.destination)}</strong><span>${escapeHtml(result.departureDate)}${result.flightNumbers?.length ? ` · ${escapeHtml(result.flightNumbers.join(", "))}` : ""}</span></div>
-        <div class="result-cell"><strong>${escapeHtml(resultPrice(result))}</strong><span>${escapeHtml(result.program)}</span></div>
-        <div class="result-cell"><strong>${escapeHtml(result.cabin)}</strong><span>${result.seats ? `${escapeHtml(result.seats)} seat(s)` : "Seats not reported"}</span></div>
-        <div class="result-cell"><strong>${result.stops === 0 ? "Nonstop" : result.stops === null || result.stops === undefined ? "Stops n/a" : `${escapeHtml(result.stops)} stop(s)`}</strong><span>${escapeHtml((result.carriers ?? []).join(", ") || "Carrier n/a")}</span></div>
-        <div class="result-cell result-provider">${escapeHtml(providerNames[result.provider] ?? result.provider)}${isWaitlistResult(result) ? '<span class="availability-badge">Waitlist · not bookable</span>' : ""}</div>
-      </article>`
-        )
-        .join("")
+  const view = byId("result-view").value;
+  const renderKey = JSON.stringify([job?.id, job?.status, results, view, emptyMessage]);
+  const region = byId("results");
+  if (region.dataset.renderKey === renderKey) return;
+  region.dataset.renderKey = renderKey;
+  region.innerHTML = results.length
+    ? view === "grid"
+      ? renderDateGrid(results)
+      : renderResultTable(results)
     : `<p class="empty">${emptyMessage}</p>`;
 }
 
 function screenshotUrl(jobId, challengeId) {
   return `${apiRoot}/searches/${encodeURIComponent(jobId)}/challenges/${encodeURIComponent(challengeId)}/screenshot?t=${Date.now()}`;
+}
+
+function previewControls(interactive) {
+  return `<div class="preview-controls">
+    <span data-preview-age>Capturing preview…</span>
+    <button class="control-button" type="button" data-browser-zoom>1:1</button>
+    <button class="control-button" type="button" data-preview-refresh>Refresh preview</button>
+    <button class="control-button" type="button" data-browser-scroll="-650">Scroll up</button>
+    <button class="control-button" type="button" data-browser-scroll="650">Scroll down</button>
+    ${interactive ? '<span class="preview-hint">Click the image to focus a control.</span>' : ""}
+  </div>`;
+}
+
+function bindChallengePreviews(region) {
+  for (const image of region.querySelectorAll(".browser-shot")) {
+    image.dataset.loading = image.complete ? "false" : "true";
+    if (image.complete && image.naturalWidth) image.dataset.capturedAt = String(Date.now());
+    image.addEventListener("load", () => {
+      image.dataset.capturedAt = String(Date.now());
+      image.dataset.loading = "false";
+      updatePreviewAge(image.closest(".challenge-card"));
+    });
+    image.addEventListener("error", () => {
+      image.dataset.loading = "false";
+      const label = image.closest(".challenge-card")?.querySelector("[data-preview-age]");
+      if (label) label.textContent = "Preview unavailable — try again";
+    });
+  }
+}
+
+function updatePreviewAge(card) {
+  const image = card?.querySelector(".browser-shot");
+  const label = card?.querySelector("[data-preview-age]");
+  if (!image || !label) return;
+  const capturedAt = Number(image.dataset.capturedAt);
+  if (!capturedAt) return;
+  const seconds = Math.max(0, Math.floor((Date.now() - capturedAt) / 1000));
+  label.textContent = `Captured ${seconds}s ago`;
+}
+
+function refreshPreview(card) {
+  const image = card?.querySelector(".browser-shot");
+  if (!image || image.dataset.loading === "true") return;
+  image.dataset.loading = "true";
+  image.src = screenshotUrl(card.dataset.jobId, card.dataset.challengeId);
+}
+
+function refreshChallengePreviews() {
+  for (const card of document.querySelectorAll(".challenge-card")) {
+    updatePreviewAge(card);
+    const image = card.querySelector(".browser-shot");
+    const capturedAt = Number(image?.dataset.capturedAt ?? 0);
+    if (image && Date.now() - capturedAt >= 3000) refreshPreview(card);
+  }
 }
 
 function renderChallenges(job) {
@@ -176,28 +371,36 @@ function renderChallenges(job) {
           <p>${escapeHtml(challenge.prompt)}</p>
           <span class="challenge-expiry">Expires ${escapeHtml(new Date(challenge.expiresAt).toLocaleString())}. Nothing entered here is stored by the dashboard.</span>
         </div>
-        ${challenge.screenshotAvailable ? `<div class="browser-frame"><img class="browser-shot" data-interactive="${acknowledgement}" src="${screenshotUrl(job.id, challenge.id)}" alt="Redacted live ${escapeHtml(challenge.provider)} browser preview"></div>` : ""}
+        ${challenge.screenshotAvailable ? `<div class="browser-frame"><div class="browser-canvas"><img class="browser-shot" data-interactive="${acknowledgement}" src="${screenshotUrl(job.id, challenge.id)}" alt="Redacted live ${escapeHtml(challenge.provider)} browser preview"></div></div>${previewControls(acknowledgement)}` : ""}
         ${
           acknowledgement
             ? `<div class="challenge-controls acknowledgement-controls">
-          <button class="primary-button" type="button" data-challenge-submit>I finished — continue search</button>
-          <small>Only use the controls below if the airline page still needs a manual correction. Login credentials are handled automatically.</small>
-          <details class="browser-tools">
+          <details class="browser-tools" open>
             <summary>Manual browser controls</summary>
-            <p>Click the preview to choose a field or control. Send only ordinary search text such as an airport code—never a password or verification code.</p>
+            <p>Correct the airline form here. Login credentials are handled automatically; send only ordinary search text such as an airport code.</p>
             <div class="browser-type-row"><label>Text for the selected airline field<input data-browser-text type="text" autocomplete="off" placeholder="For example, SFO"></label><button class="secondary-button" type="button" data-browser-type>Send to browser</button></div>
-            <div class="browser-buttons"><button class="control-button" type="button" data-browser-key="Tab">Tab</button><button class="control-button" type="button" data-browser-key="Enter">Enter</button><button class="control-button" type="button" data-browser-scroll="-650">Scroll up</button><button class="control-button" type="button" data-browser-scroll="650">Scroll down</button><button class="control-button" type="button" data-browser-refresh>Refresh preview</button></div>
+            <div class="browser-buttons"><button class="control-button" type="button" data-browser-key="Tab">Tab</button><button class="control-button" type="button" data-browser-key="Enter">Enter</button><button class="control-button" type="button" data-browser-key="Escape">Escape</button><button class="control-button" type="button" data-browser-key="Backspace">Backspace</button><button class="control-button" type="button" data-browser-key="Delete">Delete</button><button class="control-button" type="button" data-browser-key="ArrowUp">↑</button><button class="control-button" type="button" data-browser-key="ArrowDown">↓</button></div>
+            <button class="danger-button" type="button" data-browser-reload>Reload airline page…</button>
           </details>
+          <button class="secondary-button continue-button" type="button" data-challenge-submit>I finished — continue search</button>
         </div>`
             : `<div class="challenge-controls"><input data-challenge-value autocomplete="one-time-code" inputmode="text" placeholder="${escapeHtml(inputLabel)}"><button class="primary-button" type="button" data-challenge-submit>Submit</button><small>Copy the code from your own email or phone. This app does not access either inbox.</small></div>`
         }
+        <p class="challenge-action-status" data-challenge-status role="status"></p>
       </article>`;
     })
     .join("");
+  bindChallengePreviews(region);
 }
 
 function renderHistory() {
-  byId("search-history").innerHTML = state.jobs.length
+  const region = byId("search-history");
+  const renderKey = JSON.stringify(
+    state.jobs.map((job) => [job.id, job.status, job.request, job.id === state.selectedId])
+  );
+  if (region.dataset.renderKey === renderKey) return;
+  region.dataset.renderKey = renderKey;
+  region.innerHTML = state.jobs.length
     ? state.jobs
         .map((job) => {
           const request = job.request ?? {};
@@ -218,12 +421,12 @@ function renderHistory() {
 function fillSearchFromJob(job) {
   const request = job?.request ?? {};
   const form = byId("search-form");
-  form.elements.origins.value = (request.origins ?? []).join(", ");
-  form.elements.destinations.value = (request.destinations ?? []).join(", ");
+  originInput.setValues(request.origins ?? []);
+  destinationInput.setValues(request.destinations ?? []);
   form.elements.passengers.value = String(request.passengers ?? 1);
   form.elements.maxStops.value = request.maxStops ?? "";
   form.elements.maxPoints.value = request.maxPoints ?? "";
-  form.elements.seatsAeroSources.value = (request.seatsAeroSources ?? []).join(", ");
+  programInput.setValues(request.seatsAeroSources ?? []);
 
   const departureStart = request.departureStart ?? "";
   const departureEnd = request.departureEnd ?? departureStart;
@@ -310,8 +513,25 @@ async function browserAction(card, action) {
   const image = card.querySelector(".browser-shot");
   if (image)
     window.setTimeout(() => {
-      image.src = screenshotUrl(jobId, challengeId);
+      refreshPreview(card);
     }, 450);
+}
+
+function setChallengeStatus(card, message, kind = "") {
+  const status = card.querySelector("[data-challenge-status]");
+  if (!status) return;
+  status.textContent = message;
+  status.className = `challenge-action-status ${kind}`.trim();
+}
+
+function showClickMarker(image, clientX, clientY) {
+  const rect = image.getBoundingClientRect();
+  const marker = document.createElement("span");
+  marker.className = "browser-click-marker";
+  marker.style.left = `${((clientX - rect.left) / rect.width) * 100}%`;
+  marker.style.top = `${((clientY - rect.top) / rect.height) * 100}%`;
+  image.closest(".browser-canvas").append(marker);
+  window.setTimeout(() => marker.remove(), 1100);
 }
 
 byId("search-form").addEventListener("submit", async (event) => {
@@ -320,8 +540,17 @@ byId("search-form").addEventListener("submit", async (event) => {
   const data = new FormData(form);
   const cabins = checkedValues("cabins");
   const providers = checkedValues("providers");
+  originInput.commit();
+  destinationInput.commit();
+  programInput.commit();
+  const origins = originInput.getValues();
+  const destinations = destinationInput.getValues();
   if (!cabins.length || !providers.length) {
     byId("form-status").textContent = "Choose at least one cabin and one configured provider.";
+    return;
+  }
+  if (!origins.length || !destinations.length) {
+    byId("form-status").textContent = "Choose at least one valid origin and destination code.";
     return;
   }
   if (!data.get("departureStart") || !data.get("departureEnd")) {
@@ -329,14 +558,14 @@ byId("search-form").addEventListener("submit", async (event) => {
     return;
   }
   const payload = {
-    origins: commaValues(data.get("origins")),
-    destinations: commaValues(data.get("destinations")),
+    origins,
+    destinations,
     departureStart: data.get("departureStart"),
     departureEnd: data.get("departureEnd"),
     passengers: Number(data.get("passengers")),
     cabins,
     providers,
-    seatsAeroSources: commaValues(data.get("seatsAeroSources"))
+    seatsAeroSources: programInput.getValues()
   };
   if (data.get("returnStart")) payload.returnStart = data.get("returnStart");
   if (data.get("returnEnd")) payload.returnEnd = data.get("returnEnd");
@@ -392,6 +621,7 @@ byId("challenge-region").addEventListener("click", async (event) => {
   const card = event.target.closest(".challenge-card");
   if (!card) return;
   try {
+    setChallengeStatus(card, "");
     if (event.target.matches("[data-challenge-submit]")) {
       const input = card.querySelector("[data-challenge-value]");
       const value = input ? input.value.trim() : "continue";
@@ -402,6 +632,13 @@ byId("challenge-region").addEventListener("click", async (event) => {
         { method: "POST", body: { value } }
       );
       await refreshSearches();
+    } else if (event.target.matches("[data-preview-refresh]")) {
+      refreshPreview(card);
+    } else if (event.target.matches("[data-browser-zoom]")) {
+      const frame = card.querySelector(".browser-frame");
+      const native = frame.classList.toggle("zoom-native");
+      event.target.textContent = native ? "Fit" : "1:1";
+      event.target.setAttribute("aria-label", native ? "Fit preview" : "Show preview at 1 to 1");
     } else if (event.target.matches("[data-browser-type]")) {
       const input = card.querySelector("[data-browser-text]");
       const text = input.value;
@@ -414,8 +651,14 @@ byId("challenge-region").addEventListener("click", async (event) => {
         kind: "scroll",
         deltaY: Number(event.target.dataset.browserScroll)
       });
-    } else if (event.target.matches("[data-browser-refresh]")) {
-      await browserAction(card, { kind: "refresh" });
+    } else if (event.target.matches("[data-browser-reload]")) {
+      if (
+        window.confirm(
+          "Reload the airline page? Unsaved form corrections on the airline site will be lost."
+        )
+      ) {
+        await browserAction(card, { kind: "refresh" });
+      }
     } else if (
       event.target.matches(".browser-shot") &&
       event.target.dataset.interactive === "true"
@@ -423,20 +666,52 @@ byId("challenge-region").addEventListener("click", async (event) => {
       const rect = event.target.getBoundingClientRect();
       const x = ((event.clientX - rect.left) / rect.width) * event.target.naturalWidth;
       const y = ((event.clientY - rect.top) / rect.height) * event.target.naturalHeight;
+      showClickMarker(event.target, event.clientX, event.clientY);
       await browserAction(card, { kind: "click", x, y });
     }
+    if (event.target.matches("[data-browser-type], [data-browser-key], [data-browser-scroll]")) {
+      setChallengeStatus(card, "Browser action sent. Preview will update shortly.", "success");
+    }
   } catch (error) {
-    byId("service-state").textContent = error.message;
-    byId("service-state").className = "service-state error";
+    setChallengeStatus(card, error.message, "error");
   }
 });
 
-byId("result-sort").addEventListener("change", () => renderResults(selectedJob()));
-byId("show-waitlist").addEventListener("change", () => renderResults(selectedJob()));
+for (const id of [
+  "result-sort",
+  "show-waitlist",
+  "result-provider-filter",
+  "result-cabin-filter",
+  "result-program-filter",
+  "result-view"
+]) {
+  byId(id).addEventListener("change", () => renderResults(selectedJob()));
+}
+byId("sort-direction").addEventListener("click", (event) => {
+  const descending = event.currentTarget.dataset.direction === "asc";
+  event.currentTarget.dataset.direction = descending ? "desc" : "asc";
+  event.currentTarget.textContent = descending ? "↓" : "↑";
+  event.currentTarget.setAttribute("aria-label", descending ? "Sort descending" : "Sort ascending");
+  renderResults(selectedJob());
+});
 
 byId("refresh-searches").addEventListener("click", refreshSearches);
 
 async function main() {
+  originInput = createTokenInput(document.querySelector('[data-token-field="origins"]'), {
+    choices: airportChoices,
+    allowCustomPattern: /^[A-Za-z]{3}$/,
+    invalidMessage: "Choose a city suggestion or enter a three-letter IATA code."
+  });
+  destinationInput = createTokenInput(document.querySelector('[data-token-field="destinations"]'), {
+    choices: airportChoices,
+    allowCustomPattern: /^[A-Za-z]{3}$/,
+    invalidMessage: "Choose a city suggestion or enter a three-letter IATA code."
+  });
+  programInput = createTokenInput(document.querySelector('[data-token-field="programs"]'), {
+    choices: [],
+    invalidMessage: "Choose a supported Seats.aero program from the suggestions."
+  });
   departurePicker = createDateRangePicker(
     document.querySelector('[data-date-range-picker="departure"]'),
     {
@@ -463,6 +738,7 @@ async function main() {
       optional: true
     }
   );
+  state.previewTimer = window.setInterval(refreshChallengePreviews, 1000);
   try {
     renderProviders(await api("/providers"));
     await refreshSearches();
