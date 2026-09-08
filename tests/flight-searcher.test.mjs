@@ -30,6 +30,7 @@ describe("Flight Searcher integration", () => {
         passengers: "2",
         cabins: ["business"],
         providers: ["seats_aero", "ana"],
+        airline_cabins: { ana: "first" },
         max_stops: "1",
         max_points: "75000",
         seats_aero_sources: "aeroplan, united"
@@ -44,6 +45,7 @@ describe("Flight Searcher integration", () => {
       passengers: 2,
       cabins: ["business"],
       providers: ["seats_aero", "ana"],
+      airlineCabins: { ana: "first" },
       maxStops: 1,
       maxPoints: 75000,
       seatsAeroSources: ["aeroplan", "united"]

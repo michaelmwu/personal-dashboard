@@ -6,6 +6,7 @@ const apiRoot = "/api/integrations/flight-searcher";
 const activeStatuses = new Set(["queued", "running", "waiting_human"]);
 const terminalStatuses = new Set(["completed", "partial", "failed", "canceled"]);
 const providerNames = { seats_aero: "Seats.aero", ana: "ANA", jal: "JAL", eva: "EVA" };
+const airlineProviderIds = new Set(["ana", "jal", "eva"]);
 const state = {
   jobs: [],
   selectedId: null,
@@ -15,7 +16,10 @@ const state = {
   activeChallenges: new Map(),
   challengeUi: new Map(),
   browserTypeQueues: new Map(),
-  browserActionChains: new Map()
+  browserActionChains: new Map(),
+  resultSort: "date",
+  resultDirection: "asc",
+  expandedResults: new Set()
 };
 const number = new Intl.NumberFormat("en-US");
 const airportChoices = [
@@ -98,6 +102,16 @@ function debugReportUrl(jobId, provider) {
   return `${apiRoot}/searches/${encodeURIComponent(jobId)}/providers/${encodeURIComponent(provider)}/debug-html`;
 }
 
+function renderAirlineCabinChoice(provider) {
+  const id = escapeHtml(provider.id);
+  const name = escapeHtml(providerNames[provider.id] ?? provider.name);
+  return `<div class="airline-cabin-choice" data-airline-cabin="${id}" role="group" aria-label="${name} cabin">
+    <span class="airline-cabin-label">${name}</span>
+    <label><input type="radio" name="airlineCabin-${id}" value="business" checked><span>Business</span></label>
+    <label><input type="radio" name="airlineCabin-${id}" value="first"><span>First</span></label>
+  </div>`;
+}
+
 function renderProviders(providers) {
   byId("provider-choices").innerHTML = providers
     .map((provider) => {
@@ -110,8 +124,28 @@ function renderProviders(providers) {
       </label>`;
     })
     .join("");
+  const airlines = providers.filter(
+    (provider) => airlineProviderIds.has(provider.id) && provider.configured
+  );
+  byId("airline-cabin-choices").innerHTML = airlines.length
+    ? `<div class="airline-cabin-heading"><strong>Airline cabin</strong><span>Choose one for each airline search.</span></div>${airlines
+        .map(renderAirlineCabinChoice)
+        .join("")}`
+    : "";
+  syncAirlineCabinControls();
   const seatsAero = providers.find((provider) => provider.id === "seats_aero");
   programInput?.setOptions(seatsAero?.programs ?? []);
+}
+
+function syncAirlineCabinControls() {
+  for (const group of document.querySelectorAll("[data-airline-cabin]")) {
+    const provider = group.dataset.airlineCabin;
+    const enabled = document.querySelector(
+      `input[name="providers"][value="${CSS.escape(provider)}"]`
+    )?.checked;
+    group.classList.toggle("disabled", !enabled);
+    for (const input of group.querySelectorAll("input")) input.disabled = !enabled;
+  }
 }
 
 function renderRun(job) {
@@ -157,6 +191,23 @@ function resultPrice(result) {
     }).format(result.taxes);
   } catch {}
   return `${miles} + ${taxes}`;
+}
+
+function resultPoints(result) {
+  return result.mileage ? `${number.format(result.mileage)} pts` : "Not reported";
+}
+
+function resultTaxes(result) {
+  if (result.taxes === null || result.taxes === undefined) return "Not reported";
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: result.taxCurrency || "USD",
+      maximumFractionDigits: 2
+    }).format(result.taxes);
+  } catch {
+    return `${result.taxes} ${result.taxCurrency ?? ""}`.trim();
+  }
 }
 
 function safeBookingUrl(value) {
@@ -216,20 +267,81 @@ function resultMatchesFilters(result) {
   );
 }
 
+function resultDetailId(result) {
+  return `result-detail-${String(result.id).replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+function sortableHeader(label, sort) {
+  const active = state.resultSort === sort;
+  const direction = active ? state.resultDirection : "none";
+  const nextDirection = active && direction === "asc" ? "descending" : "ascending";
+  return `<th scope="col" aria-sort="${active ? `${direction}ending` : "none"}">
+    <button class="result-sort-button${active ? " active" : ""}" type="button" data-result-sort="${sort}" aria-label="Sort by ${label}, ${nextDirection}">
+      <span>${label}</span><span class="result-sort-arrow" aria-hidden="true">${active ? (direction === "asc" ? "↑" : "↓") : "↕"}</span>
+    </button>
+  </th>`;
+}
+
+function formatResultTimestamp(value) {
+  if (!value) return "Not reported";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short"
+  }).format(parsed);
+}
+
+function renderResultDetails(result) {
+  const segments = result.segments ?? [];
+  const segmentMarkup = segments.length
+    ? `<ol class="flight-segments">${segments
+        .map(
+          (segment, index) => `<li class="flight-segment">
+            <span class="segment-index">${index + 1}</span>
+            <div><strong>${escapeHtml(segment.origin)} → ${escapeHtml(segment.destination)}</strong><span>${escapeHtml(segment.departureLocalTime ?? "Time n/a")} – ${escapeHtml(segment.arrivalLocalTime ?? "Time n/a")}</span></div>
+            <div><strong>${escapeHtml(segment.flightNumber)}</strong><span>${escapeHtml(segment.operatingCarrier ?? "Operating carrier n/a")}</span></div>
+            <div><strong>${escapeHtml(segment.aircraftName ?? segment.aircraftCode ?? "Aircraft n/a")}</strong><span>${segment.aircraftName && segment.aircraftCode ? escapeHtml(segment.aircraftCode) : ""}</span></div>
+            <div><strong>${escapeHtml(segment.cabin ?? result.cabin)}</strong><span>Cabin</span></div>
+          </li>`
+        )
+        .join("")}</ol>`
+    : '<p class="result-detail-empty">This provider did not supply segment-level flight details.</p>';
+  return `<div class="result-detail-content">
+    <div class="result-detail-summary">
+      <span><strong>Departure</strong>${escapeHtml(formatResultTimestamp(result.departsAt))}</span>
+      <span><strong>Arrival</strong>${escapeHtml(formatResultTimestamp(result.arrivesAt))}</span>
+      <span><strong>Award type</strong>${escapeHtml(result.awardType ?? "Not reported")}</span>
+      <span><strong>Mixed cabin</strong>${result.mixedCabinPercent === null || result.mixedCabinPercent === undefined ? "Not reported" : `${escapeHtml(result.mixedCabinPercent)}%`}</span>
+      <span><strong>Observed</strong>${escapeHtml(formatResultTimestamp(result.observedAt))}</span>
+    </div>
+    ${segmentMarkup}
+  </div>`;
+}
+
 function renderResultTable(results) {
   return `<div class="result-table-wrap"><table class="result-table">
-    <thead><tr><th scope="col">Route and date</th><th scope="col">Price and program</th><th scope="col">Cabin and seats</th><th scope="col">Routing</th><th scope="col">Provider</th><th scope="col">Book</th></tr></thead>
+    <thead><tr><th scope="col"><span class="visually-hidden">Details</span></th>${sortableHeader("Date", "date")}<th scope="col">Route</th><th scope="col">Cabin</th>${sortableHeader("Points", "points")}<th scope="col">Taxes</th>${sortableHeader("Routing", "stops")}<th scope="col">Seats</th><th scope="col">Source</th><th scope="col">Book</th></tr></thead>
     <tbody>${results
       .map((result) => {
         const bookingUrl = safeBookingUrl(result.bookingUrl);
+        const expanded = state.expandedResults.has(result.id);
+        const detailId = resultDetailId(result);
         return `<tr class="result-row${isWaitlistResult(result) ? " waitlist" : ""}">
-          <td class="result-route"><strong>${escapeHtml(result.origin)} → ${escapeHtml(result.destination)}</strong><span>${escapeHtml(result.departureDate)}${result.flightNumbers?.length ? ` · ${escapeHtml(result.flightNumbers.join(", "))}` : ""}</span></td>
-          <td class="result-cell"><strong>${escapeHtml(resultPrice(result))}</strong><span>${escapeHtml(result.program)}</span></td>
-          <td class="result-cell"><strong>${escapeHtml(result.cabin)}</strong><span>${result.seats ? `${escapeHtml(result.seats)} seat(s)` : "Seats not reported"}</span></td>
+          <td class="result-expand-cell"><button class="result-expand" type="button" data-result-expand="${escapeHtml(result.id)}" aria-expanded="${expanded}" aria-controls="${escapeHtml(detailId)}" aria-label="${expanded ? "Hide" : "Show"} flight details for ${escapeHtml(result.origin)} to ${escapeHtml(result.destination)}"><span aria-hidden="true">${expanded ? "−" : "+"}</span></button></td>
+          <td class="result-cell"><strong>${escapeHtml(result.departureDate)}</strong><span>${escapeHtml(formatResultTimestamp(result.departsAt))}</span></td>
+          <td class="result-route"><strong>${escapeHtml(result.origin)} → ${escapeHtml(result.destination)}</strong><span>${result.flightNumbers?.length ? escapeHtml(result.flightNumbers.join(", ")) : "Flight n/a"}</span></td>
+          <td class="result-cell"><strong>${escapeHtml(result.cabin)}</strong><span>${result.mixedCabinPercent === null || result.mixedCabinPercent === undefined ? "" : `${escapeHtml(result.mixedCabinPercent)}% in cabin`}</span></td>
+          <td class="result-cell"><strong>${escapeHtml(resultPoints(result))}</strong><span>${escapeHtml(result.program)}</span></td>
+          <td class="result-cell"><strong>${escapeHtml(resultTaxes(result))}</strong><span>${escapeHtml(result.taxCurrency ?? "")}</span></td>
           <td class="result-cell"><strong>${result.stops === 0 ? "Nonstop" : result.stops === null || result.stops === undefined ? "Stops n/a" : `${escapeHtml(result.stops)} stop(s)`}</strong><span>${escapeHtml((result.carriers ?? []).join(", ") || "Carrier n/a")}</span></td>
+          <td class="result-cell"><strong>${result.seats ? escapeHtml(result.seats) : "—"}</strong><span>${result.seats ? "available" : "Not reported"}</span></td>
           <td class="result-cell result-provider">${escapeHtml(providerNames[result.provider] ?? result.provider)}${isWaitlistResult(result) ? '<span class="availability-badge">Waitlist · not bookable</span>' : ""}</td>
           <td class="result-cell">${bookingUrl && !isWaitlistResult(result) ? `<a class="booking-link" href="${escapeHtml(bookingUrl)}" target="_blank" rel="noopener noreferrer">Open</a>` : "—"}</td>
-        </tr>`;
+        </tr>${expanded ? `<tr class="result-detail-row" id="${escapeHtml(detailId)}"><td colspan="10">${renderResultDetails(result)}</td></tr>` : ""}`;
       })
       .join("")}</tbody>
   </table></div>`;
@@ -273,8 +385,7 @@ function renderDateGrid(results) {
 function renderResults(job) {
   const allResults = job?.results ?? [];
   syncResultFilters(allResults);
-  const direction = byId("sort-direction").dataset.direction;
-  const sorted = sortAwardResults(allResults, byId("result-sort").value, direction);
+  const sorted = sortAwardResults(allResults, state.resultSort, state.resultDirection);
   const partitioned = partitionAwardResults(sorted);
   const showWaitlist = byId("show-waitlist").checked;
   const visibleByAvailability = showWaitlist ? sorted : partitioned.available;
@@ -293,7 +404,16 @@ function renderResults(job) {
         ? "No matching award options were returned."
         : "Award options will appear here as providers finish.";
   const view = byId("result-view").value;
-  const renderKey = JSON.stringify([job?.id, job?.status, results, view, emptyMessage]);
+  const renderKey = JSON.stringify([
+    job?.id,
+    job?.status,
+    results,
+    view,
+    emptyMessage,
+    state.resultSort,
+    state.resultDirection,
+    [...state.expandedResults].sort()
+  ]);
   const region = byId("results");
   if (region.dataset.renderKey === renderKey) return;
   region.dataset.renderKey = renderKey;
@@ -587,6 +707,16 @@ function fillSearchFromJob(job) {
   for (const input of document.querySelectorAll('input[name="providers"]')) {
     input.checked = !input.disabled && providers.has(input.value);
   }
+  syncAirlineCabinControls();
+  const defaultAirlineCabin =
+    (request.cabins ?? []).find((cabin) => new Set(["business", "first"]).has(cabin)) ?? "business";
+  for (const provider of airlineProviderIds) {
+    const cabin = request.airlineCabins?.[provider] ?? defaultAirlineCabin;
+    const input = document.querySelector(
+      `input[name="airlineCabin-${CSS.escape(provider)}"][value="${CSS.escape(cabin)}"]`
+    );
+    if (input && !input.disabled) input.checked = true;
+  }
 
   state.selectedId = job.id;
   render();
@@ -770,6 +900,17 @@ byId("search-form").addEventListener("submit", async (event) => {
     providers,
     seatsAeroSources: programInput.getValues()
   };
+  const airlineCabins = {};
+  for (const provider of providers.filter((provider) => airlineProviderIds.has(provider))) {
+    const input = form.querySelector(`input[name="airlineCabin-${CSS.escape(provider)}"]:checked`);
+    if (!input) {
+      byId("form-status").textContent =
+        `Choose Business or First for ${providerNames[provider] ?? provider}.`;
+      return;
+    }
+    airlineCabins[provider] = input.value;
+  }
+  if (Object.keys(airlineCabins).length) payload.airlineCabins = airlineCabins;
   if (data.get("returnStart")) payload.returnStart = data.get("returnStart");
   if (data.get("returnEnd")) payload.returnEnd = data.get("returnEnd");
   if (data.get("maxPoints") !== "") payload.maxPoints = Number(data.get("maxPoints"));
@@ -951,7 +1092,6 @@ byId("challenge-region").addEventListener("paste", (event) => {
 });
 
 for (const id of [
-  "result-sort",
   "show-waitlist",
   "result-provider-filter",
   "result-cabin-filter",
@@ -960,11 +1100,26 @@ for (const id of [
 ]) {
   byId(id).addEventListener("change", () => renderResults(selectedJob()));
 }
-byId("sort-direction").addEventListener("click", (event) => {
-  const descending = event.currentTarget.dataset.direction === "asc";
-  event.currentTarget.dataset.direction = descending ? "desc" : "asc";
-  event.currentTarget.textContent = descending ? "↓" : "↑";
-  event.currentTarget.setAttribute("aria-label", descending ? "Sort descending" : "Sort ascending");
+
+byId("provider-choices").addEventListener("change", syncAirlineCabinControls);
+
+byId("results").addEventListener("click", (event) => {
+  const sort = event.target.closest("[data-result-sort]");
+  if (sort) {
+    if (state.resultSort === sort.dataset.resultSort) {
+      state.resultDirection = state.resultDirection === "asc" ? "desc" : "asc";
+    } else {
+      state.resultSort = sort.dataset.resultSort;
+      state.resultDirection = "asc";
+    }
+    renderResults(selectedJob());
+    return;
+  }
+  const expand = event.target.closest("[data-result-expand]");
+  if (!expand) return;
+  const resultId = expand.dataset.resultExpand;
+  if (state.expandedResults.has(resultId)) state.expandedResults.delete(resultId);
+  else state.expandedResults.add(resultId);
   renderResults(selectedJob());
 });
 

@@ -94,6 +94,7 @@ export function hermesCapabilities() {
         passengers: "number?",
         cabins: "economy|premium|business|first[]?",
         providers: "seats_aero|ana|jal|eva[]?",
+        airlineCabins: "{ana|jal|eva: business|first}?",
         maxStops: "number?",
         maxPoints: "positive integer?",
         seatsAeroSources: "string[]?"

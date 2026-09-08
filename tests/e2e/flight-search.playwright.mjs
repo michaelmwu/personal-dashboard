@@ -28,6 +28,12 @@ test("award filters, result sorting and challenge input survive refresh", async 
               { id: "aeroplan", name: "Air Canada Aeroplan" },
               { id: "united", name: "United MileagePlus" }
             ]
+          },
+          {
+            id: "ana",
+            name: "ANA Mileage Club",
+            configured: true,
+            scope: "International ANA and eligible Star Alliance awards."
           }
         ]
       });
@@ -65,7 +71,27 @@ test("award filters, result sorting and challenge input survive refresh", async 
             cabin: "business",
             program: "aeroplan",
             provider: "seats_aero",
-            bookingUrl: "https://seats.aero/search/a"
+            bookingUrl: "https://seats.aero/search/a",
+            flightNumbers: ["NH107"],
+            carriers: ["ANA"],
+            taxes: 52.4,
+            taxCurrency: "USD",
+            departsAt: "2026-11-01T17:00:00Z",
+            arrivesAt: "2026-11-02T02:00:00Z",
+            aircraftCode: "789",
+            segments: [
+              {
+                origin: "NRT",
+                destination: "TPE",
+                flightNumber: "NH107",
+                operatingCarrier: "ANA",
+                aircraftCode: "789",
+                aircraftName: "Boeing 787-9",
+                cabin: "business",
+                departureLocalTime: "17:00",
+                arrivalLocalTime: "20:00"
+              }
+            ]
           },
           {
             id: "b",
@@ -136,6 +162,7 @@ test("award filters, result sorting and challenge input survive refresh", async 
     await returnPicker.getByRole("button", { name: "Apply dates" }).click();
     await page.locator('[name="maxStops"]').selectOption("0");
     await page.locator('[name="maxPoints"]').fill("75000");
+    await page.locator('input[name="airlineCabin-ana"][value="first"]').check();
     await page.getByRole("button", { name: "Search availability" }).click();
     await expect(page.locator(".result-row")).toHaveCount(2);
     expect(submitted).toMatchObject({
@@ -145,11 +172,18 @@ test("award filters, result sorting and challenge input survive refresh", async 
       returnEnd: departureEnd,
       maxStops: 0,
       maxPoints: 75000,
-      providers: ["seats_aero"],
+      providers: ["seats_aero", "ana"],
+      airlineCabins: { ana: "first" },
       seatsAeroSources: ["aeroplan"]
     });
-    await page.locator("#result-sort").selectOption("points");
+    await page.getByRole("button", { name: /Sort by Points/ }).click();
     await expect(page.locator(".result-row").first()).toContainText("50,000 pts");
+    await page.locator('[data-result-expand="a"]').click();
+    await expect(page.locator(".result-detail-row")).toContainText("NH107");
+    await expect(page.locator(".result-detail-row")).toContainText("Boeing 787-9");
+    await expect(page.locator(".result-detail-row")).toContainText("NRT → TPE");
+    await page.locator('[data-result-expand="a"]').click();
+    await expect(page.locator(".result-detail-row")).toHaveCount(0);
     await expect(page.locator("#result-count")).toHaveText("2 available · 1 waitlist hidden");
     await expect(page.getByText("Waitlist · not bookable")).toHaveCount(0);
     await page.locator("#show-waitlist").check();
@@ -164,7 +198,7 @@ test("award filters, result sorting and challenge input survive refresh", async 
     await expect(page.locator(".date-result-grid")).toBeVisible();
     await expect(page.getByRole("columnheader", { name: "business" })).toBeVisible();
     await page.locator("#result-view").selectOption("table");
-    await expect(page.getByRole("columnheader", { name: "Route and date" })).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "Route" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Open" })).toHaveAttribute(
       "href",
       "https://seats.aero/search/a"
