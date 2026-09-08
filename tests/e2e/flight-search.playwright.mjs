@@ -7,10 +7,30 @@ test("award filters, result sorting and challenge input survive refresh", async 
   const base = `http://127.0.0.1:${server.address().port}`;
   let job = null;
   let submitted;
+  const otpBrowserActions = [];
   await page.route("**/api/integrations/flight-searcher/**", async (route) => {
     const request = route.request();
+    if (request.url().includes("/screenshot")) {
+      return route.fulfill({ status: 404, body: "" });
+    }
+    if (request.url().endsWith("/browser-actions")) {
+      otpBrowserActions.push(request.postDataJSON());
+      return route.fulfill({ json: {} });
+    }
     if (request.url().endsWith("/providers")) {
-      return route.fulfill({ json: [{ id: "seats_aero", name: "Seats.aero", configured: true }] });
+      return route.fulfill({
+        json: [
+          {
+            id: "seats_aero",
+            name: "Seats.aero",
+            configured: true,
+            programs: [
+              { id: "aeroplan", name: "Air Canada Aeroplan" },
+              { id: "united", name: "United MileagePlus" }
+            ]
+          }
+        ]
+      });
     }
     if (request.method() === "POST") {
       submitted = request.postDataJSON();
@@ -28,6 +48,7 @@ test("award filters, result sorting and challenge input survive refresh", async 
               kind: "email_otp",
               prompt: "Enter your code",
               responseFormat: "text",
+              screenshotAvailable: true,
               expiresAt: "2026-12-01T12:00:00Z"
             }
           }
@@ -43,7 +64,8 @@ test("award filters, result sorting and challenge input survive refresh", async 
             stops: 0,
             cabin: "business",
             program: "aeroplan",
-            provider: "seats_aero"
+            provider: "seats_aero",
+            bookingUrl: "https://seats.aero/search/a"
           },
           {
             id: "b",
@@ -76,8 +98,15 @@ test("award filters, result sorting and challenge input survive refresh", async 
   });
   try {
     await page.goto(`${base}/flights`);
-    await page.locator('[name="origins"]').fill("NRT");
-    await page.locator('[name="destinations"]').fill("TPE");
+    await page.locator('[data-token-field="origins"] [data-token-entry]').fill("Tokyo");
+    await page.locator('[data-token-field="origins"] [data-token-entry]').press("Enter");
+    await page.getByRole("button", { name: "Remove TYO" }).click();
+    await page.locator('[data-token-field="origins"] [data-token-entry]').fill("NRT");
+    await page.locator('[data-token-field="origins"] [data-token-entry]').press("Enter");
+    await page.locator('[data-token-field="destinations"] [data-token-entry]').fill("TPE");
+    await page.locator('[data-token-field="destinations"] [data-token-entry]').press("Enter");
+    await page.locator('[data-token-field="programs"] [data-token-entry]').fill("Aeroplan");
+    await page.locator('[data-token-field="programs"] [data-token-entry]').press("Enter");
     const initialDeparture = await page.locator('[name="departureStart"]').inputValue();
     const initialDate = new Date(`${initialDeparture}T00:00:00Z`);
     const lastDay = new Date(
@@ -116,7 +145,8 @@ test("award filters, result sorting and challenge input survive refresh", async 
       returnEnd: departureEnd,
       maxStops: 0,
       maxPoints: 75000,
-      providers: ["seats_aero"]
+      providers: ["seats_aero"],
+      seatsAeroSources: ["aeroplan"]
     });
     await page.locator("#result-sort").selectOption("points");
     await expect(page.locator(".result-row").first()).toContainText("50,000 pts");
@@ -127,14 +157,51 @@ test("award filters, result sorting and challenge input survive refresh", async 
     await expect(page.locator(".result-row").last()).toContainText("10,000 pts");
     await expect(page.getByText("Waitlist · not bookable")).toBeVisible();
     await expect(page.locator("#result-count")).toHaveText("2 available · 1 waitlist");
+    await page.locator("#result-program-filter").selectOption("united");
+    await expect(page.locator(".result-row")).toHaveCount(1);
+    await page.locator("#result-program-filter").selectOption("");
+    await page.locator("#result-view").selectOption("grid");
+    await expect(page.locator(".date-result-grid")).toBeVisible();
+    await expect(page.getByRole("columnheader", { name: "business" })).toBeVisible();
+    await page.locator("#result-view").selectOption("table");
+    await expect(page.getByRole("columnheader", { name: "Route and date" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Open" })).toHaveAttribute(
+      "href",
+      "https://seats.aero/search/a"
+    );
+    await page
+      .locator(".result-row")
+      .first()
+      .evaluate((element) => {
+        element.dataset.renderSentinel = "preserved";
+      });
+    await page
+      .locator(".history-row")
+      .first()
+      .evaluate((element) => {
+        element.dataset.renderSentinel = "preserved";
+      });
     await page.locator("[data-challenge-value]").fill("123456");
+    await expect(page.getByRole("button", { name: "Scroll down" })).toBeVisible();
+    await page.getByRole("button", { name: "Scroll down" }).click();
+    await expect.poll(() => otpBrowserActions).toEqual([{ kind: "scroll", deltaY: 650 }]);
     const refreshed = page.waitForResponse((r) => r.url().includes("/searches?limit="));
     await page.locator("#refresh-searches").click();
     await refreshed;
     await expect(page.locator("[data-challenge-value]")).toHaveValue("123456");
+    await expect(page.locator(".result-row").first()).toHaveAttribute(
+      "data-render-sentinel",
+      "preserved"
+    );
+    await expect(page.locator(".history-row").first()).toHaveAttribute(
+      "data-render-sentinel",
+      "preserved"
+    );
 
-    await page.locator('[name="origins"]').fill("SEA");
-    await page.locator('[name="destinations"]').fill("HND");
+    await page.locator('[data-token-field="origins"] [data-token-entry]').fill("SEA");
+    await page.locator('[data-token-field="origins"] [data-token-entry]').press("Enter");
+    await page.locator('[data-token-field="destinations"] [data-token-entry]').fill("HND");
+    await page.locator('[data-token-field="destinations"] [data-token-entry]').press("Enter");
     await page.locator('[name="maxStops"]').selectOption("");
     await page.locator('[name="maxPoints"]').fill("");
     await page.getByRole("button", { name: "Use as search" }).click();
@@ -146,6 +213,7 @@ test("award filters, result sorting and challenge input survive refresh", async 
     await expect(page.locator('[name="returnEnd"]')).toHaveValue(departureEnd);
     await expect(page.locator('[name="maxStops"]')).toHaveValue("0");
     await expect(page.locator('[name="maxPoints"]')).toHaveValue("75000");
+    await expect(page.locator('[name="seatsAeroSources"]')).toHaveValue("aeroplan");
     await expect(page.locator('input[name="providers"][value="seats_aero"]')).toBeChecked();
     await expect(page.locator("#form-status")).toContainText("Recent search copied");
     await page.setViewportSize({ width: 390, height: 844 });
@@ -158,12 +226,13 @@ test("award filters, result sorting and challenge input survive refresh", async 
   }
 });
 
-test("browser handoff keeps recovery controls clear and optional", async ({ page }) => {
+test("browser handoff exposes safe recovery controls and inline errors", async ({ page }) => {
   const server = createWebServer();
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
   const browserActions = [];
   const challengeResponses = [];
+  let screenshotRequests = 0;
   const job = {
     id: "search_handoff",
     status: "waiting_human",
@@ -205,6 +274,7 @@ test("browser handoff keeps recovery controls clear and optional", async ({ page
       return route.fulfill({ json: [] });
     }
     if (url.includes("/screenshot")) {
+      screenshotRequests += 1;
       return route.fulfill({ status: 404, body: "" });
     }
     if (url.endsWith("/providers/ana/debug-html")) {
@@ -214,7 +284,11 @@ test("browser handoff keeps recovery controls clear and optional", async ({ page
       });
     }
     if (url.endsWith("/browser-actions")) {
-      browserActions.push(request.postDataJSON());
+      const action = request.postDataJSON();
+      browserActions.push(action);
+      if (action.key === "Escape") {
+        return route.fulfill({ status: 409, json: { message: "Synthetic action rejection" } });
+      }
       return route.fulfill({ json: {} });
     }
     if (url.endsWith("/respond")) {
@@ -234,12 +308,22 @@ test("browser handoff keeps recovery controls clear and optional", async ({ page
       "/api/integrations/flight-searcher/searches/search_handoff/providers/ana/debug-html"
     );
     await expect(page.getByRole("button", { name: "I finished — continue search" })).toBeVisible();
-    await expect(page.locator("[data-browser-text]")).toBeHidden();
+    await expect(page.locator("[data-browser-text]")).toBeVisible();
 
-    await page.getByText("Manual browser controls").click();
     await page.locator("[data-browser-text]").fill("SFO");
     await page.getByRole("button", { name: "Send to browser" }).click();
     await expect.poll(() => browserActions).toEqual([{ kind: "type", text: "SFO" }]);
+    await page.getByRole("button", { name: "↓" }).click();
+    await expect.poll(() => browserActions.at(-1)).toEqual({ kind: "key", key: "ArrowDown" });
+    await page.getByRole("button", { name: "Escape" }).click();
+    await expect(page.locator("[data-challenge-status]")).toHaveText("Synthetic action rejection");
+    const screenshotsBeforeRefresh = screenshotRequests;
+    await page.getByRole("button", { name: "Refresh preview" }).click();
+    await expect.poll(() => screenshotRequests).toBeGreaterThan(screenshotsBeforeRefresh);
+    expect(browserActions.some((action) => action.kind === "refresh")).toBe(false);
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "Reload airline page…" }).click();
+    await expect.poll(() => browserActions.at(-1)).toEqual({ kind: "refresh" });
 
     await page.getByRole("button", { name: "I finished — continue search" }).click();
     await expect.poll(() => challengeResponses).toEqual([{ value: "continue" }]);

@@ -1,8 +1,12 @@
 import { defineConfig } from "@playwright/test";
 import { existsSync } from "node:fs";
 
-const localChromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-const launchOptions = existsSync(localChromePath)
+const localChromePath = [
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "/usr/bin/google-chrome-stable",
+  "/usr/bin/google-chrome"
+].find(existsSync);
+const launchOptions = localChromePath
   ? {
       executablePath: localChromePath
     }

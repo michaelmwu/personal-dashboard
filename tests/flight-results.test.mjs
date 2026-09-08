@@ -22,6 +22,11 @@ test("sorts points and stops with unknown values last, preserving job data", () 
     "unknown"
   ]);
   expect(sortAwardResults(results).map((r) => r.id)).toEqual(["unknown", "nonstop", "cheap"]);
+  expect(sortAwardResults(results, "points", "desc").map((r) => r.id)).toEqual([
+    "nonstop",
+    "cheap",
+    "unknown"
+  ]);
   expect(results[0].id).toBe("unknown");
 });
 
