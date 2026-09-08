@@ -722,6 +722,29 @@ legend {
   font-size: 10.5px;
   line-height: 1.4;
 }
+.provider-run .provider-queue-details {
+  color: var(--blue);
+  font-weight: 680;
+}
+.provider-queue-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.provider-queue-actions button {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.queue-link {
+  color: var(--blue);
+}
+.queue-cancel {
+  color: var(--red);
+}
 .provider-run .provider-error-code {
   margin-top: 5px;
   color: var(--red);
@@ -1169,7 +1192,7 @@ legend {
 }
 .history-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -1204,7 +1227,8 @@ legend {
   color: var(--muted);
   font-size: 11px;
 }
-.history-quickfill {
+.history-quickfill,
+.history-cancel {
   min-height: 34px;
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -1219,6 +1243,13 @@ legend {
 .history-quickfill:hover {
   border-color: #a9b8ca;
   background: var(--blue-soft);
+}
+.history-cancel {
+  color: var(--red);
+}
+.history-cancel:hover {
+  border-color: var(--red);
+  background: var(--red-soft);
 }
 
 @media (max-width: 900px) {
@@ -1405,10 +1436,15 @@ select,
 .secondary-button,
 .control-button,
 .history-row,
-.history-quickfill {
+.history-quickfill,
+.history-cancel {
   border-color: var(--line-strong);
   background: #101720;
   color: var(--ink);
+}
+
+.history-cancel {
+  color: var(--red);
 }
 
 input:focus,

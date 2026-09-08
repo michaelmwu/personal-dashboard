@@ -94,6 +94,27 @@ function statusPill(status) {
   return `<span class="status-pill ${escapeHtml(status)}">${escapeHtml(String(status).replaceAll("_", " "))}</span>`;
 }
 
+function elapsedLabel(timestamp) {
+  const started = Date.parse(timestamp ?? "");
+  if (!Number.isFinite(started)) return null;
+  const seconds = Math.max(0, Math.floor((Date.now() - started) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function providerQueueDetails(run) {
+  if (run.state !== "queued") return "";
+  const parts = [];
+  if (run.queuePosition) parts.push(`Queue position ${run.queuePosition}`);
+  const elapsed = elapsedLabel(run.queuedAt);
+  if (elapsed) parts.push(`waiting ${elapsed}`);
+  if (!parts.length) return "";
+  return `<p class="provider-queue-details">${escapeHtml(parts.join(" · "))}</p>`;
+}
+
 function selectedJob() {
   return state.jobs.find((job) => job.id === state.selectedId) ?? state.jobs[0] ?? null;
 }
@@ -170,7 +191,9 @@ function renderRun(job) {
     .map(
       ([id, run]) => `<div class="provider-run">
       <div class="provider-run-head"><span>${escapeHtml(providerNames[id] ?? id)}</span>${statusPill(run.state)}</div>
-      <p>${escapeHtml(run.message ?? (run.resultCount ? `${run.resultCount} result(s)` : "Waiting to start"))}</p>
+      <p>${escapeHtml(run.message ?? (run.resultCount ? `${run.resultCount} result(s)` : run.state === "queued" ? "Queued by the provider scheduler." : "Starting provider."))}</p>
+      ${providerQueueDetails(run)}
+      ${run.blockedByJobId ? `<div class="provider-queue-actions"><button class="queue-link" type="button" data-select-job-inline="${escapeHtml(run.blockedByJobId)}">View older search</button><button class="queue-cancel" type="button" data-cancel-job="${escapeHtml(run.blockedByJobId)}">Cancel older search</button></div>` : ""}
       ${run.errorCode ? `<p class="provider-error-code">Error code: <code>${escapeHtml(run.errorCode)}</code></p>` : ""}
       ${run.debugHtmlAvailable ? `<a class="debug-report-link" href="${debugReportUrl(job.id, id)}" download>Download sanitized selector report</a>` : ""}
       ${run.rateLimitRemaining === null || run.rateLimitRemaining === undefined ? "" : `<p>${number.format(run.rateLimitRemaining)} Seats.aero calls remaining today</p>`}
@@ -665,6 +688,7 @@ function renderHistory() {
           ${statusPill(job.status)}
           </button>
           <button class="history-quickfill" type="button" data-fill-job="${escapeHtml(job.id)}">Use as search</button>
+          ${activeStatuses.has(job.status) ? `<button class="history-cancel" type="button" data-cancel-job="${escapeHtml(job.id)}" aria-label="Cancel ${escapeHtml((request.origins ?? []).join(", "))} to ${escapeHtml((request.destinations ?? []).join(", "))} search">Cancel</button>` : ""}
         </div>`;
         })
         .join("")
@@ -763,6 +787,24 @@ async function refreshSearches() {
   } finally {
     state.refreshing = false;
     scheduleRefresh();
+  }
+}
+
+async function cancelJob(jobId, button = null) {
+  if (!jobId) return;
+  if (button) button.disabled = true;
+  try {
+    const updated = await api(`/searches/${encodeURIComponent(jobId)}/cancel`, {
+      method: "POST",
+      body: {}
+    });
+    state.jobs = state.jobs.map((item) => (item.id === updated.id ? updated : item));
+    render();
+    await refreshSearches();
+  } catch (error) {
+    byId("service-state").textContent = error.message;
+    byId("service-state").className = "service-state error";
+    if (button) button.disabled = false;
   }
 }
 
@@ -933,6 +975,11 @@ byId("search-form").addEventListener("submit", async (event) => {
 });
 
 byId("search-history").addEventListener("click", (event) => {
+  const cancel = event.target.closest("[data-cancel-job]");
+  if (cancel) {
+    void cancelJob(cancel.dataset.cancelJob, cancel);
+    return;
+  }
   const quickfill = event.target.closest("[data-fill-job]");
   if (quickfill) {
     const job = state.jobs.find((item) => item.id === quickfill.dataset.fillJob);
@@ -942,6 +989,18 @@ byId("search-history").addEventListener("click", (event) => {
   const button = event.target.closest("[data-select-job]");
   if (!button) return;
   state.selectedId = button.dataset.selectJob;
+  render();
+});
+
+byId("provider-runs").addEventListener("click", (event) => {
+  const cancel = event.target.closest("[data-cancel-job]");
+  if (cancel) {
+    void cancelJob(cancel.dataset.cancelJob, cancel);
+    return;
+  }
+  const select = event.target.closest("[data-select-job-inline]");
+  if (!select) return;
+  state.selectedId = select.dataset.selectJobInline;
   render();
 });
 
@@ -970,17 +1029,7 @@ byId("intervention-queue").addEventListener("keydown", (event) => {
 byId("cancel-search").addEventListener("click", async () => {
   const job = selectedJob();
   if (!job) return;
-  try {
-    const updated = await api(`/searches/${encodeURIComponent(job.id)}/cancel`, {
-      method: "POST",
-      body: {}
-    });
-    state.jobs = state.jobs.map((item) => (item.id === updated.id ? updated : item));
-    render();
-  } catch (error) {
-    byId("service-state").textContent = error.message;
-    byId("service-state").className = "service-state error";
-  }
+  await cancelJob(job.id, byId("cancel-search"));
 });
 
 byId("challenge-region").addEventListener("click", async (event) => {
