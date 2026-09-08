@@ -21,21 +21,13 @@
       <section class="intervention-queue" id="intervention-queue" hidden></section>
 
       <section class="hero" aria-labelledby="flight-title">
-        <div>
-          <p class="kicker">Award availability control room</p>
-          <h1 id="flight-title">Flight searcher</h1>
-        </div>
-        <p class="hero-note">Award seats across Seats.aero, ANA, JAL, and EVA. Human verification pauses safely here; this app never reads your email.</p>
+        <h1 id="flight-title">Flight searcher</h1>
       </section>
 
       <section class="workspace">
         <form class="panel search-panel" id="search-form">
           <div class="panel-heading">
-            <div>
-              <p class="section-label">New search</p>
-              <h2>Where do you want to go?</h2>
-            </div>
-            <span class="quiet-label">Award seats only</span>
+            <h2>Where do you want to go?</h2>
           </div>
 
           <div class="route-grid">
@@ -66,28 +58,26 @@
               <span class="control-label" id="departure-range-label">Departure window</span>
               <input name="departureStart" type="hidden">
               <input name="departureEnd" type="hidden">
-              <button class="date-range-trigger" type="button" aria-labelledby="departure-range-label departure-range-value" aria-describedby="departure-range-help" aria-haspopup="dialog" aria-expanded="false">
+              <button class="date-range-trigger" type="button" aria-labelledby="departure-range-label departure-range-value" aria-haspopup="dialog" aria-expanded="false">
                 <span>
                   <strong id="departure-range-value" data-range-value>Choose dates</strong>
                   <small data-range-meta>Flexible outbound window</small>
                 </span>
                 <span class="calendar-mark" aria-hidden="true"></span>
               </button>
-              <small class="field-help" id="departure-range-help">Choose the first and last departure dates together.</small>
             </div>
 
             <div class="date-range-field" data-date-range-picker="return">
               <span class="control-label" id="return-range-label">Return window <em>optional</em></span>
               <input name="returnStart" type="hidden">
               <input name="returnEnd" type="hidden">
-              <button class="date-range-trigger" type="button" aria-labelledby="return-range-label return-range-value" aria-describedby="return-range-help" aria-haspopup="dialog" aria-expanded="false">
+              <button class="date-range-trigger" type="button" aria-labelledby="return-range-label return-range-value" aria-haspopup="dialog" aria-expanded="false">
                 <span>
                   <strong id="return-range-value" data-range-value>Add return dates</strong>
                   <small data-range-meta>For ANA and JAL searches</small>
                 </span>
                 <span class="calendar-mark" aria-hidden="true"></span>
               </button>
-              <small class="field-help" id="return-range-help">Linked to the departure window; used by airline searches.</small>
             </div>
           </div>
 
@@ -118,13 +108,13 @@
                 <input data-token-entry autocomplete="off" placeholder="All programs, or start typing" aria-describedby="programs-help programs-error">
                 <input name="seatsAeroSources" type="hidden" data-token-value>
               </div>
-              <small id="programs-help">Optional. Leave empty to search every supported program.</small>
+              <small id="programs-help">Leave empty for all programs.</small>
               <small class="field-error" id="programs-error" data-token-error role="alert"></small>
             </label>
           </div>
 
           <details class="search-notes">
-            <summary>Search scope and pricing notes</summary>
+            <summary>Search limits</summary>
             <p>Seats.aero searches outbound flights only; search the reverse route separately for the return. ANA may include eligible Star Alliance awards. JAL is limited to international JAL-operated flights. Points are per traveler, taxes are extra, and cached availability must be confirmed before transferring points.</p>
           </details>
 
@@ -148,7 +138,7 @@
           </fieldset>
 
           <div class="form-footer">
-            <p id="form-status" role="status">Credentials stay inside Flight Searcher.</p>
+            <p id="form-status" role="status"></p>
             <button class="primary-button" type="submit" id="search-submit">Search availability</button>
           </div>
         </form>
@@ -159,10 +149,7 @@
 
       <section class="panel history-panel">
         <div class="panel-heading">
-          <div>
-            <p class="section-label">Recent</p>
-            <h2>Recent searches</h2>
-          </div>
+          <h2>Recent searches</h2>
           <button class="text-button" type="button" id="refresh-searches">Refresh</button>
         </div>
         <div class="history" id="search-history"><p class="empty">No searches yet.</p></div>
@@ -170,10 +157,7 @@
 
       <section class="panel progress-panel">
         <div class="panel-heading">
-          <div>
-            <p class="section-label">Live run</p>
-            <h2 id="run-title">No search selected</h2>
-          </div>
+          <h2 id="run-title">No search selected</h2>
           <span class="status-pill" id="run-status">Idle</span>
         </div>
         <div class="provider-runs" id="provider-runs">
@@ -184,10 +168,7 @@
 
       <section class="panel results-panel">
         <div class="panel-heading">
-          <div>
-            <p class="section-label">Availability</p>
-            <h2>Results</h2>
-          </div>
+          <h2>Results</h2>
           <div class="results-heading-controls">
             <label class="waitlist-toggle"><input type="checkbox" id="show-waitlist"><span>Show waitlist</span></label>
             <label class="result-filter-control"><span>Provider</span><select id="result-provider-filter"><option value="">All</option></select></label>
@@ -197,7 +178,6 @@
             <span class="quiet-label" id="result-count">0 available</span>
           </div>
         </div>
-        <p class="quiet-label">Waitlists stay hidden unless requested and are never presented as bookable.</p>
         <div class="results" id="results">
           <p class="empty">Award options will appear here as providers finish.</p>
         </div>

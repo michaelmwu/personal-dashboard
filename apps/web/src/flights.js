@@ -136,12 +136,9 @@ function renderAirlineCabinChoice(provider) {
 function renderProviders(providers) {
   byId("provider-choices").innerHTML = providers
     .map((provider) => {
-      const challenges = (provider.humanChallenges ?? [])
-        .map((item) => item.replaceAll("_", " "))
-        .join(", ");
       return `<label class="choice">
         <input type="checkbox" name="providers" value="${escapeHtml(provider.id)}" ${provider.configured ? "checked" : "disabled"}>
-        <span>${escapeHtml(provider.name)}${provider.configured ? "" : " · not configured"}${provider.scope ? `<small class="provider-note">${escapeHtml(provider.scope)}</small>` : ""}${challenges ? `<small class="provider-note">Human: ${escapeHtml(challenges)}</small>` : ""}</span>
+        <span>${escapeHtml(provider.name)}${provider.configured ? "" : " · not configured"}</span>
       </label>`;
     })
     .join("");
@@ -149,7 +146,7 @@ function renderProviders(providers) {
     (provider) => airlineProviderIds.has(provider.id) && provider.configured
   );
   byId("airline-cabin-choices").innerHTML = airlines.length
-    ? `<div class="airline-cabin-heading"><strong>Airline cabin</strong><span>Choose one for each airline search.</span></div>${airlines
+    ? `<div class="airline-cabin-heading"><strong>Airline cabin</strong></div>${airlines
         .map(renderAirlineCabinChoice)
         .join("")}`
     : "";
@@ -603,8 +600,7 @@ function renderInterventionQueue(job, challenges, activeId) {
           return `<button type="button" role="tab" id="challenge-tab-${index}" aria-label="${escapeHtml(provider)} ${escapeHtml(kind)}" aria-controls="challenge-panel-${index}" aria-selected="${active}" tabindex="${active ? "0" : "-1"}" class="intervention-tab${active ? " active" : ""}" data-job-id="${escapeHtml(job.id)}" data-challenge-id="${escapeHtml(challenge.id)}" data-challenge-tab><span>${escapeHtml(provider)}</span>${escapeHtml(kind)}</button>`;
         })
         .join("")}
-    </div>
-    <span class="intervention-privacy">Nothing you type here is stored</span>`;
+    </div>`;
 }
 
 function renderChallenges(job) {
@@ -643,7 +639,7 @@ function renderChallenges(job) {
         <div class="challenge-copy">
           <div class="challenge-heading"><p class="section-label">Needs you</p><h2>${escapeHtml(providerNames[challenge.provider] ?? challenge.provider)} · ${escapeHtml(challengeKindLabel(challenge))}</h2>${challenges.length > 1 ? `<span>Next: ${escapeHtml(providerNames[next.provider] ?? next.provider)} · ${escapeHtml(challengeKindLabel(next))}</span>` : ""}</div>
           <p>${escapeHtml(challenge.prompt)}</p>
-          <span class="challenge-expiry">Expires ${escapeHtml(new Date(challenge.expiresAt).toLocaleString())}. Nothing entered here is stored by the dashboard.</span>
+          <span class="challenge-expiry">Expires ${escapeHtml(new Date(challenge.expiresAt).toLocaleString())}.</span>
         </div>
         ${challenge.screenshotAvailable ? `<div class="browser-frame"><div class="browser-canvas" ${acknowledgement ? 'tabindex="0" role="application" data-browser-input-surface aria-label="Interactive airline browser preview. Click a field, then type or paste."' : ""}><img class="browser-shot" data-interactive="${acknowledgement}" src="${screenshotUrl(job.id, challenge.id)}" alt="Redacted live ${escapeHtml(challenge.provider)} browser preview"></div></div>${previewControls(acknowledgement)}` : ""}
         ${
@@ -651,14 +647,14 @@ function renderChallenges(job) {
             ? `<div class="challenge-controls acknowledgement-controls">
           <details class="browser-tools" open>
             <summary>Manual browser controls</summary>
-            <p>Correct the airline form here. Login credentials are handled automatically; send only ordinary search text such as an airport code.</p>
+            <p>Correct the airline form here. Login credentials are filled automatically.</p>
             <div class="browser-type-row"><label>Text for the selected airline field<input data-browser-text type="text" autocomplete="off" placeholder="For example, SFO"></label><button class="secondary-button" type="button" data-browser-type>Send to browser</button></div>
             <div class="browser-buttons"><button class="control-button" type="button" data-browser-key="Tab">Tab</button><button class="control-button" type="button" data-browser-key="Enter">Enter</button><button class="control-button" type="button" data-browser-key="Escape">Escape</button><button class="control-button" type="button" data-browser-key="Backspace">Backspace</button><button class="control-button" type="button" data-browser-key="Delete">Delete</button><button class="control-button" type="button" data-browser-key="ArrowUp">↑</button><button class="control-button" type="button" data-browser-key="ArrowDown">↓</button></div>
             <button class="danger-button" type="button" data-browser-reload>Reload airline page…</button>
           </details>
           <button class="secondary-button continue-button" type="button" data-challenge-submit>I finished — continue search</button>
         </div>`
-            : `<div class="challenge-controls"><input data-challenge-value autocomplete="one-time-code" inputmode="text" placeholder="${escapeHtml(inputLabel)}"><button class="primary-button" type="button" data-challenge-submit>Submit</button><small>Copy the code from your own email or phone. This app does not access either inbox.</small></div>`
+            : `<div class="challenge-controls"><input data-challenge-value autocomplete="one-time-code" inputmode="text" placeholder="${escapeHtml(inputLabel)}"><button class="primary-button" type="button" data-challenge-submit>Submit</button><small>Codes are not saved.</small></div>`
         }
         <p class="challenge-action-status" data-challenge-status role="status"></p>
       </article>`;

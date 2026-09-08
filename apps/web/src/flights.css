@@ -96,7 +96,6 @@ select {
   padding: 58px 0 34px;
 }
 
-.kicker,
 .section-label {
   margin: 0 0 8px;
   color: var(--faint);
@@ -114,14 +113,6 @@ h1 {
   letter-spacing: -0.05em;
   line-height: 1.02;
 }
-.hero-note {
-  max-width: 380px;
-  margin: 0 0 5px;
-  color: var(--muted);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1.65fr) minmax(300px, 0.75fr);
@@ -546,13 +537,6 @@ legend {
   color: var(--faint);
   font-size: 12px;
 }
-.provider-note {
-  display: block;
-  margin-top: 3px;
-  color: var(--faint);
-  font-size: 9px;
-  font-weight: 500;
-}
 .airline-cabin-choices {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -567,9 +551,6 @@ legend {
   gap: 12px;
   color: var(--muted);
   font-size: 11px;
-}
-.airline-cabin-heading span {
-  color: var(--faint);
 }
 .airline-cabin-choice {
   display: grid;
@@ -1392,11 +1373,6 @@ h1 {
   font-weight: 700;
 }
 
-.hero-note {
-  max-width: 520px;
-  font-size: 12px;
-}
-
 .workspace {
   display: block;
 }
@@ -1620,12 +1596,6 @@ input:disabled {
 .intervention-tab:focus-visible {
   outline: 2px solid #ffd08d;
   outline-offset: 2px;
-}
-
-.intervention-privacy {
-  color: #b68243;
-  font-size: 10px;
-  white-space: nowrap;
 }
 
 .challenge-region {
@@ -1861,10 +1831,6 @@ input:disabled {
 
   .intervention-queue {
     grid-template-columns: auto minmax(0, 1fr);
-  }
-
-  .intervention-privacy {
-    display: none;
   }
 }
 
