@@ -6,7 +6,17 @@ const apiRoot = "/api/integrations/flight-searcher";
 const activeStatuses = new Set(["queued", "running", "waiting_human"]);
 const terminalStatuses = new Set(["completed", "partial", "failed", "canceled"]);
 const providerNames = { seats_aero: "Seats.aero", ana: "ANA", jal: "JAL", eva: "EVA" };
-const state = { jobs: [], selectedId: null, refreshing: false, timer: null, previewTimer: null };
+const state = {
+  jobs: [],
+  selectedId: null,
+  refreshing: false,
+  timer: null,
+  previewTimer: null,
+  activeChallenges: new Map(),
+  challengeUi: new Map(),
+  browserTypeQueues: new Map(),
+  browserActionChains: new Map()
+};
 const number = new Intl.NumberFormat("en-US");
 const airportChoices = [
   { id: "TYO", name: "Tokyo (all airports)", aliases: ["Tokyo"] },
@@ -298,6 +308,58 @@ function screenshotUrl(jobId, challengeId) {
   return `${apiRoot}/searches/${encodeURIComponent(jobId)}/challenges/${encodeURIComponent(challengeId)}/screenshot?t=${Date.now()}`;
 }
 
+function challengeKey(jobId, challengeId) {
+  return `${jobId}:${challengeId}`;
+}
+
+function challengeKindLabel(challenge) {
+  if (challenge.kind === "browser_handoff") return "stuck page";
+  if (challenge.kind === "email_otp") return "email code";
+  if (challenge.kind === "sms_otp") return "SMS code";
+  if (challenge.kind.includes("captcha")) return "CAPTCHA";
+  return challenge.kind.replaceAll("_", " ");
+}
+
+function captureChallengeUi(region) {
+  for (const card of region.querySelectorAll(".challenge-card")) {
+    const frame = card.querySelector(".browser-frame");
+    const marker = card.querySelector(".browser-focus-marker");
+    state.challengeUi.set(challengeKey(card.dataset.jobId, card.dataset.challengeId), {
+      challengeValue: card.querySelector("[data-challenge-value]")?.value ?? "",
+      browserText: card.querySelector("[data-browser-text]")?.value ?? "",
+      nativeZoom: frame?.classList.contains("zoom-native") ?? false,
+      scrollLeft: frame?.scrollLeft ?? 0,
+      scrollTop: frame?.scrollTop ?? 0,
+      markerLeft: marker?.style.left ?? "",
+      markerTop: marker?.style.top ?? ""
+    });
+  }
+}
+
+function restoreChallengeUi(region) {
+  for (const card of region.querySelectorAll(".challenge-card")) {
+    const saved = state.challengeUi.get(challengeKey(card.dataset.jobId, card.dataset.challengeId));
+    if (!saved) continue;
+    const challengeInput = card.querySelector("[data-challenge-value]");
+    const browserInput = card.querySelector("[data-browser-text]");
+    const frame = card.querySelector(".browser-frame");
+    if (challengeInput) challengeInput.value = saved.challengeValue;
+    if (browserInput) browserInput.value = saved.browserText;
+    if (frame && saved.nativeZoom) {
+      frame.classList.add("zoom-native");
+      const zoom = card.querySelector("[data-browser-zoom]");
+      if (zoom) zoom.textContent = "Fit";
+    }
+    if (frame) {
+      frame.scrollLeft = saved.scrollLeft;
+      frame.scrollTop = saved.scrollTop;
+    }
+    if (saved.markerLeft && saved.markerTop) {
+      addBrowserFocusMarker(card, saved.markerLeft, saved.markerTop);
+    }
+  }
+}
+
 function previewControls(interactive) {
   return `<div class="preview-controls">
     <span data-preview-age>Capturing preview…</span>
@@ -305,7 +367,7 @@ function previewControls(interactive) {
     <button class="control-button" type="button" data-preview-refresh>Refresh preview</button>
     <button class="control-button" type="button" data-browser-scroll="-650">Scroll up</button>
     <button class="control-button" type="button" data-browser-scroll="650">Scroll down</button>
-    ${interactive ? '<span class="preview-hint">Click the image to focus a control.</span>' : ""}
+    ${interactive ? '<span class="preview-hint" data-browser-focus>No field selected · click a field, then type or paste</span>' : ""}
   </div>`;
 }
 
@@ -344,12 +406,62 @@ function refreshPreview(card) {
 }
 
 function refreshChallengePreviews() {
-  for (const card of document.querySelectorAll(".challenge-card")) {
+  for (const card of document.querySelectorAll(".challenge-card:not([hidden])")) {
     updatePreviewAge(card);
     const image = card.querySelector(".browser-shot");
     const capturedAt = Number(image?.dataset.capturedAt ?? 0);
     if (image && Date.now() - capturedAt >= 3000) refreshPreview(card);
   }
+}
+
+function activateChallenge(jobId, challengeId, { focus = false, scroll = false } = {}) {
+  state.activeChallenges.set(jobId, challengeId);
+  for (const tab of document.querySelectorAll(
+    `[data-challenge-tab][data-job-id="${CSS.escape(jobId)}"]`
+  )) {
+    const active = tab.dataset.challengeId === challengeId;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.tabIndex = active ? 0 : -1;
+    if (active && focus) tab.focus();
+  }
+  for (const card of document.querySelectorAll(
+    `.challenge-card[data-job-id="${CSS.escape(jobId)}"]`
+  )) {
+    card.hidden = card.dataset.challengeId !== challengeId;
+  }
+  const card = document.querySelector(
+    `.challenge-card[data-job-id="${CSS.escape(jobId)}"][data-challenge-id="${CSS.escape(challengeId)}"]`
+  );
+  const capturedAt = Number(card?.querySelector(".browser-shot")?.dataset.capturedAt ?? 0);
+  if (card && Date.now() - capturedAt >= 3000) refreshPreview(card);
+  if (scroll) byId("challenge-region").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function renderInterventionQueue(job, challenges, activeId) {
+  const queue = byId("intervention-queue");
+  if (!job || !challenges.length) {
+    queue.hidden = true;
+    queue.innerHTML = "";
+    queue.dataset.renderKey = "";
+    return;
+  }
+  const renderKey = JSON.stringify([job.id, challenges]);
+  if (queue.dataset.renderKey === renderKey) return;
+  queue.dataset.renderKey = renderKey;
+  queue.hidden = false;
+  queue.innerHTML = `<strong>${challenges.length} provider${challenges.length === 1 ? "" : "s"} need${challenges.length === 1 ? "s" : ""} you</strong>
+    <div class="intervention-tabs" role="tablist" aria-label="Airline searches needing intervention">
+      ${challenges
+        .map((challenge, index) => {
+          const active = challenge.id === activeId;
+          const provider = providerNames[challenge.provider] ?? challenge.provider;
+          const kind = challengeKindLabel(challenge);
+          return `<button type="button" role="tab" id="challenge-tab-${index}" aria-label="${escapeHtml(provider)} ${escapeHtml(kind)}" aria-controls="challenge-panel-${index}" aria-selected="${active}" tabindex="${active ? "0" : "-1"}" class="intervention-tab${active ? " active" : ""}" data-job-id="${escapeHtml(job.id)}" data-challenge-id="${escapeHtml(challenge.id)}" data-challenge-tab><span>${escapeHtml(provider)}</span>${escapeHtml(kind)}</button>`;
+        })
+        .join("")}
+    </div>
+    <span class="intervention-privacy">Nothing you type here is stored</span>`;
 }
 
 function renderChallenges(job) {
@@ -358,20 +470,39 @@ function renderChallenges(job) {
     .filter((challenge) => challenge?.status === "pending");
   const region = byId("challenge-region");
   const renderKey = JSON.stringify([job?.id, challenges]);
-  if (region.dataset.renderKey === renderKey) return;
+  const pendingIds = new Set(challenges.map((challenge) => challenge.id));
+  let activeId = state.activeChallenges.get(job?.id);
+  if (!pendingIds.has(activeId)) activeId = challenges[0]?.id;
+  if (job?.id && activeId) state.activeChallenges.set(job.id, activeId);
+  renderInterventionQueue(job, challenges, activeId);
+  if (region.dataset.renderKey === renderKey) {
+    if (job?.id && activeId) activateChallenge(job.id, activeId);
+    return;
+  }
+  captureChallengeUi(region);
+  if (job?.id) {
+    for (const key of state.challengeUi.keys()) {
+      if (key.startsWith(`${job.id}:`) && !pendingIds.has(key.slice(job.id.length + 1))) {
+        state.challengeUi.delete(key);
+        state.browserTypeQueues.delete(key);
+        state.browserActionChains.delete(key);
+      }
+    }
+  }
   region.dataset.renderKey = renderKey;
   region.innerHTML = challenges
-    .map((challenge) => {
+    .map((challenge, index) => {
       const acknowledgement = challenge.responseFormat === "acknowledge";
       const inputLabel = challenge.kind.includes("otp") ? "One-time code" : "CAPTCHA response";
-      return `<article class="challenge-card" data-job-id="${escapeHtml(job.id)}" data-challenge-id="${escapeHtml(challenge.id)}">
+      const active = challenge.id === activeId;
+      const next = challenges[(index + 1) % challenges.length];
+      return `<article class="challenge-card ${acknowledgement ? "browser-handoff-challenge" : "verification-challenge"}" role="tabpanel" id="challenge-panel-${index}" aria-labelledby="challenge-tab-${index}" data-job-id="${escapeHtml(job.id)}" data-challenge-id="${escapeHtml(challenge.id)}" ${active ? "" : "hidden"}>
         <div class="challenge-copy">
-          <p class="section-label">${escapeHtml(providerNames[challenge.provider] ?? challenge.provider)} · ${escapeHtml(challenge.kind.replaceAll("_", " "))}</p>
-          <h2>Waiting for you</h2>
+          <div class="challenge-heading"><p class="section-label">Needs you</p><h2>${escapeHtml(providerNames[challenge.provider] ?? challenge.provider)} · ${escapeHtml(challengeKindLabel(challenge))}</h2>${challenges.length > 1 ? `<span>Next: ${escapeHtml(providerNames[next.provider] ?? next.provider)} · ${escapeHtml(challengeKindLabel(next))}</span>` : ""}</div>
           <p>${escapeHtml(challenge.prompt)}</p>
           <span class="challenge-expiry">Expires ${escapeHtml(new Date(challenge.expiresAt).toLocaleString())}. Nothing entered here is stored by the dashboard.</span>
         </div>
-        ${challenge.screenshotAvailable ? `<div class="browser-frame"><div class="browser-canvas"><img class="browser-shot" data-interactive="${acknowledgement}" src="${screenshotUrl(job.id, challenge.id)}" alt="Redacted live ${escapeHtml(challenge.provider)} browser preview"></div></div>${previewControls(acknowledgement)}` : ""}
+        ${challenge.screenshotAvailable ? `<div class="browser-frame"><div class="browser-canvas" ${acknowledgement ? 'tabindex="0" role="application" data-browser-input-surface aria-label="Interactive airline browser preview. Click a field, then type or paste."' : ""}><img class="browser-shot" data-interactive="${acknowledgement}" src="${screenshotUrl(job.id, challenge.id)}" alt="Redacted live ${escapeHtml(challenge.provider)} browser preview"></div></div>${previewControls(acknowledgement)}` : ""}
         ${
           acknowledgement
             ? `<div class="challenge-controls acknowledgement-controls">
@@ -391,6 +522,8 @@ function renderChallenges(job) {
     })
     .join("");
   bindChallengePreviews(region);
+  restoreChallengeUi(region);
+  if (job?.id && activeId) activateChallenge(job.id, activeId);
 }
 
 function renderHistory() {
@@ -506,15 +639,27 @@ async function refreshSearches() {
 async function browserAction(card, action) {
   const jobId = card.dataset.jobId;
   const challengeId = card.dataset.challengeId;
-  await api(
-    `/searches/${encodeURIComponent(jobId)}/challenges/${encodeURIComponent(challengeId)}/browser-actions`,
-    { method: "POST", body: action }
-  );
-  const image = card.querySelector(".browser-shot");
-  if (image)
-    window.setTimeout(() => {
-      refreshPreview(card);
-    }, 450);
+  const key = challengeKey(jobId, challengeId);
+  const previous = state.browserActionChains.get(key) ?? Promise.resolve();
+  const pending = previous
+    .catch(() => {})
+    .then(async () => {
+      await api(
+        `/searches/${encodeURIComponent(jobId)}/challenges/${encodeURIComponent(challengeId)}/browser-actions`,
+        { method: "POST", body: action }
+      );
+      const image = card.querySelector(".browser-shot");
+      if (image)
+        window.setTimeout(() => {
+          refreshPreview(card);
+        }, 450);
+    });
+  state.browserActionChains.set(key, pending);
+  try {
+    await pending;
+  } finally {
+    if (state.browserActionChains.get(key) === pending) state.browserActionChains.delete(key);
+  }
 }
 
 function setChallengeStatus(card, message, kind = "") {
@@ -532,6 +677,64 @@ function showClickMarker(image, clientX, clientY) {
   marker.style.top = `${((clientY - rect.top) / rect.height) * 100}%`;
   image.closest(".browser-canvas").append(marker);
   window.setTimeout(() => marker.remove(), 1100);
+}
+
+function addBrowserFocusMarker(card, left, top) {
+  const canvas = card.querySelector(".browser-canvas");
+  if (!canvas) return;
+  canvas.querySelector(".browser-focus-marker")?.remove();
+  const marker = document.createElement("span");
+  marker.className = "browser-focus-marker";
+  marker.style.left = typeof left === "number" ? `${left}%` : left;
+  marker.style.top = typeof top === "number" ? `${top}%` : top;
+  marker.setAttribute("aria-hidden", "true");
+  marker.innerHTML = "<span>Selected</span>";
+  canvas.append(marker);
+  const label = card.querySelector("[data-browser-focus]");
+  if (label) label.textContent = "Field targeted · type or paste directly into the preview";
+}
+
+function markBrowserFocus(card, image, clientX, clientY) {
+  const rect = image.getBoundingClientRect();
+  addBrowserFocusMarker(
+    card,
+    ((clientX - rect.left) / rect.width) * 100,
+    ((clientY - rect.top) / rect.height) * 100
+  );
+  card.querySelector("[data-browser-input-surface]")?.focus({ preventScroll: true });
+}
+
+function flushBrowserText(card) {
+  const key = challengeKey(card.dataset.jobId, card.dataset.challengeId);
+  const queued = state.browserTypeQueues.get(key);
+  if (!queued?.text) return queued?.chain ?? Promise.resolve();
+  clearTimeout(queued.timer);
+  const value = queued.text;
+  queued.text = "";
+  queued.chain = queued.chain.then(async () => {
+    try {
+      await browserAction(card, { kind: "type", text: value });
+      setChallengeStatus(card, "Typed into the selected airline field.", "success");
+    } catch (error) {
+      setChallengeStatus(card, error.message, "error");
+    }
+  });
+  return queued.chain;
+}
+
+function queueBrowserText(card, text) {
+  if (!text) return;
+  const key = challengeKey(card.dataset.jobId, card.dataset.challengeId);
+  const queued = state.browserTypeQueues.get(key) ?? {
+    text: "",
+    timer: null,
+    chain: Promise.resolve()
+  };
+  queued.text += text;
+  clearTimeout(queued.timer);
+  queued.timer = window.setTimeout(() => flushBrowserText(card), 120);
+  state.browserTypeQueues.set(key, queued);
+  setChallengeStatus(card, "Typing into the selected airline field…");
 }
 
 byId("search-form").addEventListener("submit", async (event) => {
@@ -601,6 +804,28 @@ byId("search-history").addEventListener("click", (event) => {
   render();
 });
 
+byId("intervention-queue").addEventListener("click", (event) => {
+  const tab = event.target.closest("[data-challenge-tab]");
+  if (!tab) return;
+  activateChallenge(tab.dataset.jobId, tab.dataset.challengeId, { scroll: true });
+});
+
+byId("intervention-queue").addEventListener("keydown", (event) => {
+  const tab = event.target.closest("[data-challenge-tab]");
+  if (!tab || !new Set(["ArrowLeft", "ArrowRight", "Home", "End"]).has(event.key)) return;
+  const tabs = [...event.currentTarget.querySelectorAll("[data-challenge-tab]")];
+  const current = tabs.indexOf(tab);
+  const nextIndex =
+    event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? tabs.length - 1
+        : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  event.preventDefault();
+  const next = tabs[nextIndex];
+  activateChallenge(next.dataset.jobId, next.dataset.challengeId, { focus: true });
+});
+
 byId("cancel-search").addEventListener("click", async () => {
   const job = selectedJob();
   if (!job) return;
@@ -667,6 +892,7 @@ byId("challenge-region").addEventListener("click", async (event) => {
       const x = ((event.clientX - rect.left) / rect.width) * event.target.naturalWidth;
       const y = ((event.clientY - rect.top) / rect.height) * event.target.naturalHeight;
       showClickMarker(event.target, event.clientX, event.clientY);
+      markBrowserFocus(card, event.target, event.clientX, event.clientY);
       await browserAction(card, { kind: "click", x, y });
     }
     if (event.target.matches("[data-browser-type], [data-browser-key], [data-browser-scroll]")) {
@@ -675,6 +901,53 @@ byId("challenge-region").addEventListener("click", async (event) => {
   } catch (error) {
     setChallengeStatus(card, error.message, "error");
   }
+});
+
+byId("challenge-region").addEventListener("keydown", async (event) => {
+  const surface = event.target.closest("[data-browser-input-surface]");
+  if (!surface) return;
+  const card = surface.closest(".challenge-card");
+  const directKeys = new Set([
+    "Enter",
+    "Tab",
+    "Escape",
+    "Backspace",
+    "Delete",
+    "ArrowUp",
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "PageUp",
+    "PageDown",
+    "Home",
+    "End"
+  ]);
+  if (directKeys.has(event.key)) {
+    event.preventDefault();
+    try {
+      await flushBrowserText(card);
+      await browserAction(card, { kind: "key", key: event.key });
+      const focus = card.querySelector("[data-browser-focus]");
+      if (focus) focus.textContent = `${event.key} sent · airline focus may have moved`;
+      setChallengeStatus(card, `${event.key} sent to the airline page.`, "success");
+    } catch (error) {
+      setChallengeStatus(card, error.message, "error");
+    }
+    return;
+  }
+  if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    queueBrowserText(card, event.key);
+  }
+});
+
+byId("challenge-region").addEventListener("paste", (event) => {
+  const surface = event.target.closest("[data-browser-input-surface]");
+  if (!surface) return;
+  const text = event.clipboardData?.getData("text/plain") ?? "";
+  if (!text) return;
+  event.preventDefault();
+  queueBrowserText(surface.closest(".challenge-card"), text);
 });
 
 for (const id of [
