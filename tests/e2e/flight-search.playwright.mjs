@@ -332,3 +332,142 @@ test("browser handoff exposes safe recovery controls and inline errors", async (
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("intervention tabs preserve drafts and the preview accepts direct typing", async ({
+  page
+}) => {
+  const server = createWebServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const browserActions = [];
+  const expiresAt = "2027-12-01T12:00:00Z";
+  const job = {
+    id: "search_parallel_interventions",
+    status: "waiting_human",
+    request: {
+      origins: ["TYO"],
+      destinations: ["SFO"],
+      departureStart: "2027-08-21",
+      departureEnd: "2027-08-25",
+      providers: ["ana", "jal", "eva"]
+    },
+    providers: {
+      ana: {
+        state: "waiting_human",
+        challenge: {
+          id: "ana-email",
+          provider: "ana",
+          status: "pending",
+          kind: "email_otp",
+          prompt: "Enter the ANA email code.",
+          responseFormat: "text",
+          screenshotAvailable: true,
+          expiresAt
+        }
+      },
+      jal: {
+        state: "waiting_human",
+        challenge: {
+          id: "jal-sms",
+          provider: "jal",
+          status: "pending",
+          kind: "sms_otp",
+          prompt: "Enter the JAL SMS code.",
+          responseFormat: "text",
+          screenshotAvailable: true,
+          expiresAt
+        }
+      },
+      eva: {
+        state: "waiting_human",
+        challenge: {
+          id: "eva-browser",
+          provider: "eva",
+          status: "pending",
+          kind: "browser_handoff",
+          prompt: "Correct the EVA search form.",
+          responseFormat: "acknowledge",
+          screenshotAvailable: true,
+          expiresAt
+        }
+      }
+    },
+    results: []
+  };
+  await page.route("**/api/integrations/flight-searcher/**", async (route) => {
+    const request = route.request();
+    const url = request.url();
+    if (url.endsWith("/providers")) return route.fulfill({ json: [] });
+    if (url.includes("/screenshot")) {
+      return route.fulfill({
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900"><rect width="1440" height="900" fill="#eef2f7"/><rect x="120" y="100" width="400" height="80" fill="#fff" stroke="#222"/></svg>'
+      });
+    }
+    if (url.endsWith("/browser-actions")) {
+      browserActions.push(request.postDataJSON());
+      return route.fulfill({ json: {} });
+    }
+    return route.fulfill({ json: [job] });
+  });
+  try {
+    await page.goto(`${base}/flights`);
+    const anaTab = page.getByRole("tab", { name: "ANA email code" });
+    const jalTab = page.getByRole("tab", { name: "JAL SMS code" });
+    const evaTab = page.getByRole("tab", { name: "EVA stuck page" });
+    await expect(page.getByText("3 providers need you")).toBeVisible();
+    await expect(anaTab).toHaveAttribute("aria-selected", "true");
+    await page.locator("[data-challenge-value]:visible").fill("111111");
+
+    await jalTab.click();
+    await expect(jalTab).toHaveAttribute("aria-selected", "true");
+    await page.locator("[data-challenge-value]:visible").fill("222222");
+    await anaTab.click();
+    await expect(page.locator("[data-challenge-value]:visible")).toHaveValue("111111");
+    await anaTab.press("ArrowRight");
+    await expect(jalTab).toBeFocused();
+    await expect(page.locator("[data-challenge-value]:visible")).toHaveValue("222222");
+
+    await evaTab.click();
+    const preview = page.locator(".browser-shot:visible");
+    await preview.click({ position: { x: 180, y: 100 } });
+    await expect(page.locator(".browser-focus-marker")).toBeVisible();
+    await expect(page.locator("[data-browser-input-surface]")).toBeFocused();
+    await expect(page.getByText("Field targeted", { exact: false })).toBeVisible();
+    await page.keyboard.type("SFO");
+    await page.keyboard.press("Backspace");
+    await expect
+      .poll(() => browserActions.slice(-2))
+      .toEqual([
+        { kind: "type", text: "SFO" },
+        { kind: "key", key: "Backspace" }
+      ]);
+    await expect(page.locator("[data-browser-focus]")).toContainText("Backspace sent");
+    await page.locator("[data-browser-input-surface]").evaluate((surface) => {
+      const clipboard = new DataTransfer();
+      clipboard.setData("text/plain", "SEA");
+      surface.dispatchEvent(
+        new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: clipboard })
+      );
+    });
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => browserActions.slice(-2))
+      .toEqual([
+        { kind: "type", text: "SEA" },
+        { kind: "key", key: "Enter" }
+      ]);
+
+    const refreshed = page.waitForResponse((response) =>
+      response.url().includes("/searches?limit=")
+    );
+    await page.locator("#refresh-searches").click();
+    await refreshed;
+    await expect(evaTab).toHaveAttribute("aria-selected", "true");
+    await anaTab.click();
+    await expect(page.locator("[data-challenge-value]:visible")).toHaveValue("111111");
+  } finally {
+    await page.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

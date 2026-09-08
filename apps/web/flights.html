@@ -18,12 +18,14 @@
         <span class="service-state" id="service-state">Connecting</span>
       </header>
 
+      <section class="intervention-queue" id="intervention-queue" hidden></section>
+
       <section class="hero" aria-labelledby="flight-title">
         <div>
-          <p class="kicker">Award availability</p>
-          <h1 id="flight-title">Find your next award flight.</h1>
+          <p class="kicker">Award availability control room</p>
+          <h1 id="flight-title">Flight searcher</h1>
         </div>
-        <p class="hero-note">Search Seats.aero and airline award sites together. Human verification pauses safely here; this app never reads your email.</p>
+        <p class="hero-note">Award seats across Seats.aero, ANA, JAL, and EVA. Human verification pauses safely here; this app never reads your email.</p>
       </section>
 
       <section class="workspace">
@@ -149,22 +151,34 @@
           </div>
         </form>
 
-        <aside class="panel progress-panel">
-          <div class="panel-heading">
-            <div>
-              <p class="section-label">Live run</p>
-              <h2 id="run-title">No search selected</h2>
-            </div>
-            <span class="status-pill" id="run-status">Idle</span>
-          </div>
-          <div class="provider-runs" id="provider-runs">
-            <p class="empty">Start a search to see each provider advance independently.</p>
-          </div>
-          <button class="secondary-button cancel-button" type="button" id="cancel-search" hidden>Cancel search</button>
-        </aside>
       </section>
 
       <section class="challenge-region" id="challenge-region" aria-live="polite"></section>
+
+      <section class="panel history-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">Recent</p>
+            <h2>Recent searches</h2>
+          </div>
+          <button class="text-button" type="button" id="refresh-searches">Refresh</button>
+        </div>
+        <div class="history" id="search-history"><p class="empty">No searches yet.</p></div>
+      </section>
+
+      <section class="panel progress-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="section-label">Live run</p>
+            <h2 id="run-title">No search selected</h2>
+          </div>
+          <span class="status-pill" id="run-status">Idle</span>
+        </div>
+        <div class="provider-runs" id="provider-runs">
+          <p class="empty">Start a search to see each provider advance independently.</p>
+        </div>
+        <button class="secondary-button cancel-button" type="button" id="cancel-search" hidden>Cancel search</button>
+      </section>
 
       <section class="panel results-panel">
         <div class="panel-heading">
@@ -193,16 +207,6 @@
         </div>
       </section>
 
-      <section class="panel history-panel">
-        <div class="panel-heading">
-          <div>
-            <p class="section-label">Recent</p>
-            <h2>Search history</h2>
-          </div>
-          <button class="text-button" type="button" id="refresh-searches">Refresh</button>
-        </div>
-        <div class="history" id="search-history"><p class="empty">No searches yet.</p></div>
-      </section>
     </main>
     <script type="module" src="/src/flights.js"></script>
   </body>
