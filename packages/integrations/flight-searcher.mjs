@@ -238,6 +238,11 @@ export function compactFlightSearchJob(job) {
           debugHtmlAvailable: run.debugHtmlAvailable === true,
           debugHtmlCapturedAt: run.debugHtmlCapturedAt,
           rateLimitRemaining: run.rateLimitRemaining,
+          queueReason: run.queueReason,
+          queuePosition: run.queuePosition,
+          blockedByJobId: run.blockedByJobId,
+          queuedAt: run.queuedAt,
+          startedAt: run.startedAt,
           challenge: run.challenge
             ? {
                 id: run.challenge.id,

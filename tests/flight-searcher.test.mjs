@@ -96,6 +96,11 @@ describe("Flight Searcher integration", () => {
         jal: {
           state: "waiting_human",
           resultCount: 0,
+          queueReason: "provider_profile",
+          queuePosition: 2,
+          blockedByJobId: "search_older",
+          queuedAt: "2026-11-01T09:59:00Z",
+          startedAt: null,
           debugHtmlAvailable: true,
           debugHtmlCapturedAt: "2026-11-01T10:00:30Z",
           challenge: {
@@ -119,7 +124,12 @@ describe("Flight Searcher integration", () => {
     expect(compact.providers.jal.challenge).not.toHaveProperty("handoffUrl");
     expect(compact.providers.jal).toMatchObject({
       debugHtmlAvailable: true,
-      debugHtmlCapturedAt: "2026-11-01T10:00:30Z"
+      debugHtmlCapturedAt: "2026-11-01T10:00:30Z",
+      queueReason: "provider_profile",
+      queuePosition: 2,
+      blockedByJobId: "search_older",
+      queuedAt: "2026-11-01T09:59:00Z",
+      startedAt: null
     });
 
     const context = await flightSearcherHermesContext({

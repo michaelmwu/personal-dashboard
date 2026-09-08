@@ -260,6 +260,76 @@ test("award filters, result sorting and challenge input survive refresh", async 
   }
 });
 
+test("queued airline search identifies and cancels its older blocker", async ({ page }) => {
+  const server = createWebServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  let canceledJobId = null;
+  const older = {
+    id: "search_older",
+    status: "running",
+    request: {
+      origins: ["NRT"],
+      destinations: ["JFK"],
+      departureStart: "2027-08-20",
+      providers: ["ana"]
+    },
+    providers: { ana: { state: "running", message: "ANA search is running." } },
+    results: [],
+    createdAt: "2026-09-08T01:00:00Z"
+  };
+  const queued = {
+    id: "search_queued",
+    status: "running",
+    request: {
+      origins: ["TYO"],
+      destinations: ["SFO"],
+      departureStart: "2027-08-21",
+      providers: ["ana"]
+    },
+    providers: {
+      ana: {
+        state: "queued",
+        message: "Waiting for the ANA browser profile; 1 search ahead.",
+        queueReason: "provider_profile",
+        queuePosition: 2,
+        blockedByJobId: "search_older",
+        queuedAt: new Date(Date.now() - 65_000).toISOString()
+      }
+    },
+    results: [],
+    createdAt: "2026-09-08T01:01:00Z"
+  };
+  await page.route("**/api/integrations/flight-searcher/**", async (route) => {
+    const request = route.request();
+    const url = request.url();
+    if (url.endsWith("/providers")) return route.fulfill({ json: [] });
+    if (request.method() === "POST" && url.endsWith("/search_older/cancel")) {
+      canceledJobId = "search_older";
+      older.status = "canceled";
+      older.providers.ana.state = "canceled";
+      queued.providers.ana.queuePosition = 1;
+      queued.providers.ana.blockedByJobId = null;
+      queued.providers.ana.message = "Starting the ANA browser profile.";
+      return route.fulfill({ json: older });
+    }
+    return route.fulfill({ json: [queued, older] });
+  });
+  try {
+    await page.goto(`${base}/flights`);
+    await expect(page.locator("#run-title")).toHaveText("TYO → SFO");
+    await expect(page.getByText("Queue position 2")).toContainText("waiting 1m");
+    await expect(page.getByRole("button", { name: "Cancel older search" })).toBeVisible();
+    await page.getByRole("button", { name: "Cancel older search" }).click();
+    await expect.poll(() => canceledJobId).toBe("search_older");
+    await expect(page.getByText("Queue position 1")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Cancel older search" })).toHaveCount(0);
+  } finally {
+    await page.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("browser handoff exposes safe recovery controls and inline errors", async ({ page }) => {
   const server = createWebServer();
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
