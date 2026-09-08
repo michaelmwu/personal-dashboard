@@ -1,221 +1,448 @@
 .personal-dashboard-hermes-page {
   color: var(--color-foreground, inherit);
+  font-family: var(--theme-font-sans, inherit);
+  font-size: var(--theme-base-size, inherit);
+  letter-spacing: var(--theme-letter-spacing, inherit);
+  line-height: var(--theme-line-height, inherit);
   margin: 0 auto;
-  max-width: 1100px;
-  padding: calc(1.5rem * var(--spacing-mul, 1));
+  max-width: 74rem;
+  padding: calc(1.75rem * var(--spacing-mul, 1));
 }
 
 .personal-dashboard-hermes-header {
-  align-items: flex-start;
+  align-items: flex-end;
   display: flex;
   flex-wrap: wrap;
-  gap: 1rem;
+  gap: 1.25rem 2rem;
   justify-content: space-between;
+  margin-bottom: 1.75rem;
 }
 
-.personal-dashboard-hermes-title,
-.personal-dashboard-hermes-section-title {
-  color: var(--color-card-foreground, var(--color-foreground, inherit));
-  margin: 0;
+.personal-dashboard-hermes-eyebrow {
+  color: var(--color-muted-foreground, currentColor);
+  font-family: var(--font-mondwest, var(--theme-font-sans, inherit));
+  font-size: 0.75rem;
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  margin: 0 0 0.45rem;
+  text-transform: uppercase;
 }
 
 .personal-dashboard-hermes-title {
-  font-size: 1.6rem;
-  letter-spacing: -0.02em;
+  color: var(--color-card-foreground, var(--color-foreground, inherit));
+  font-family: var(--font-mondwest, var(--theme-font-sans, inherit));
+  font-size: clamp(1.8rem, 3vw, 2.5rem);
+  font-weight: 400;
+  letter-spacing: 0.055em;
+  line-height: 1.08;
+  margin: 0;
+  text-transform: uppercase;
 }
 
-.personal-dashboard-hermes-health {
-  align-items: baseline;
-  background: var(--color-card, transparent);
-  border: 1px solid var(--color-border, currentColor);
-  border-radius: var(--radius, 0.5rem);
-  display: flex;
-  gap: 0.5rem;
-  max-width: 34rem;
-  padding: 0.625rem 0.75rem;
-}
-
-.personal-dashboard-hermes-health[data-level="healthy"],
-.personal-dashboard-hermes-health[data-level="ok"] {
-  border-color: var(--color-success, var(--color-border, currentColor));
-}
-
-.personal-dashboard-hermes-health[data-level="warning"] {
-  border-color: var(--color-warning, var(--color-border, currentColor));
-}
-
-.personal-dashboard-hermes-health[data-level="critical"],
-.personal-dashboard-hermes-health[data-level="error"] {
-  border-color: var(--color-destructive, var(--color-border, currentColor));
-}
-
-.personal-dashboard-hermes-updated,
-.personal-dashboard-hermes-status,
-.personal-dashboard-hermes-empty,
-.personal-dashboard-hermes-item-detail,
-.personal-dashboard-hermes-metric-label,
-.personal-dashboard-hermes-metric-delta {
+.personal-dashboard-hermes-intro,
+.personal-dashboard-hermes-detail-summary {
   color: var(--color-muted-foreground, currentColor);
+  font-size: 0.95rem;
+  line-height: 1.55;
+  margin: 0.75rem 0 0;
+  max-width: 37rem;
+}
+
+.personal-dashboard-hermes-header-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
 }
 
 .personal-dashboard-hermes-updated {
-  font-size: 0.825rem;
-  margin: 0.4rem 0 1.25rem;
-}
-
-.personal-dashboard-hermes-tabs {
-  border-bottom: 1px solid var(--color-border, currentColor);
-  display: flex;
-  gap: 0.4rem;
-  margin-bottom: 1rem;
-  overflow-x: auto;
-}
-
-.personal-dashboard-hermes-tab {
-  background: transparent;
-  border: 0;
-  border-bottom: 2px solid transparent;
   color: var(--color-muted-foreground, currentColor);
+  font-family: var(--theme-font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  margin: 0;
+}
+
+.personal-dashboard-hermes-refresh,
+.personal-dashboard-hermes-back {
+  appearance: none;
+  background: var(--color-secondary, transparent);
+  border: 1px solid var(--color-border, currentColor);
+  border-radius: var(--radius, 0.75rem);
+  color: var(--color-secondary-foreground, var(--color-foreground, inherit));
   cursor: pointer;
+  font-family: var(--font-mondwest, var(--theme-font-sans, inherit));
+  font-size: 0.825rem;
+  font-weight: 400;
+  letter-spacing: 0.065em;
+  padding: 0.5rem 0.75rem;
+  text-transform: uppercase;
+}
+
+.personal-dashboard-hermes-refresh:hover:not(:disabled),
+.personal-dashboard-hermes-back:hover {
+  background: var(--color-accent, var(--color-secondary, transparent));
+}
+
+.personal-dashboard-hermes-refresh:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.personal-dashboard-hermes-refresh:focus-visible,
+.personal-dashboard-hermes-back:focus-visible,
+.personal-dashboard-hermes-porthole:focus-visible {
+  outline: 2px solid var(--color-ring, var(--color-primary, currentColor));
+  outline-offset: 3px;
+}
+
+.personal-dashboard-hermes-porthole-grid {
+  display: grid;
+  gap: 0.875rem;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+}
+
+.personal-dashboard-hermes-porthole,
+.personal-dashboard-hermes-porthole-skeleton {
+  border-radius: var(--radius, 0.75rem);
+  grid-column: span 4;
+  min-height: 13.25rem;
+}
+
+.personal-dashboard-hermes-porthole {
+  appearance: none;
+  background: var(--color-card, transparent);
+  border: 1px solid var(--color-border, currentColor);
+  color: var(--color-card-foreground, var(--color-foreground, inherit));
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
   font: inherit;
-  padding: 0.55rem 0.7rem;
+  gap: 0.9rem;
+  padding: 1rem;
+  text-align: left;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    transform 160ms ease;
+  width: 100%;
+}
+
+.personal-dashboard-hermes-porthole:hover {
+  background: var(--color-accent, var(--color-card, transparent));
+  border-color: var(--color-primary, var(--color-border, currentColor));
+  transform: translateY(-1px);
+}
+
+.personal-dashboard-hermes-porthole--featured {
+  grid-column: span 8;
+}
+
+.personal-dashboard-hermes-porthole--attention {
+  border-color: var(--color-primary, var(--color-border, currentColor));
+}
+
+.personal-dashboard-hermes-porthole--attention:hover {
+  background: var(--color-accent, var(--color-card, transparent));
+}
+
+.personal-dashboard-hermes-porthole--degraded {
+  background: color-mix(
+    in srgb,
+    var(--color-card, transparent) 94%,
+    var(--color-destructive, currentColor)
+  );
+  border-color: color-mix(
+    in srgb,
+    var(--color-destructive, currentColor) 55%,
+    var(--color-border, currentColor)
+  );
+}
+
+.personal-dashboard-hermes-porthole--degraded:hover {
+  background: color-mix(
+    in srgb,
+    var(--color-card, transparent) 89%,
+    var(--color-destructive, currentColor)
+  );
+  border-color: var(--color-destructive, currentColor);
+}
+
+.personal-dashboard-hermes-porthole--quiet {
+  background: var(--color-muted, var(--color-card, transparent));
+  grid-column: span 3;
+  min-height: 9.5rem;
+}
+
+.personal-dashboard-hermes-porthole--quiet:hover {
+  background: var(--color-accent, var(--color-muted, transparent));
+}
+
+.personal-dashboard-hermes-porthole-heading,
+.personal-dashboard-hermes-porthole-heading-start {
+  align-items: center;
+  display: flex;
+}
+
+.personal-dashboard-hermes-porthole-heading {
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.personal-dashboard-hermes-porthole-heading-start {
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.personal-dashboard-hermes-porthole-icon {
+  align-items: center;
+  background: var(--color-secondary, transparent);
+  border-radius: calc(var(--radius, 0.75rem) * 0.75);
+  color: var(--color-secondary-foreground, var(--color-foreground, inherit));
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-family: var(--theme-font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  font-weight: 700;
+  height: 2rem;
+  justify-content: center;
+  letter-spacing: -0.05em;
+  width: 2rem;
+}
+
+.personal-dashboard-hermes-porthole-title {
+  font-family: var(--font-mondwest, var(--theme-font-sans, inherit));
+  font-size: 1rem;
+  font-weight: 400;
+  letter-spacing: 0.055em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
   white-space: nowrap;
 }
 
-.personal-dashboard-hermes-tab[aria-selected="true"] {
-  border-bottom-color: var(--color-primary, currentColor);
-  color: var(--color-foreground, inherit);
-  font-weight: 600;
+.personal-dashboard-hermes-porthole-badge {
+  background: var(--color-primary, transparent);
+  border-radius: 999px;
+  color: var(--color-primary-foreground, inherit);
+  flex: 0 0 auto;
+  font-family: var(--font-mondwest, var(--theme-font-sans, inherit));
+  font-size: 0.7rem;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  line-height: 1.15;
+  padding: 0.35rem 0.55rem;
+  text-transform: uppercase;
 }
 
-.personal-dashboard-hermes-source {
-  align-items: baseline;
-  background: var(--color-card, transparent);
-  border: 1px solid var(--color-border, currentColor);
-  border-radius: var(--radius, 0.5rem);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem 0.65rem;
-  margin-bottom: 1rem;
-  padding: 0.75rem;
+.personal-dashboard-hermes-porthole--active .personal-dashboard-hermes-porthole-badge {
+  background: var(--color-secondary, transparent);
+  color: var(--color-secondary-foreground, var(--color-foreground, inherit));
 }
 
-.personal-dashboard-hermes-source[data-status="active"] {
-  border-color: var(--color-success, var(--color-border, currentColor));
+.personal-dashboard-hermes-porthole-highlight {
+  display: grid;
+  gap: 0.2rem;
+  margin-top: auto;
 }
 
-.personal-dashboard-hermes-source[data-status="error"] {
-  border-color: var(--color-destructive, var(--color-border, currentColor));
+.personal-dashboard-hermes-porthole-highlight strong {
+  color: var(--color-primary, currentColor);
+  font-size: clamp(1.65rem, 3vw, 2.35rem);
+  letter-spacing: -0.04em;
+  line-height: 1;
 }
 
-.personal-dashboard-hermes-source-updated {
+.personal-dashboard-hermes-porthole-highlight span,
+.personal-dashboard-hermes-porthole-message,
+.personal-dashboard-hermes-porthole-row-detail {
   color: var(--color-muted-foreground, currentColor);
-  flex-basis: 100%;
-  font-size: 0.775rem;
-}
-
-.personal-dashboard-hermes-status {
-  margin: 1rem 0;
-}
-
-.personal-dashboard-hermes-metrics {
-  display: grid;
-  gap: 0.75rem;
-  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
-  margin-bottom: 1.25rem;
-}
-
-.personal-dashboard-hermes-metric,
-.personal-dashboard-hermes-section {
-  background: var(--color-card, transparent);
-  border: 1px solid var(--color-border, currentColor);
-  border-radius: var(--radius, 0.5rem);
-}
-
-.personal-dashboard-hermes-metric {
-  display: grid;
-  gap: 0.25rem;
-  min-height: 5.75rem;
-  padding: 0.9rem;
-}
-
-.personal-dashboard-hermes-metric-label,
-.personal-dashboard-hermes-metric-delta {
   font-size: 0.8rem;
+  line-height: 1.45;
 }
 
-.personal-dashboard-hermes-metric-value {
-  font-size: 1.35rem;
+.personal-dashboard-hermes-porthole--degraded .personal-dashboard-hermes-porthole-message {
+  color: var(--color-destructive, currentColor);
 }
 
-.personal-dashboard-hermes-grid {
+.personal-dashboard-hermes-porthole-list {
   display: grid;
-  gap: 0.75rem;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-}
-
-.personal-dashboard-hermes-section {
-  min-width: 0;
-  padding: 1rem;
-}
-
-.personal-dashboard-hermes-section-title {
-  font-size: 1rem;
-  margin-bottom: 0.75rem;
-}
-
-.personal-dashboard-hermes-list {
-  display: grid;
-  gap: 0.65rem;
+  gap: 0.6rem;
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-.personal-dashboard-hermes-list-item {
-  border-top: 1px solid var(--color-border, currentColor);
-  display: grid;
-  gap: 0.2rem;
-  padding-top: 0.65rem;
+.personal-dashboard-hermes-porthole-row {
+  align-items: baseline;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+  min-width: 0;
 }
 
-.personal-dashboard-hermes-list-item:first-child {
+.personal-dashboard-hermes-porthole-row-main {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.personal-dashboard-hermes-porthole-row-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personal-dashboard-hermes-porthole-row-meta {
+  color: var(--color-muted-foreground, currentColor);
+  flex: 0 0 auto;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.personal-dashboard-hermes-porthole--attention .personal-dashboard-hermes-porthole-row-meta {
+  color: var(--color-primary, currentColor);
+  font-weight: 650;
+}
+
+.personal-dashboard-hermes-porthole-action {
+  align-items: center;
+  color: var(--color-primary, currentColor);
+  display: flex;
+  font-family: var(--font-mondwest, var(--theme-font-sans, inherit));
+  font-size: 0.825rem;
+  font-weight: 400;
+  letter-spacing: 0.055em;
+  gap: 0.35rem;
+  margin-top: auto;
+  text-transform: uppercase;
+}
+
+.personal-dashboard-hermes-porthole--quiet .personal-dashboard-hermes-porthole-action {
+  color: var(--color-muted-foreground, currentColor);
+}
+
+.personal-dashboard-hermes-porthole-skeleton {
+  background: var(--color-muted, transparent);
+  border: 1px solid var(--color-border, currentColor);
+  opacity: 0.7;
+}
+
+.personal-dashboard-hermes-porthole-skeleton.is-featured {
+  grid-column: span 8;
+}
+
+.personal-dashboard-hermes-detail {
+  max-width: 56rem;
+}
+
+.personal-dashboard-hermes-back {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.45rem;
+  margin-bottom: 1.5rem;
+}
+
+.personal-dashboard-hermes-detail-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 0.85rem;
+  margin-bottom: 1.5rem;
+}
+
+.personal-dashboard-hermes-detail-header > .personal-dashboard-hermes-porthole-icon {
+  height: 2.5rem;
+  width: 2.5rem;
+}
+
+.personal-dashboard-hermes-detail-header .personal-dashboard-hermes-updated {
+  margin-top: 0.65rem;
+}
+
+.personal-dashboard-hermes-detail-card,
+.personal-dashboard-hermes-detail-status {
+  background: var(--color-card, transparent);
+  border: 1px solid var(--color-border, currentColor);
+  border-radius: var(--radius, 0.75rem);
+  padding: 1rem;
+}
+
+.personal-dashboard-hermes-detail-status {
+  background: color-mix(
+    in srgb,
+    var(--color-card, transparent) 94%,
+    var(--color-destructive, currentColor)
+  );
+  border-color: color-mix(
+    in srgb,
+    var(--color-destructive, currentColor) 55%,
+    var(--color-border, currentColor)
+  );
+}
+
+.personal-dashboard-hermes-detail-status p,
+.personal-dashboard-hermes-empty {
+  color: var(--color-muted-foreground, currentColor);
+  line-height: 1.55;
+  margin: 0;
+}
+
+.personal-dashboard-hermes-detail-status p {
+  color: var(--color-destructive, currentColor);
+  margin-bottom: 0.85rem;
+}
+
+.personal-dashboard-hermes-detail-card .personal-dashboard-hermes-porthole-row {
+  border-top: 1px solid var(--color-border, currentColor);
+  padding: 0.8rem 0;
+}
+
+.personal-dashboard-hermes-detail-card .personal-dashboard-hermes-porthole-row:first-child {
   border-top: 0;
   padding-top: 0;
 }
 
-.personal-dashboard-hermes-item-title {
-  font-size: 0.9rem;
-  font-weight: 600;
+.personal-dashboard-hermes-detail-card .personal-dashboard-hermes-porthole-row:last-child {
+  padding-bottom: 0;
 }
 
-.personal-dashboard-hermes-item-detail,
-.personal-dashboard-hermes-empty {
-  font-size: 0.825rem;
-  line-height: 1.35;
+@media (max-width: 900px) {
+  .personal-dashboard-hermes-porthole,
+  .personal-dashboard-hermes-porthole--featured,
+  .personal-dashboard-hermes-porthole--quiet,
+  .personal-dashboard-hermes-porthole-skeleton,
+  .personal-dashboard-hermes-porthole-skeleton.is-featured {
+    grid-column: span 6;
+  }
 }
 
-.personal-dashboard-hermes-empty {
-  margin: 0;
-}
-
-.personal-dashboard-hermes-retry {
-  background: var(--color-primary, transparent);
-  border: 1px solid var(--color-primary, currentColor);
-  border-radius: var(--radius, 0.5rem);
-  color: var(--color-primary-foreground, inherit);
-  cursor: pointer;
-  font: inherit;
-  padding: 0.45rem 0.8rem;
-}
-
-@media (max-width: 640px) {
+@media (max-width: 620px) {
   .personal-dashboard-hermes-page {
     padding: 1rem;
   }
 
-  .personal-dashboard-hermes-health {
-    max-width: none;
+  .personal-dashboard-hermes-header {
+    align-items: flex-start;
+    flex-direction: column;
+    margin-bottom: 1.25rem;
+  }
+
+  .personal-dashboard-hermes-header-actions {
+    justify-content: space-between;
     width: 100%;
+  }
+
+  .personal-dashboard-hermes-porthole,
+  .personal-dashboard-hermes-porthole--featured,
+  .personal-dashboard-hermes-porthole--quiet,
+  .personal-dashboard-hermes-porthole-skeleton,
+  .personal-dashboard-hermes-porthole-skeleton.is-featured {
+    grid-column: span 12;
+  }
+
+  .personal-dashboard-hermes-porthole--quiet {
+    min-height: 8rem;
   }
 }

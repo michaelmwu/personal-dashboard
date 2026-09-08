@@ -14,23 +14,23 @@
   const { React } = SDK;
   const { useCallback, useEffect, useState } = SDK.hooks;
   const create = React.createElement;
+  const APP_LINKS_ENDPOINT = "/api/plugins/personal-dashboard/app-links";
   const VIEWPORTS = [
     {
       id: "overview",
-      label: "Overview",
       endpoint: "/api/plugins/personal-dashboard/overview"
     },
     {
       id: "hotel-rate-finder",
-      label: "Hotel Rate Finder",
       endpoint: "/api/plugins/personal-dashboard/hotel-rate-finder"
     },
     {
       id: "asia-travel-deals",
-      label: "Asia Travel Deals",
       endpoint: "/api/plugins/personal-dashboard/asia-travel-deals"
     }
   ];
+
+  const REVIEW_STATUSES = new Set(["action-needed", "blocked", "failed", "needs-review", "review"]);
 
   function readable(value, fallback) {
     if (typeof value === "string" && value.trim()) {
@@ -75,112 +75,430 @@
     return Array.isArray(value.items);
   }
 
-  function itemTitle(item, fallback) {
-    if (!isRecord(item)) {
-      return fallback;
+  function isTailnetAppUrl(value) {
+    if (typeof value !== "string" || !value.trim()) {
+      return false;
     }
-    return readable(item.title || item.label || item.name || item.id, fallback);
+    try {
+      const url = new URL(value);
+      const port = url.port ? Number(url.port) : null;
+      return (
+        url.protocol === "https:" &&
+        !url.username &&
+        !url.password &&
+        url.pathname === "/" &&
+        !url.search &&
+        !url.hash &&
+        url.hostname.endsWith(".ts.net") &&
+        (port === null || (Number.isInteger(port) && port >= 1 && port <= 65535))
+      );
+    } catch {
+      return false;
+    }
   }
 
-  function itemDetail(item) {
-    if (!isRecord(item)) {
+  function isAppLinks(value) {
+    return (
+      isRecord(value) &&
+      value.version === "personal-dashboard-app-links.v1" &&
+      isRecord(value.apps) &&
+      (value.apps["hotel-rate-finder"] === null || isTailnetAppUrl(value.apps["hotel-rate-finder"]))
+    );
+  }
+
+  function normalizedStatus(value) {
+    return readable(value, "unknown").toLowerCase().replaceAll("_", "-");
+  }
+
+  function humanizeStatus(value) {
+    return normalizedStatus(value)
+      .split("-")
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ");
+  }
+
+  function needsReview(value) {
+    return REVIEW_STATUSES.has(normalizedStatus(value));
+  }
+
+  function sourceFailed(viewport) {
+    return (
+      !viewport ||
+      normalizedStatus(viewport.source?.status) === "error" ||
+      normalizedStatus(viewport.health?.level) === "error"
+    );
+  }
+
+  function formatMoney(value, currency) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      return "—";
+    }
+    try {
+      return new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: readable(currency, "USD"),
+        maximumFractionDigits: 0
+      }).format(value);
+    } catch {
+      return `${readable(currency, "USD")} ${value.toFixed(0)}`;
+    }
+  }
+
+  function compactDate(value) {
+    if (typeof value !== "string" || !value.trim()) {
       return "";
     }
-    return readable(
-      item.detail ||
-        item.summary ||
-        item.description ||
-        item.status ||
-        item.source ||
-        item.severity,
-      ""
-    );
-  }
-
-  function SourceState(props) {
-    const source = props.source;
-    return create(
-      "section",
-      {
-        className: "personal-dashboard-hermes-source",
-        "data-status": readable(source.status, "unknown")
-      },
-      create("strong", null, readable(source.status, "Unknown")),
-      create("span", null, readable(source.summary)),
-      source.updatedAt
-        ? create(
-            "small",
-            { className: "personal-dashboard-hermes-source-updated" },
-            `Freshness: ${readable(source.updatedAt)}`
-          )
-        : null
-    );
-  }
-
-  function SummaryList(props) {
-    const { heading, items, emptyLabel } = props;
-    const list = Array.isArray(items) ? items.slice(0, 6) : [];
-
-    return create(
-      "section",
-      { className: "personal-dashboard-hermes-section" },
-      create("h2", { className: "personal-dashboard-hermes-section-title" }, heading),
-      list.length
-        ? create(
-            "ul",
-            { className: "personal-dashboard-hermes-list" },
-            list.map((item, index) =>
-              create(
-                "li",
-                { className: "personal-dashboard-hermes-list-item", key: `${heading}-${index}` },
-                create(
-                  "span",
-                  { className: "personal-dashboard-hermes-item-title" },
-                  itemTitle(item, "Untitled item")
-                ),
-                create(
-                  "span",
-                  { className: "personal-dashboard-hermes-item-detail" },
-                  itemDetail(item)
-                )
-              )
-            )
-          )
-        : create("p", { className: "personal-dashboard-hermes-empty" }, emptyLabel)
-    );
-  }
-
-  function Metrics(props) {
-    const metrics = Array.isArray(props.metrics) ? props.metrics.slice(0, 6) : [];
-    if (!metrics.length) {
-      return create(
-        "p",
-        { className: "personal-dashboard-hermes-empty" },
-        "No live metrics have been received yet."
-      );
+    const date = new Date(`${value}T12:00:00`);
+    if (Number.isNaN(date.getTime())) {
+      return value;
     }
+    return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date);
+  }
+
+  function dateRange(start, end) {
+    return [compactDate(start), compactDate(end)].filter(Boolean).join("–");
+  }
+
+  function rateSavings(item) {
+    const targetRate = Number(item?.targetRate);
+    const bestRate = Number(item?.bestRate);
+    if (!Number.isFinite(targetRate) || !Number.isFinite(bestRate)) {
+      return null;
+    }
+    return targetRate - bestRate;
+  }
+
+  function formatFreshness(value) {
+    if (!value) {
+      return "Not synced yet";
+    }
+    try {
+      const relative = SDK.utils?.isoTimeAgo?.(value);
+      if (relative) {
+        return `Synced ${relative}`;
+      }
+    } catch {
+      // Use the timestamp fallback below when the host utility rejects it.
+    }
+    return `Synced ${readable(value)}`;
+  }
+
+  function latestTimestamp(portholes) {
+    const timestamps = portholes
+      .map((porthole) => porthole.freshness)
+      .filter((value) => typeof value === "string" && !Number.isNaN(Date.parse(value)))
+      .sort();
+    return timestamps.at(-1) || "";
+  }
+
+  function porthole({
+    id,
+    label,
+    icon,
+    state,
+    summary,
+    freshness,
+    badge,
+    highlight,
+    items,
+    action,
+    externalUrl,
+    featured
+  }) {
+    return {
+      id,
+      label,
+      icon,
+      state,
+      summary,
+      freshness,
+      badge,
+      highlight,
+      items: Array.isArray(items) ? items.slice(0, 3) : [],
+      action,
+      externalUrl: isTailnetAppUrl(externalUrl) ? externalUrl : "",
+      featured: Boolean(featured)
+    };
+  }
+
+  function unavailablePorthole({ id, label, icon, action }) {
+    return porthole({
+      id,
+      label,
+      icon,
+      state: "degraded",
+      summary: "This window could not be loaded. Its data may be stale.",
+      freshness: "",
+      badge: "Unavailable",
+      action
+    });
+  }
+
+  function financePorthole(overview, unavailable) {
+    if (unavailable || sourceFailed(overview)) {
+      return unavailablePorthole({
+        id: "finance",
+        label: "Finance",
+        icon: "$",
+        action: "Retry finance"
+      });
+    }
+
+    const metrics = Array.isArray(overview?.metrics) ? overview.metrics : [];
+    const alerts = Array.isArray(overview?.alerts) ? overview.alerts : [];
+    const reviewAlerts = alerts.filter((alert) =>
+      ["high", "critical"].includes(normalizedStatus(alert.severity))
+    );
+    const state = reviewAlerts.length ? "attention" : metrics.length ? "active" : "quiet";
+
+    return porthole({
+      id: "finance",
+      label: "Finance",
+      icon: "$",
+      state,
+      summary: reviewAlerts.length
+        ? `${reviewAlerts.length} finance alert${reviewAlerts.length === 1 ? "" : "s"} needs review.`
+        : "Finance is quiet.",
+      freshness: overview?.generatedAt,
+      badge: reviewAlerts.length ? `${reviewAlerts.length} to review` : "",
+      items: reviewAlerts.length
+        ? reviewAlerts.map((alert) => ({
+            id: readable(alert.id, "finance-alert"),
+            label: readable(alert.title, "Finance alert"),
+            meta: humanizeStatus(alert.severity),
+            detail: readable(alert.detail, "")
+          }))
+        : metrics.map((metric, index) => ({
+            id: `finance-metric-${index}`,
+            label: readable(metric.label, "Metric"),
+            meta: readable(metric.value),
+            detail: readable(metric.delta, "")
+          })),
+      action: reviewAlerts.length ? "Review alerts" : "Open finance"
+    });
+  }
+
+  function tripsPorthole(overview, unavailable) {
+    if (unavailable || sourceFailed(overview)) {
+      return unavailablePorthole({ id: "trips", label: "Trips", icon: "↗", action: "Retry trips" });
+    }
+
+    const items = Array.isArray(overview?.travel) ? overview.travel : [];
+    const reviewItems = items.filter((item) => needsReview(item.status));
+    const state = reviewItems.length ? "attention" : items.length ? "active" : "quiet";
+
+    return porthole({
+      id: "trips",
+      label: "Trips",
+      icon: "↗",
+      state,
+      summary: reviewItems.length
+        ? `${reviewItems.length} trip item${reviewItems.length === 1 ? "" : "s"} needs review.`
+        : "Trips are quiet.",
+      freshness: overview?.generatedAt,
+      badge: reviewItems.length ? `${reviewItems.length} to review` : "",
+      items: items.map((item) => ({
+        id: readable(item.id, "trip-item"),
+        label: readable(item.title, "Trip item"),
+        meta: readable(item.detail, humanizeStatus(item.status)),
+        detail: humanizeStatus(item.status)
+      })),
+      action: reviewItems.length ? "Review trips" : "Open trips"
+    });
+  }
+
+  function ratesPorthole(viewport, unavailable, externalUrl) {
+    if (unavailable || sourceFailed(viewport)) {
+      return unavailablePorthole({ id: "rates", label: "Rates", icon: "↓", action: "Retry rates" });
+    }
+
+    const watches = Array.isArray(viewport?.items) ? viewport.items : [];
+    const lowerRate = watches.find((watch) => rateSavings(watch) > 0);
+    const state = lowerRate ? "attention" : watches.length ? "active" : "quiet";
+    const savings = lowerRate ? rateSavings(lowerRate) : null;
+
+    return porthole({
+      id: "rates",
+      label: "Rates",
+      icon: "↓",
+      state,
+      summary: lowerRate
+        ? `${readable(lowerRate.property, "A hotel watch")} is below your target rate.`
+        : readable(viewport?.source?.summary, "Rates are quiet."),
+      freshness: viewport?.source?.updatedAt || viewport?.generatedAt,
+      badge: lowerRate ? "Needs review" : watches.length ? `${watches.length} watches` : "",
+      highlight: lowerRate
+        ? {
+            value: `−${formatMoney(savings, lowerRate.currency)}`,
+            label: "below your target rate"
+          }
+        : null,
+      items: watches.map((watch) => {
+        const saving = rateSavings(watch);
+        return {
+          id: readable(watch.id, "hotel-watch"),
+          label: readable(watch.property, "Hotel watch"),
+          meta:
+            saving && saving > 0
+              ? `−${formatMoney(saving, watch.currency)}`
+              : humanizeStatus(watch.status),
+          detail: [watch.location, dateRange(watch.checkIn, watch.checkOut)]
+            .filter(Boolean)
+            .join(" · ")
+        };
+      }),
+      action: externalUrl ? "Open full Hotel Rate Finder" : "View rate summary",
+      externalUrl,
+      featured: Boolean(lowerRate)
+    });
+  }
+
+  function dealsPorthole(viewport, unavailable) {
+    if (unavailable || sourceFailed(viewport)) {
+      return unavailablePorthole({
+        id: "asia-deals",
+        label: "Asia Deals",
+        icon: "✦",
+        action: "Retry Asia Deals"
+      });
+    }
+
+    const deals = Array.isArray(viewport?.items) ? viewport.items : [];
+    return porthole({
+      id: "asia-deals",
+      label: "Asia Deals",
+      icon: "✦",
+      state: deals.length ? "active" : "quiet",
+      summary: readable(viewport?.source?.summary, "Asia Deals is quiet."),
+      freshness: viewport?.source?.updatedAt || viewport?.generatedAt,
+      badge: deals.length ? `${deals.length} new fare${deals.length === 1 ? "" : "s"}` : "",
+      items: deals.map((deal) => ({
+        id: readable(deal.id, "asia-deal"),
+        label: readable(deal.route || deal.title, "Asia deal"),
+        meta:
+          typeof deal.price === "number"
+            ? formatMoney(deal.price, deal.currency)
+            : humanizeStatus(deal.status),
+        detail: readable(deal.title, "")
+      })),
+      action: "See all fares"
+    });
+  }
+
+  function codingPorthole(overview, unavailable) {
+    if (unavailable || sourceFailed(overview)) {
+      return unavailablePorthole({
+        id: "coding",
+        label: "Coding",
+        icon: "<>",
+        action: "Retry coding"
+      });
+    }
+
+    const tasks = Array.isArray(overview?.tasks) ? overview.tasks : [];
+    const reviewTasks = tasks.filter((task) => needsReview(task.status));
+    const state = reviewTasks.length ? "attention" : tasks.length ? "active" : "quiet";
+
+    return porthole({
+      id: "coding",
+      label: "Coding",
+      icon: "<>",
+      state,
+      summary: reviewTasks.length
+        ? `${reviewTasks.length} coding task${reviewTasks.length === 1 ? "" : "s"} needs review.`
+        : "Coding is quiet.",
+      freshness: overview?.generatedAt,
+      badge: reviewTasks.length ? `${reviewTasks.length} to review` : "",
+      items: tasks.map((task) => ({
+        id: readable(task.id, "coding-task"),
+        label: readable(task.title, "Coding task"),
+        meta: humanizeStatus(task.status),
+        detail: readable(task.detail, "")
+      })),
+      action: reviewTasks.length ? "Open queue" : "Open coding"
+    });
+  }
+
+  function memoryPorthole() {
+    return porthole({
+      id: "memory",
+      label: "Memory",
+      icon: "◌",
+      state: "quiet",
+      summary: "Memory stays intentionally quiet until it needs your attention.",
+      freshness: "",
+      action: "Open memory"
+    });
+  }
+
+  function buildPortholes(viewports, failed, appLinks) {
+    const overview = viewports.overview;
+    return [
+      ratesPorthole(
+        viewports["hotel-rate-finder"],
+        failed["hotel-rate-finder"],
+        appLinks?.apps?.["hotel-rate-finder"]
+      ),
+      codingPorthole(overview, failed.overview),
+      financePorthole(overview, failed.overview),
+      tripsPorthole(overview, failed.overview),
+      dealsPorthole(viewports["asia-travel-deals"], failed["asia-travel-deals"]),
+      memoryPorthole()
+    ];
+  }
+
+  function attentionHeadline(count) {
+    if (count === 0) {
+      return "All clear";
+    }
+    if (count === 1) {
+      return "One thing needs you";
+    }
+    return `${count} things need you`;
+  }
+
+  function PortholeIcon(props) {
     return create(
-      "section",
-      { className: "personal-dashboard-hermes-metrics", "aria-label": "Dashboard metrics" },
-      metrics.map((metric, index) =>
+      "span",
+      { className: "personal-dashboard-hermes-porthole-icon", "aria-hidden": "true" },
+      props.icon
+    );
+  }
+
+  function PortholeRows(props) {
+    const items = Array.isArray(props.items) ? props.items : [];
+    if (!items.length) {
+      return null;
+    }
+
+    return create(
+      "ul",
+      { className: "personal-dashboard-hermes-porthole-list" },
+      items.map((item, index) =>
         create(
-          "article",
-          { className: "personal-dashboard-hermes-metric", key: `metric-${index}` },
+          "li",
+          { className: "personal-dashboard-hermes-porthole-row", key: item.id || index },
           create(
             "span",
-            { className: "personal-dashboard-hermes-metric-label" },
-            itemTitle(metric, "Metric")
+            { className: "personal-dashboard-hermes-porthole-row-main" },
+            create(
+              "span",
+              { className: "personal-dashboard-hermes-porthole-row-label" },
+              item.label
+            ),
+            item.detail
+              ? create(
+                  "span",
+                  { className: "personal-dashboard-hermes-porthole-row-detail" },
+                  item.detail
+                )
+              : null
           ),
-          create(
-            "strong",
-            { className: "personal-dashboard-hermes-metric-value" },
-            readable(isRecord(metric) ? metric.value : undefined)
-          ),
-          isRecord(metric) && metric.delta
+          item.meta
             ? create(
                 "span",
-                { className: "personal-dashboard-hermes-metric-delta" },
-                readable(metric.delta)
+                { className: "personal-dashboard-hermes-porthole-row-meta" },
+                item.meta
               )
             : null
         )
@@ -188,219 +506,291 @@
     );
   }
 
-  function OverviewViewport(props) {
-    const viewport = props.viewport;
+  function PortholeCard(props) {
+    const porthole = props.porthole;
+    const classes = [
+      "personal-dashboard-hermes-porthole",
+      `personal-dashboard-hermes-porthole--${porthole.state}`,
+      porthole.featured ? "personal-dashboard-hermes-porthole--featured" : "",
+      porthole.state === "quiet" ? "personal-dashboard-hermes-porthole--quiet" : ""
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const action = porthole.state === "degraded" ? "Retry" : porthole.action;
+
     return create(
-      React.Fragment,
-      null,
-      create(Metrics, { metrics: viewport.metrics }),
+      "button",
+      {
+        className: classes,
+        type: "button",
+        onClick: () => {
+          if (porthole.state === "degraded") {
+            props.onRefresh();
+          } else if (porthole.externalUrl) {
+            window.open(porthole.externalUrl, "_blank", "noopener,noreferrer");
+          } else {
+            props.onOpen(porthole.id);
+          }
+        },
+        "aria-label": `${porthole.label}. ${porthole.summary}. ${action}.`
+      },
       create(
-        "div",
-        { className: "personal-dashboard-hermes-grid" },
-        create(SummaryList, {
-          heading: "Alerts",
-          items: viewport.alerts,
-          emptyLabel: "No active alerts."
-        }),
-        create(SummaryList, {
-          heading: "Travel",
-          items: viewport.travel,
-          emptyLabel: "No travel items need attention."
-        }),
-        create(SummaryList, {
-          heading: "Tasks",
-          items: viewport.tasks,
-          emptyLabel: "No active tasks."
+        "span",
+        { className: "personal-dashboard-hermes-porthole-heading" },
+        create(
+          "span",
+          { className: "personal-dashboard-hermes-porthole-heading-start" },
+          create(PortholeIcon, { icon: porthole.icon }),
+          create("span", { className: "personal-dashboard-hermes-porthole-title" }, porthole.label)
+        ),
+        porthole.badge
+          ? create(
+              "span",
+              { className: "personal-dashboard-hermes-porthole-badge" },
+              porthole.badge
+            )
+          : null
+      ),
+      porthole.highlight
+        ? create(
+            "span",
+            { className: "personal-dashboard-hermes-porthole-highlight" },
+            create("strong", null, porthole.highlight.value),
+            create("span", null, porthole.highlight.label)
+          )
+        : null,
+      porthole.state === "degraded"
+        ? create(
+            "span",
+            { className: "personal-dashboard-hermes-porthole-message" },
+            porthole.summary
+          )
+        : null,
+      create(PortholeRows, { items: porthole.items }),
+      create(
+        "span",
+        { className: "personal-dashboard-hermes-porthole-action" },
+        action,
+        create("span", { "aria-hidden": "true" }, "→")
+      )
+    );
+  }
+
+  function LoadingPortholes() {
+    return create(
+      "div",
+      { className: "personal-dashboard-hermes-porthole-grid", "aria-label": "Loading MooHQ" },
+      [0, 1, 2, 3, 4].map((index) =>
+        create("div", {
+          className: `personal-dashboard-hermes-porthole-skeleton ${index === 0 ? "is-featured" : ""}`,
+          key: `loading-${index}`
         })
       )
     );
   }
 
-  function hotelRateDetail(item) {
-    const dates = [item.checkIn, item.checkOut].filter(Boolean).join(" to ");
-    const rates = [];
-    if (typeof item.bestRate === "number") {
-      rates.push(`Best ${item.currency || "USD"} ${item.bestRate}`);
-    }
-    if (typeof item.targetRate === "number") {
-      rates.push(`Target ${item.currency || "USD"} ${item.targetRate}`);
-    }
-    return [item.location, dates, rates.join(" · "), item.status].filter(Boolean).join(" · ");
-  }
-
-  function asiaTravelDealDetail(item) {
-    const price = typeof item.price === "number" ? `${item.currency || "USD"} ${item.price}` : "";
-    const score = typeof item.score === "number" ? `Score ${item.score}` : "";
-    return [item.route, price, score, item.verificationStatus || item.status]
-      .filter(Boolean)
-      .join(" · ");
-  }
-
-  function SourceItemList(props) {
-    const { heading, items, emptyLabel, detail } = props;
-    const list = Array.isArray(items) ? items.slice(0, 12) : [];
-    return create(
-      "section",
-      { className: "personal-dashboard-hermes-section" },
-      create("h2", { className: "personal-dashboard-hermes-section-title" }, heading),
-      list.length
-        ? create(
-            "ul",
-            { className: "personal-dashboard-hermes-list" },
-            list.map((item, index) =>
-              create(
-                "li",
-                { className: "personal-dashboard-hermes-list-item", key: item.id || index },
-                create(
-                  "span",
-                  { className: "personal-dashboard-hermes-item-title" },
-                  readable(item.property || item.title, "Untitled item")
-                ),
-                create("span", { className: "personal-dashboard-hermes-item-detail" }, detail(item))
-              )
-            )
-          )
-        : create("p", { className: "personal-dashboard-hermes-empty" }, emptyLabel)
-    );
-  }
-
-  function ViewportContent(props) {
-    const viewport = props.viewport;
-    if (viewport.viewport === "overview") {
-      return create(OverviewViewport, { viewport });
-    }
-    if (viewport.viewport === "hotel-rate-finder") {
-      return create(SourceItemList, {
-        heading: "Hotel rate watches",
-        items: viewport.items,
-        emptyLabel: "No hotel rate watches have been received yet.",
-        detail: hotelRateDetail
-      });
-    }
-    return create(SourceItemList, {
-      heading: "Asia deal candidates",
-      items: viewport.items,
-      emptyLabel: "No Asia Travel Deals candidates have been received yet.",
-      detail: asiaTravelDealDetail
-    });
-  }
-
-  function PersonalDashboardPage() {
-    const [activeViewport, setActiveViewport] = useState("overview");
-    const [viewports, setViewports] = useState({});
-    const [loading, setLoading] = useState(true);
-    const [failed, setFailed] = useState(false);
-
-    const load = useCallback(async (viewportId) => {
-      const selected = VIEWPORTS.find((viewport) => viewport.id === viewportId) || VIEWPORTS[0];
-      setLoading(true);
-      setFailed(false);
-      try {
-        const response = await SDK.fetchJSON(selected.endpoint);
-        if (!isViewport(response, selected.id)) {
-          throw new Error("invalid_viewport_contract");
-        }
-        setViewports((current) => ({ ...current, [selected.id]: response }));
-      } catch {
-        setFailed(true);
-      } finally {
-        setLoading(false);
-      }
-    }, []);
-
-    useEffect(() => {
-      void load(activeViewport);
-    }, [activeViewport, load]);
-
-    const current = viewports[activeViewport];
-    const activeDefinition =
-      VIEWPORTS.find((viewport) => viewport.id === activeViewport) || VIEWPORTS[0];
+  function DetailPage(props) {
+    const { porthole, onBack, onRefresh, loading } = props;
+    const isDegraded = porthole.state === "degraded";
+    const hasItems = porthole.items.length > 0;
 
     return create(
       "main",
-      { className: "personal-dashboard-hermes-page", "aria-busy": loading ? "true" : undefined },
+      { className: "personal-dashboard-hermes-page personal-dashboard-hermes-detail" },
+      create(
+        "button",
+        {
+          className: "personal-dashboard-hermes-back",
+          type: "button",
+          onClick: onBack
+        },
+        create("span", { "aria-hidden": "true" }, "←"),
+        "Back to MooHQ"
+      ),
+      create(
+        "header",
+        { className: "personal-dashboard-hermes-detail-header" },
+        create(PortholeIcon, { icon: porthole.icon }),
+        create(
+          "div",
+          null,
+          create("h1", { className: "personal-dashboard-hermes-title" }, porthole.label),
+          create("p", { className: "personal-dashboard-hermes-detail-summary" }, porthole.summary),
+          porthole.freshness
+            ? create(
+                "p",
+                { className: "personal-dashboard-hermes-updated" },
+                formatFreshness(porthole.freshness)
+              )
+            : null
+        )
+      ),
+      isDegraded
+        ? create(
+            "section",
+            { className: "personal-dashboard-hermes-detail-status", role: "alert" },
+            create("p", null, "This porthole could not refresh. It is safer to treat it as stale."),
+            create(
+              "button",
+              {
+                className: "personal-dashboard-hermes-refresh",
+                disabled: loading,
+                type: "button",
+                onClick: onRefresh
+              },
+              loading ? "Refreshing…" : "Retry"
+            )
+          )
+        : hasItems
+          ? create(
+              "section",
+              { className: "personal-dashboard-hermes-detail-card" },
+              create(PortholeRows, { items: porthole.items })
+            )
+          : create(
+              "section",
+              { className: "personal-dashboard-hermes-detail-card" },
+              create(
+                "p",
+                { className: "personal-dashboard-hermes-empty" },
+                "Nothing needs your attention here right now. This window will become active when the connected app has useful, read-only context to show."
+              )
+            )
+    );
+  }
+
+  function MooHQPage() {
+    const [viewports, setViewports] = useState({});
+    const [failed, setFailed] = useState({});
+    const [appLinks, setAppLinks] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [screen, setScreen] = useState("home");
+
+    const load = useCallback(async () => {
+      setLoading(true);
+      const [responses, nextAppLinks] = await Promise.all([
+        Promise.all(
+          VIEWPORTS.map(async (viewport) => {
+            try {
+              const response = await SDK.fetchJSON(viewport.endpoint);
+              if (!isViewport(response, viewport.id)) {
+                throw new Error("invalid_viewport_contract");
+              }
+              return { id: viewport.id, response };
+            } catch {
+              return { id: viewport.id, failed: true };
+            }
+          })
+        ),
+        (async () => {
+          try {
+            const response = await SDK.fetchJSON(APP_LINKS_ENDPOINT);
+            return isAppLinks(response) ? response : null;
+          } catch {
+            return null;
+          }
+        })()
+      ]);
+
+      const nextViewports = {};
+      const nextFailed = {};
+      for (const result of responses) {
+        if (result.failed) {
+          nextFailed[result.id] = true;
+        } else {
+          nextViewports[result.id] = result.response;
+        }
+      }
+      setViewports(nextViewports);
+      setFailed(nextFailed);
+      setAppLinks(nextAppLinks);
+      setLoading(false);
+    }, []);
+
+    useEffect(() => {
+      void load();
+    }, [load]);
+
+    const hasResponse = Object.keys(viewports).length > 0 || Object.keys(failed).length > 0;
+    const portholes = buildPortholes(viewports, failed, appLinks);
+    const attentionCount = portholes.filter((porthole) => porthole.state === "attention").length;
+    const newest = latestTimestamp(portholes);
+
+    if (screen !== "home") {
+      const selected = portholes.find((porthole) => porthole.id === screen) || portholes[0];
+      return create(DetailPage, {
+        loading,
+        onBack: () => setScreen("home"),
+        onRefresh: load,
+        porthole: selected
+      });
+    }
+
+    return create(
+      "main",
+      {
+        className: "personal-dashboard-hermes-page",
+        "aria-busy": loading ? "true" : undefined
+      },
       create(
         "header",
         { className: "personal-dashboard-hermes-header" },
         create(
           "div",
           null,
-          create("h1", { className: "personal-dashboard-hermes-title" }, "MooHQ"),
+          create("p", { className: "personal-dashboard-hermes-eyebrow" }, "MooHQ"),
+          create(
+            "h1",
+            { className: "personal-dashboard-hermes-title" },
+            attentionHeadline(attentionCount)
+          ),
           create(
             "p",
-            { className: "personal-dashboard-hermes-updated" },
-            current ? `Updated ${readable(current.generatedAt)}` : "Loading live dashboard data…"
+            { className: "personal-dashboard-hermes-intro" },
+            "Each app keeps its own workflow. This is the shortest useful way in."
           )
         ),
-        current
-          ? create(
-              "div",
-              {
-                className: "personal-dashboard-hermes-health",
-                "data-level": readable(current.health.level, "unknown")
-              },
-              create("strong", null, readable(current.health.level, "Unknown")),
-              create("span", null, readable(current.health.summary))
-            )
-          : null
-      ),
-      create(
-        "div",
-        {
-          className: "personal-dashboard-hermes-tabs",
-          role: "tablist",
-          "aria-label": "Dashboard viewports"
-        },
-        VIEWPORTS.map((viewport) =>
+        create(
+          "div",
+          { className: "personal-dashboard-hermes-header-actions" },
+          newest
+            ? create(
+                "span",
+                { className: "personal-dashboard-hermes-updated" },
+                formatFreshness(newest)
+              )
+            : null,
           create(
             "button",
             {
-              className: "personal-dashboard-hermes-tab",
-              "aria-selected": viewport.id === activeViewport ? "true" : "false",
-              key: viewport.id,
-              onClick: () => setActiveViewport(viewport.id),
-              role: "tab",
-              type: "button"
+              className: "personal-dashboard-hermes-refresh",
+              disabled: loading,
+              type: "button",
+              onClick: load
             },
-            viewport.label
+            loading ? "Refreshing…" : "Refresh"
           )
         )
       ),
-      failed
+      hasResponse
         ? create(
             "section",
-            { className: "personal-dashboard-hermes-status", role: "alert" },
-            create(
-              "p",
-              null,
-              `The ${activeDefinition.label} viewport is unavailable. Confirm that the local dashboard API is running, then retry.`
-            ),
-            create(
-              "button",
-              {
-                className: "personal-dashboard-hermes-retry",
-                onClick: () => load(activeViewport),
-                type: "button"
-              },
-              "Retry"
+            {
+              className: "personal-dashboard-hermes-porthole-grid",
+              "aria-label": "MooHQ portholes"
+            },
+            portholes.map((porthole) =>
+              create(PortholeCard, {
+                key: porthole.id,
+                onOpen: setScreen,
+                onRefresh: load,
+                porthole
+              })
             )
           )
-        : loading && !current
-          ? create(
-              "p",
-              { className: "personal-dashboard-hermes-status" },
-              `Loading ${activeDefinition.label}…`
-            )
-          : current
-            ? create(
-                "div",
-                { className: "personal-dashboard-hermes-viewport", role: "tabpanel" },
-                create(SourceState, { source: current.source }),
-                create(ViewportContent, { viewport: current })
-              )
-            : null
+        : create(LoadingPortholes)
     );
   }
 
-  registry.register(PLUGIN_NAME, PersonalDashboardPage);
+  registry.register(PLUGIN_NAME, MooHQPage);
 })();

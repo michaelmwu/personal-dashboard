@@ -1,7 +1,7 @@
 {
   "name": "personal-dashboard",
   "label": "MooHQ",
-  "description": "Read-only overview, hotel rate, and Asia travel deal viewports.",
+  "description": "A read-only Hermes-native porthole home for your personal apps.",
   "icon": "BarChart3",
   "version": "0.1.0",
   "tab": {
