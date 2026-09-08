@@ -293,7 +293,6 @@ test("queued airline search identifies and cancels its older blocker", async ({ 
         message: "Waiting for the ANA browser profile; 1 search ahead.",
         queueReason: "provider_profile",
         queuePosition: 2,
-        blockedByJobId: "search_older",
         queuedAt: new Date(Date.now() - 65_000).toISOString()
       }
     },
@@ -319,11 +318,14 @@ test("queued airline search identifies and cancels its older blocker", async ({ 
     await page.goto(`${base}/flights`);
     await expect(page.locator("#run-title")).toHaveText("TYO → SFO");
     await expect(page.getByText("Queue position 2")).toContainText("waiting 1m");
-    await expect(page.getByRole("button", { name: "Cancel older search" })).toBeVisible();
-    await page.getByRole("button", { name: "Cancel older search" }).click();
+    const cancelAhead = page.getByRole("button", {
+      name: "Cancel ANA search ahead: NRT → JFK"
+    });
+    await expect(cancelAhead).toBeVisible();
+    await cancelAhead.click();
     await expect.poll(() => canceledJobId).toBe("search_older");
     await expect(page.getByText("Queue position 1")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Cancel older search" })).toHaveCount(0);
+    await expect(cancelAhead).toHaveCount(0);
   } finally {
     await page.close();
     await new Promise((resolve) => server.close(resolve));

@@ -709,19 +709,24 @@ legend {
 }
 .provider-queue-actions {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 7px;
 }
+.provider-queue-actions span {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
 .provider-queue-actions button {
-  border: 0;
-  background: transparent;
-  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--red) 55%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+  padding: 4px 9px;
   font-size: 10.5px;
   font-weight: 700;
   cursor: pointer;
-}
-.queue-link {
-  color: var(--blue);
 }
 .queue-cancel {
   color: var(--red);

@@ -115,6 +115,43 @@ function providerQueueDetails(run) {
   return `<p class="provider-queue-details">${escapeHtml(parts.join(" · "))}</p>`;
 }
 
+function queueJobsAhead(job, providerId, run) {
+  if (run.state !== "queued") return [];
+  const expected = Math.max(0, Number(run.queuePosition ?? 1) - 1);
+  const currentCreatedAt = Date.parse(job.createdAt ?? "");
+  const currentIndex = state.jobs.findIndex((candidate) => candidate.id === job.id);
+  const candidates = state.jobs
+    .filter((candidate, candidateIndex) => {
+      if (candidate.id === job.id) return false;
+      if (!activeStatuses.has(candidate.providers?.[providerId]?.state)) return false;
+      const candidateCreatedAt = Date.parse(candidate.createdAt ?? "");
+      if (Number.isFinite(currentCreatedAt) && Number.isFinite(candidateCreatedAt)) {
+        return candidateCreatedAt < currentCreatedAt;
+      }
+      return currentIndex >= 0 && candidateIndex > currentIndex;
+    })
+    .sort((left, right) => Date.parse(left.createdAt ?? "") - Date.parse(right.createdAt ?? ""));
+  const directBlocker = state.jobs.find((candidate) => candidate.id === run.blockedByJobId);
+  if (directBlocker && !candidates.some((candidate) => candidate.id === directBlocker.id)) {
+    candidates.unshift(directBlocker);
+  }
+  const count = Math.max(expected, run.blockedByJobId ? 1 : 0);
+  return count ? candidates.slice(0, count) : [];
+}
+
+function queueActions(job, providerId, run) {
+  const blockers = queueJobsAhead(job, providerId, run);
+  if (!blockers.length) return "";
+  return `<div class="provider-queue-actions"><span>Search${blockers.length === 1 ? "" : "es"} ahead</span>${blockers
+    .map((blocker) => {
+      const request = blocker.request ?? {};
+      const route = `${(request.origins ?? []).join(", ")} → ${(request.destinations ?? []).join(", ")}`;
+      const label = route === " → " ? "previous search" : route;
+      return `<button class="queue-cancel" type="button" data-cancel-job="${escapeHtml(blocker.id)}" aria-label="Cancel ${escapeHtml(providerNames[providerId] ?? providerId)} search ahead: ${escapeHtml(label)}">Cancel ${escapeHtml(label)}</button>`;
+    })
+    .join("")}</div>`;
+}
+
 function selectedJob() {
   return state.jobs.find((job) => job.id === state.selectedId) ?? state.jobs[0] ?? null;
 }
@@ -190,7 +227,7 @@ function renderRun(job) {
       <div class="provider-run-head"><span>${escapeHtml(providerNames[id] ?? id)}</span>${statusPill(run.state)}</div>
       <p>${escapeHtml(run.message ?? (run.resultCount ? `${run.resultCount} result(s)` : run.state === "queued" ? "Queued by the provider scheduler." : "Starting provider."))}</p>
       ${providerQueueDetails(run)}
-      ${run.blockedByJobId ? `<div class="provider-queue-actions"><button class="queue-link" type="button" data-select-job-inline="${escapeHtml(run.blockedByJobId)}">View older search</button><button class="queue-cancel" type="button" data-cancel-job="${escapeHtml(run.blockedByJobId)}">Cancel older search</button></div>` : ""}
+      ${queueActions(job, id, run)}
       ${run.errorCode ? `<p class="provider-error-code">Error code: <code>${escapeHtml(run.errorCode)}</code></p>` : ""}
       ${run.debugHtmlAvailable ? `<a class="debug-report-link" href="${debugReportUrl(job.id, id)}" download>Download sanitized selector report</a>` : ""}
       ${run.rateLimitRemaining === null || run.rateLimitRemaining === undefined ? "" : `<p>${number.format(run.rateLimitRemaining)} Seats.aero calls remaining today</p>`}
