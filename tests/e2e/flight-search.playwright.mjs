@@ -417,8 +417,19 @@ test("browser handoff exposes safe recovery controls and inline errors", async (
     await expect(page.locator("[data-browser-text]")).toBeVisible();
 
     await page.locator("[data-browser-text]").fill("SFO");
-    await page.getByRole("button", { name: "Send to browser" }).click();
-    await expect.poll(() => browserActions).toEqual([{ kind: "type", text: "SFO" }]);
+    await page.getByRole("button", { name: "Replace field" }).click();
+    await expect.poll(() => browserActions).toEqual([{ kind: "replace", text: "SFO" }]);
+    await page.locator("[data-browser-text]").fill(" terminal");
+    await page.getByRole("button", { name: "Append" }).click();
+    await expect.poll(() => browserActions.at(-1)).toEqual({ kind: "type", text: " terminal" });
+    await expect(page.getByRole("button", { name: "← Backspace" })).toHaveAttribute(
+      "title",
+      "Delete one character to the left"
+    );
+    await expect(page.getByRole("button", { name: "Delete →" })).toHaveAttribute(
+      "title",
+      "Delete one character to the right"
+    );
     await page.getByRole("button", { name: "↓" }).click();
     await expect.poll(() => browserActions.at(-1)).toEqual({ kind: "key", key: "ArrowDown" });
     await page.getByRole("button", { name: "Escape" }).click();
@@ -539,7 +550,7 @@ test("intervention tabs preserve drafts and the preview accepts direct typing", 
     await preview.click({ position: { x: 180, y: 100 } });
     await expect(page.locator(".browser-focus-marker")).toBeVisible();
     await expect(page.locator("[data-browser-input-surface]")).toBeFocused();
-    await expect(page.getByText("Field targeted", { exact: false })).toBeVisible();
+    await expect(page.getByText("Field selected", { exact: false })).toBeVisible();
     await page.keyboard.type("SFO");
     await page.keyboard.press("Backspace");
     await expect

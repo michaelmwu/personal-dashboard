@@ -916,6 +916,14 @@ legend {
 .browser-type-row input {
   font-weight: 500;
 }
+.browser-type-actions {
+  display: flex;
+  gap: 7px;
+}
+.browser-type-actions .primary-button,
+.browser-type-actions .secondary-button {
+  white-space: nowrap;
+}
 .browser-tools .browser-buttons {
   margin-top: 10px;
 }
