@@ -136,6 +136,7 @@
               <label class="choice"><input type="checkbox" name="cabins" value="business" checked><span>Business</span></label>
               <label class="choice"><input type="checkbox" name="cabins" value="first" checked><span>First</span></label>
             </div>
+            <p class="field-help">Seats.aero searches every selected cabin. Airline websites search one premium cabin at a time.</p>
           </fieldset>
 
           <fieldset>
@@ -143,6 +144,7 @@
             <div class="choice-row provider-choices" id="provider-choices">
               <span class="loading-line">Loading providers…</span>
             </div>
+            <div class="airline-cabin-choices" id="airline-cabin-choices"></div>
           </fieldset>
 
           <div class="form-footer">
@@ -191,12 +193,6 @@
             <label class="result-filter-control"><span>Provider</span><select id="result-provider-filter"><option value="">All</option></select></label>
             <label class="result-filter-control"><span>Cabin</span><select id="result-cabin-filter"><option value="">All</option></select></label>
             <label class="result-filter-control"><span>Program</span><select id="result-program-filter"><option value="">All</option></select></label>
-            <label class="result-sort-control"><span>Sort by</span><select id="result-sort">
-              <option value="date">Departure date</option>
-              <option value="points">Lowest points</option>
-              <option value="stops">Fewest stops</option>
-            </select></label>
-            <button class="control-button sort-direction" type="button" id="sort-direction" data-direction="asc" aria-label="Sort ascending">↑</button>
             <label class="result-filter-control"><span>View</span><select id="result-view"><option value="table">List</option><option value="grid">Date grid</option></select></label>
             <span class="quiet-label" id="result-count">0 available</span>
           </div>

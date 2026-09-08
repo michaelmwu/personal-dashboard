@@ -111,6 +111,15 @@ function list(value) {
   return [];
 }
 
+function airlineCabinMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([provider, cabin]) => [String(provider).trim(), String(cabin).trim()])
+      .filter(([provider, cabin]) => provider && cabin)
+  );
+}
+
 export function normalizeFlightSearchRequest(payload = {}) {
   const origins = list(payload.origins ?? payload.origin);
   const destinations = list(payload.destinations ?? payload.destination);
@@ -122,6 +131,7 @@ export function normalizeFlightSearchRequest(payload = {}) {
   const maxPoints = payload.maxPoints ?? payload.max_points;
   const maxStops = payload.maxStops ?? payload.max_stops;
   const seatsAeroSources = list(payload.seatsAeroSources ?? payload.seats_aero_sources);
+  const airlineCabins = airlineCabinMap(payload.airlineCabins ?? payload.airline_cabins);
 
   return {
     origins,
@@ -135,6 +145,7 @@ export function normalizeFlightSearchRequest(payload = {}) {
     providers: list(payload.providers).length
       ? list(payload.providers)
       : ["seats_aero", "ana", "jal", "eva"],
+    ...(Object.keys(airlineCabins).length ? { airlineCabins } : {}),
     ...(maxStops === undefined || maxStops === null || maxStops === ""
       ? {}
       : { maxStops: Number(maxStops) }),
