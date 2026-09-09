@@ -100,7 +100,9 @@ import {
 } from "../../packages/integrations/personal-memory.mjs";
 import {
   cancelFlightSearch,
+  compactFlightSearchJob,
   createFlightSearch,
+  deriveHermesFlightInterventionToken,
   flightSearcherHermesContext,
   getFlightChallengeScreenshot,
   getFlightProviderDebugHtml,
@@ -2352,6 +2354,10 @@ function bearerTokenMatches(request, expectedToken) {
   return expected.length === received.length && timingSafeEqual(expected, received);
 }
 
+function isSafeFlightIdentifier(value) {
+  return /^[A-Za-z0-9_-]{1,128}$/.test(value);
+}
+
 /**
  * Gmail gateway events are intentionally authenticated independently from the
  * general dashboard/Hermes bearer token. The event credential authorizes only
@@ -2440,7 +2446,9 @@ async function packageInfo() {
 export function createApiServer({
   apiToken = hermesApiToken,
   asiaTravelDealsWebhookToken: webhookToken = configuredAsiaTravelDealsWebhookToken,
-  emailGatewayEventToken: configuredEmailGatewayEventToken = emailGatewayEventToken
+  emailGatewayEventToken: configuredEmailGatewayEventToken = emailGatewayEventToken,
+  hermesFlightInterventionToken = deriveHermesFlightInterventionToken(apiToken),
+  flightSearchOptions = {}
 } = {}) {
   const requireAuth = (request, response) => requireHermesAuth(request, response, { apiToken });
   const requireAsiaTravelDealsWebhook = (request, response) =>
@@ -2451,6 +2459,25 @@ export function createApiServer({
     });
   const requireEmailGatewayReader = (request, response) =>
     requireEmailGatewayReaderAuth(request, response, { apiToken });
+  const requireHermesFlightIntervention = (request, response) => {
+    if (!hermesFlightInterventionToken) {
+      error(
+        response,
+        503,
+        "hermes_flight_intervention_auth_not_configured",
+        "Hermes flight intervention authentication is not configured."
+      );
+      return false;
+    }
+    if (bearerTokenMatches(request, hermesFlightInterventionToken)) return true;
+    error(
+      response,
+      401,
+      "unauthorized",
+      "Missing or invalid Hermes flight intervention bearer token."
+    );
+    return false;
+  };
 
   return http.createServer(async (request, response) => {
     try {
@@ -2497,6 +2524,108 @@ export function createApiServer({
 
       if (request.method === "GET" && url.pathname === "/api/host-dashboard/asia-travel-deals") {
         json(response, 200, hostDashboardViewport(await dashboardSnapshot(), "asia-travel-deals"));
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/api/hermes/flight-searches") {
+        if (!requireHermesFlightIntervention(request, response)) return;
+        const limit = Number.parseInt(url.searchParams.get("limit") ?? "10", 10);
+        const result = await listFlightSearches(
+          { limit: Number.isInteger(limit) && limit > 0 ? Math.min(limit, 20) : 10 },
+          flightSearchOptions
+        );
+        json(response, result.status, {
+          ok: result.ok,
+          emailAccess: false,
+          searches: result.ok
+            ? (Array.isArray(result.body) ? result.body : []).map(compactFlightSearchJob)
+            : [],
+          ...(result.ok ? {} : { error: result.body?.error ?? "flight_searcher_unavailable" })
+        });
+        return;
+      }
+
+      const hermesFlightScreenshotMatch = url.pathname.match(
+        /^\/api\/hermes\/flight-searches\/([^/]+)\/challenges\/([^/]+)\/screenshot$/
+      );
+      if (request.method === "GET" && hermesFlightScreenshotMatch) {
+        if (!requireHermesFlightIntervention(request, response)) return;
+        const jobId = decodeURIComponent(hermesFlightScreenshotMatch[1]);
+        const challengeId = decodeURIComponent(hermesFlightScreenshotMatch[2]);
+        if (!isSafeFlightIdentifier(jobId) || !isSafeFlightIdentifier(challengeId)) {
+          error(response, 400, "invalid_flight_identifier", "Invalid flight search identifier.");
+          return;
+        }
+        const result = await getFlightChallengeScreenshot(jobId, challengeId, flightSearchOptions);
+        if (!result.ok) {
+          json(response, result.status, result.body);
+          return;
+        }
+        if (!result.contentType.toLowerCase().startsWith("image/")) {
+          error(response, 502, "invalid_challenge_screenshot", "Invalid challenge screenshot.");
+          return;
+        }
+        response.writeHead(result.status, {
+          "Cache-Control": "no-store, max-age=0",
+          "Content-Type": result.contentType,
+          "X-Content-Type-Options": "nosniff"
+        });
+        response.end(result.body);
+        return;
+      }
+
+      const hermesFlightResponseMatch = url.pathname.match(
+        /^\/api\/hermes\/flight-searches\/([^/]+)\/challenges\/([^/]+)\/respond$/
+      );
+      if (request.method === "POST" && hermesFlightResponseMatch) {
+        if (!requireHermesFlightIntervention(request, response)) return;
+        const jobId = decodeURIComponent(hermesFlightResponseMatch[1]);
+        const challengeId = decodeURIComponent(hermesFlightResponseMatch[2]);
+        if (!isSafeFlightIdentifier(jobId) || !isSafeFlightIdentifier(challengeId)) {
+          error(response, 400, "invalid_flight_identifier", "Invalid flight search identifier.");
+          return;
+        }
+        const payload = await readJson(request);
+        const value = typeof payload.value === "string" ? payload.value.trim() : "";
+        if (!value || value.length > 256) {
+          error(
+            response,
+            400,
+            "invalid_challenge_value",
+            "A valid challenge response is required."
+          );
+          return;
+        }
+        const result = await respondToFlightChallenge(
+          jobId,
+          challengeId,
+          value,
+          flightSearchOptions
+        );
+        json(response, result.status, {
+          ok: result.ok,
+          status: result.body?.status ?? (result.ok ? "accepted" : "failed"),
+          ...(result.ok ? {} : { error: result.body?.error ?? "challenge_response_failed" })
+        });
+        return;
+      }
+
+      const hermesFlightCancelMatch = url.pathname.match(
+        /^\/api\/hermes\/flight-searches\/([^/]+)\/cancel$/
+      );
+      if (request.method === "POST" && hermesFlightCancelMatch) {
+        if (!requireHermesFlightIntervention(request, response)) return;
+        const jobId = decodeURIComponent(hermesFlightCancelMatch[1]);
+        if (!isSafeFlightIdentifier(jobId)) {
+          error(response, 400, "invalid_flight_identifier", "Invalid flight search identifier.");
+          return;
+        }
+        const result = await cancelFlightSearch(jobId, flightSearchOptions);
+        json(response, result.status, {
+          ok: result.ok,
+          status: result.body?.status ?? (result.ok ? "cancelled" : "failed"),
+          ...(result.ok ? {} : { error: result.body?.error ?? "flight_cancel_failed" })
+        });
         return;
       }
 

@@ -1,4 +1,16 @@
+import { createHmac } from "node:crypto";
+
 const DEFAULT_TIMEOUT_MS = 30_000;
+export const HERMES_FLIGHT_INTERVENTION_DERIVATION_LABEL =
+  "personal-dashboard/hermes-flight-intervention/v1";
+
+export function deriveHermesFlightInterventionToken(apiToken) {
+  const token = String(apiToken ?? "").trim();
+  if (!token) return "";
+  return createHmac("sha256", token)
+    .update(HERMES_FLIGHT_INTERVENTION_DERIVATION_LABEL)
+    .digest("hex");
+}
 
 export function flightSearcherConfig(env = process.env) {
   return {
