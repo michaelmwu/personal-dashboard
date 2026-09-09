@@ -209,6 +209,136 @@
   padding: 0.45rem 0.8rem;
 }
 
+.personal-dashboard-hermes-flight-list,
+.personal-dashboard-hermes-provider-grid,
+.personal-dashboard-hermes-challenge,
+.personal-dashboard-hermes-challenge-form,
+.personal-dashboard-hermes-flight-results {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.personal-dashboard-hermes-flight {
+  background: var(--color-card, transparent);
+  border: 1px solid var(--color-border, currentColor);
+  border-radius: var(--radius, 0.5rem);
+  padding: 1rem;
+}
+
+.personal-dashboard-hermes-flight > header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: space-between;
+  margin-bottom: 0.9rem;
+}
+
+.personal-dashboard-hermes-flight h2 {
+  font-size: 1rem;
+  margin: 0 0 0.2rem;
+}
+
+.personal-dashboard-hermes-flight button,
+.personal-dashboard-hermes-challenge-form button,
+.personal-dashboard-hermes-link {
+  background: var(--color-primary, transparent);
+  border: 1px solid var(--color-primary, currentColor);
+  border-radius: var(--radius, 0.5rem);
+  color: var(--color-primary-foreground, inherit);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.45rem 0.7rem;
+  text-decoration: none;
+}
+
+.personal-dashboard-hermes-flight button:disabled,
+.personal-dashboard-hermes-challenge-form button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.personal-dashboard-hermes-provider-grid {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
+.personal-dashboard-hermes-provider {
+  border: 1px solid var(--color-border, currentColor);
+  border-radius: var(--radius, 0.5rem);
+  display: grid;
+  gap: 0.3rem;
+  min-width: 0;
+  padding: 0.75rem;
+}
+
+.personal-dashboard-hermes-provider[data-state="succeeded"] {
+  border-color: var(--color-success, var(--color-border, currentColor));
+}
+
+.personal-dashboard-hermes-provider[data-state="failed"] {
+  border-color: var(--color-destructive, var(--color-border, currentColor));
+}
+
+.personal-dashboard-hermes-provider[data-state="waiting_human"] {
+  border-color: var(--color-warning, var(--color-border, currentColor));
+}
+
+.personal-dashboard-hermes-challenge {
+  border-top: 1px solid var(--color-border, currentColor);
+  margin-top: 0.4rem;
+  padding-top: 0.75rem;
+}
+
+.personal-dashboard-hermes-challenge p,
+.personal-dashboard-hermes-challenge-form label {
+  font-size: 0.825rem;
+  margin: 0;
+}
+
+.personal-dashboard-hermes-challenge-image {
+  background: white;
+  border-radius: var(--radius, 0.5rem);
+  max-height: 280px;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.personal-dashboard-hermes-challenge-form {
+  grid-template-columns: minmax(9rem, 1fr) auto;
+}
+
+.personal-dashboard-hermes-challenge-form label,
+.personal-dashboard-hermes-inline-error {
+  grid-column: 1 / -1;
+}
+
+.personal-dashboard-hermes-challenge-form input {
+  background: var(--color-background, transparent);
+  border: 1px solid var(--color-border, currentColor);
+  border-radius: var(--radius, 0.5rem);
+  color: var(--color-foreground, inherit);
+  font: inherit;
+  min-width: 0;
+  padding: 0.55rem 0.65rem;
+}
+
+.personal-dashboard-hermes-inline-error {
+  color: var(--color-destructive, currentColor);
+  font-size: 0.8rem;
+}
+
+.personal-dashboard-hermes-flight-results {
+  list-style: none;
+  padding: 0.75rem 0 0;
+}
+
+.personal-dashboard-hermes-flight-results li {
+  border-top: 1px solid var(--color-border, currentColor);
+  display: grid;
+  gap: 0.2rem;
+  padding-top: 0.55rem;
+}
+
 @media (max-width: 640px) {
   .personal-dashboard-hermes-page {
     padding: 1rem;

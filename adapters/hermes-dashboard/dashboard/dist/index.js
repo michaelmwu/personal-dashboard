@@ -29,6 +29,11 @@
       id: "asia-travel-deals",
       label: "Asia Travel Deals",
       endpoint: "/api/plugins/personal-dashboard/asia-travel-deals"
+    },
+    {
+      id: "award-flights",
+      label: "Award Flights",
+      endpoint: "/api/plugins/personal-dashboard/flight-searches"
     }
   ];
 
@@ -73,6 +78,15 @@
       return ["metrics", "alerts", "travel", "tasks"].every((key) => Array.isArray(value[key]));
     }
     return Array.isArray(value.items);
+  }
+
+  function isFlightFeed(value) {
+    return (
+      isRecord(value) &&
+      typeof value.ok === "boolean" &&
+      value.emailAccess === false &&
+      Array.isArray(value.searches)
+    );
   }
 
   function itemTitle(item, fallback) {
@@ -285,6 +299,239 @@
     });
   }
 
+  function flightRoute(request) {
+    if (!isRecord(request)) return "Award search";
+    const origins = Array.isArray(request.origins) ? request.origins.join(", ") : "?";
+    const destinations = Array.isArray(request.destinations)
+      ? request.destinations.join(", ")
+      : "?";
+    const dates = [request.departureStart, request.departureEnd]
+      .filter(Boolean)
+      .filter((value, index, all) => all.indexOf(value) === index)
+      .join(" – ");
+    return `${origins} → ${destinations}${dates ? ` · ${dates}` : ""}`;
+  }
+
+  function providerLabel(provider) {
+    return provider === "seats_aero"
+      ? "Seats.aero"
+      : provider === "eva"
+        ? "EVA"
+        : String(provider || "provider").toUpperCase();
+  }
+
+  function FlightChallenge(props) {
+    const { challenge, jobId, refresh } = props;
+    const [value, setValue] = useState("");
+    const [submitting, setSubmitting] = useState(false);
+    const [error, setError] = useState("");
+    const directEntry = ["sms_otp", "email_otp", "captcha"].includes(challenge.kind);
+    const base = `/api/plugins/personal-dashboard/flight-searches/${encodeURIComponent(jobId)}/challenges/${encodeURIComponent(challenge.id)}`;
+
+    async function submit(event) {
+      event.preventDefault();
+      if (!value.trim() || submitting) return;
+      setSubmitting(true);
+      setError("");
+      try {
+        await SDK.fetchJSON(`${base}/respond`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ value: value.trim() })
+        });
+        setValue("");
+        await refresh();
+      } catch (submitError) {
+        setError(submitError?.message ? submitError.message : "Submission failed.");
+      } finally {
+        setSubmitting(false);
+      }
+    }
+
+    return create(
+      "section",
+      { className: "personal-dashboard-hermes-challenge" },
+      create("strong", null, `${providerLabel(challenge.provider)} needs you`),
+      create("p", null, readable(challenge.prompt, "Complete the verification step.")),
+      challenge.screenshotAvailable
+        ? create("img", {
+            alt: `${providerLabel(challenge.provider)} verification preview`,
+            className: "personal-dashboard-hermes-challenge-image",
+            src: `${base}/screenshot?t=${Date.now()}`
+          })
+        : null,
+      directEntry
+        ? create(
+            "form",
+            { className: "personal-dashboard-hermes-challenge-form", onSubmit: submit },
+            create(
+              "label",
+              { htmlFor: `challenge-${challenge.id}` },
+              challenge.kind === "captcha" ? "CAPTCHA" : "Verification code"
+            ),
+            create("input", {
+              autoComplete: challenge.kind === "captcha" ? "off" : "one-time-code",
+              id: `challenge-${challenge.id}`,
+              inputMode: challenge.kind === "captcha" ? "text" : "numeric",
+              maxLength: 256,
+              onChange: (event) => setValue(event.target.value),
+              spellCheck: false,
+              type: "text",
+              value
+            }),
+            create(
+              "button",
+              { disabled: !value.trim() || submitting, type: "submit" },
+              submitting ? "Submitting…" : "Submit"
+            ),
+            error
+              ? create(
+                  "span",
+                  { className: "personal-dashboard-hermes-inline-error", role: "alert" },
+                  error
+                )
+              : null
+          )
+        : create(
+            "a",
+            {
+              className: "personal-dashboard-hermes-link",
+              href: `https://${window.location.hostname}:8811/flights`,
+              rel: "noreferrer",
+              target: "_blank"
+            },
+            "Open browser controls"
+          )
+    );
+  }
+
+  function AwardFlightsViewport(props) {
+    const { feed, refresh } = props;
+    const searches = Array.isArray(feed.searches) ? feed.searches : [];
+
+    async function cancel(jobId) {
+      await SDK.fetchJSON(
+        `/api/plugins/personal-dashboard/flight-searches/${encodeURIComponent(jobId)}/cancel`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
+      );
+      await refresh();
+    }
+
+    return create(
+      "div",
+      { className: "personal-dashboard-hermes-flight-list" },
+      searches.length
+        ? searches.map((search) => {
+            const providers = Object.entries(isRecord(search.providers) ? search.providers : {});
+            const active = ["queued", "running", "waiting_human"].includes(search.status);
+            return create(
+              "article",
+              { className: "personal-dashboard-hermes-flight", key: search.id },
+              create(
+                "header",
+                null,
+                create(
+                  "div",
+                  null,
+                  create("h2", null, flightRoute(search.request)),
+                  create("small", null, readable(search.id))
+                ),
+                create(
+                  "span",
+                  { "data-state": readable(search.status, "unknown") },
+                  readable(search.status, "unknown")
+                ),
+                active
+                  ? create(
+                      "button",
+                      { onClick: () => void cancel(search.id), type: "button" },
+                      "Cancel"
+                    )
+                  : null
+              ),
+              create(
+                "div",
+                { className: "personal-dashboard-hermes-provider-grid" },
+                providers.map(([provider, run]) =>
+                  create(
+                    "section",
+                    {
+                      className: "personal-dashboard-hermes-provider",
+                      key: provider,
+                      "data-state": readable(run.state, "unknown")
+                    },
+                    create("strong", null, providerLabel(provider)),
+                    create("span", null, readable(run.state, "unknown")),
+                    run.queuePosition
+                      ? create("small", null, `${run.queuePosition} in queue`)
+                      : null,
+                    typeof run.resultCount === "number"
+                      ? create(
+                          "small",
+                          null,
+                          `${run.resultCount} result${run.resultCount === 1 ? "" : "s"}`
+                        )
+                      : null,
+                    run.message ? create("small", null, readable(run.message)) : null,
+                    run.challenge
+                      ? create(FlightChallenge, {
+                          challenge: run.challenge,
+                          jobId: search.id,
+                          refresh
+                        })
+                      : null
+                  )
+                )
+              ),
+              Array.isArray(search.results) && search.results.length
+                ? create(
+                    "details",
+                    null,
+                    create(
+                      "summary",
+                      null,
+                      `${search.results.length} result${search.results.length === 1 ? "" : "s"}`
+                    ),
+                    create(
+                      "ul",
+                      { className: "personal-dashboard-hermes-flight-results" },
+                      search.results
+                        .slice(0, 10)
+                        .map((result, index) =>
+                          create(
+                            "li",
+                            { key: result.id || index },
+                            create(
+                              "strong",
+                              null,
+                              `${readable(result.origin, "?")} → ${readable(result.destination, "?")}`
+                            ),
+                            create(
+                              "span",
+                              null,
+                              [
+                                result.date || result.departureDate,
+                                result.cabin,
+                                result.mileage ? `${result.mileage} points` : "",
+                                result.taxes !== null && result.taxes !== undefined
+                                  ? `+ ${result.taxes} ${result.taxCurrency || ""}`.trim()
+                                  : "",
+                                result.provider ? providerLabel(result.provider) : ""
+                              ]
+                                .filter(Boolean)
+                                .join(" · ")
+                            )
+                          )
+                        )
+                    )
+                  )
+                : null
+            );
+          })
+        : create("p", { className: "personal-dashboard-hermes-empty" }, "No recent award searches.")
+    );
+  }
+
   function PersonalDashboardPage() {
     const [activeViewport, setActiveViewport] = useState("overview");
     const [viewports, setViewports] = useState({});
@@ -297,7 +544,10 @@
       setFailed(false);
       try {
         const response = await SDK.fetchJSON(selected.endpoint);
-        if (!isViewport(response, selected.id)) {
+        if (
+          (selected.id === "award-flights" && !isFlightFeed(response)) ||
+          (selected.id !== "award-flights" && !isViewport(response, selected.id))
+        ) {
           throw new Error("invalid_viewport_contract");
         }
         setViewports((current) => ({ ...current, [selected.id]: response }));
@@ -310,6 +560,12 @@
 
     useEffect(() => {
       void load(activeViewport);
+    }, [activeViewport, load]);
+
+    useEffect(() => {
+      if (activeViewport !== "award-flights") return undefined;
+      const timer = window.setInterval(() => void load("award-flights"), 5000);
+      return () => window.clearInterval(timer);
     }, [activeViewport, load]);
 
     const current = viewports[activeViewport];
@@ -329,10 +585,14 @@
           create(
             "p",
             { className: "personal-dashboard-hermes-updated" },
-            current ? `Updated ${readable(current.generatedAt)}` : "Loading live dashboard data…"
+            current
+              ? current.generatedAt
+                ? `Updated ${readable(current.generatedAt)}`
+                : "Live status refreshes every 5 seconds"
+              : "Loading live dashboard data…"
           )
         ),
-        current
+        current?.health
           ? create(
               "div",
               {
@@ -395,8 +655,17 @@
             ? create(
                 "div",
                 { className: "personal-dashboard-hermes-viewport", role: "tabpanel" },
-                create(SourceState, { source: current.source }),
-                create(ViewportContent, { viewport: current })
+                activeViewport === "award-flights"
+                  ? create(AwardFlightsViewport, {
+                      feed: current,
+                      refresh: () => load("award-flights")
+                    })
+                  : create(
+                      React.Fragment,
+                      null,
+                      create(SourceState, { source: current.source }),
+                      create(ViewportContent, { viewport: current })
+                    )
               )
             : null
     );

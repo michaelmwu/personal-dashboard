@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   compactFlightSearchJob,
   createFlightSearch,
+  deriveHermesFlightInterventionToken,
   flightSearcherHermesContext,
   getFlightChallengeScreenshot,
   getFlightProviderDebugHtml,
@@ -19,6 +20,17 @@ const config = {
 };
 
 describe("Flight Searcher integration", () => {
+  test("derives a stable, purpose-scoped Hermes intervention credential", () => {
+    expect(deriveHermesFlightInterventionToken("dashboard-secret")).toMatch(/^[0-9a-f]{64}$/);
+    expect(deriveHermesFlightInterventionToken("dashboard-secret")).toBe(
+      deriveHermesFlightInterventionToken("dashboard-secret")
+    );
+    expect(deriveHermesFlightInterventionToken("another-secret")).not.toBe(
+      deriveHermesFlightInterventionToken("dashboard-secret")
+    );
+    expect(deriveHermesFlightInterventionToken(" ")).toBe("");
+  });
+
   test("normalizes dashboard and Hermes search inputs to the service contract", () => {
     expect(
       normalizeFlightSearchRequest({

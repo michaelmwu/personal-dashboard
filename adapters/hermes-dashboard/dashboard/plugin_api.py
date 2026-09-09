@@ -1,21 +1,22 @@
-"""Read-only loopback proxy for fixed Personal Dashboard host viewports.
+"""Fixed loopback proxy for Personal Dashboard viewports and flight interventions.
 
-Hermes Dashboard owns browser authentication.  This route deliberately has no
-request argument and never relays browser cookies, authorization headers, or
-other session material to the dashboard service.  It fetches one fixed,
-read-only endpoint from a literal loopback origin instead.
+Hermes Dashboard owns browser authentication. Read-only viewports need no
+upstream credential. Award-flight status and human challenge actions use a
+systemd credential derived for this single purpose; the plugin never receives
+the general dashboard API token or Flight Searcher owner token.
 """
 
 import asyncio
 import ipaddress
 import json
 import os
+import re
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 
 
 DEFAULT_DASHBOARD_API_BASE_URL = "http://127.0.0.1:8810"
@@ -25,23 +26,25 @@ VIEWPORT_PATHS = {
     "hotel-rate-finder": "/api/host-dashboard/hotel-rate-finder",
     "asia-travel-deals": "/api/host-dashboard/asia-travel-deals",
 }
-MAX_RESPONSE_BYTES = 256 * 1024
-REQUEST_TIMEOUT_SECONDS = 2.0
+FLIGHT_SEARCHES_PATH = "/api/hermes/flight-searches"
+FLIGHT_CREDENTIAL_NAME = "personal-dashboard-flight-intervention-token"
+IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+MAX_RESPONSE_BYTES = 512 * 1024
+MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024
+REQUEST_TIMEOUT_SECONDS = 5.0
 
 router = APIRouter()
 
 
 class _ProxyConfigurationError(Exception):
-    """The configured upstream is not an allowed loopback origin."""
+    """The configured upstream or credential is not allowed."""
 
 
-class _SummaryUnavailable(Exception):
-    """The fixed dashboard summary could not be read or validated."""
+class _UpstreamUnavailable(Exception):
+    """The fixed dashboard request failed or returned invalid data."""
 
 
 class _NoRedirect(HTTPRedirectHandler):
-    """Keep a loopback fetch from becoming a request to an arbitrary URL."""
-
     def redirect_request(self, request, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
         del request, fp, code, msg, headers, newurl
         return None
@@ -64,16 +67,13 @@ def _is_loopback_host(host: str | None) -> bool:
 def _upstream_url(path: str, env: dict[str, str] | None = None) -> str:
     environment = os.environ if env is None else env
     configured = environment.get(
-        "PERSONAL_DASHBOARD_PLUGIN_API_BASE_URL",
-        DEFAULT_DASHBOARD_API_BASE_URL,
+        "PERSONAL_DASHBOARD_PLUGIN_API_BASE_URL", DEFAULT_DASHBOARD_API_BASE_URL
     ).strip()
-
     try:
         parsed = urlsplit(configured)
         port = parsed.port
     except ValueError as error:
         raise _ProxyConfigurationError from error
-
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.netloc
@@ -86,174 +86,187 @@ def _upstream_url(path: str, env: dict[str, str] | None = None) -> str:
         or (port is not None and not 1 <= port <= 65535)
     ):
         raise _ProxyConfigurationError
-
     base_url = urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
     return f"{base_url.rstrip('/')}{path}"
 
 
-def _summary_url(env: dict[str, str] | None = None) -> str:
-    return _upstream_url(SUMMARY_PATH, env)
-
-
-def _viewport_url(viewport: str, env: dict[str, str] | None = None) -> str:
+def _credential(env: dict[str, str] | None = None) -> str:
+    environment = os.environ if env is None else env
+    directory = environment.get("CREDENTIALS_DIRECTORY", "").strip()
+    if not directory or not os.path.isabs(directory):
+        raise _ProxyConfigurationError
     try:
-        path = VIEWPORT_PATHS[viewport]
-    except KeyError as error:
+        with open(  # noqa: PTH123 - systemd credentials are absolute runtime files.
+            os.path.join(directory, FLIGHT_CREDENTIAL_NAME), encoding="utf-8"
+        ) as credential_file:
+            token = credential_file.read().strip()
+    except (OSError, UnicodeError) as error:
         raise _ProxyConfigurationError from error
-    return _upstream_url(path, env)
+    if not re.fullmatch(r"[0-9a-f]{64}", token):
+        raise _ProxyConfigurationError
+    return token
+
+
+def _request(path: str, *, method: str = "GET", payload: Any = None, authenticated: bool = False):
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "personal-dashboard-hermes-plugin/0.2",
+    }
+    body = None
+    if authenticated:
+        headers["Authorization"] = f"Bearer {_credential()}"
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return Request(_upstream_url(path), headers=headers, data=body, method=method)
+
+
+def _read_response(request: Request, max_bytes: int = MAX_RESPONSE_BYTES) -> tuple[bytes, str]:
+    try:
+        with _HTTP_OPENER.open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            if response.status < 200 or response.status >= 300:
+                raise _UpstreamUnavailable
+            content_type = response.headers.get_content_type().lower()
+            body = response.read(max_bytes + 1)
+    except _ProxyConfigurationError:
+        raise
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError) as error:
+        raise _UpstreamUnavailable from error
+    if len(body) > max_bytes:
+        raise _UpstreamUnavailable
+    return body, content_type
+
+
+def _fetch_json(request: Request, validator: Any) -> dict[str, Any]:
+    body, content_type = _read_response(request)
+    if content_type != "application/json":
+        raise _UpstreamUnavailable
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError) as error:
+        raise _UpstreamUnavailable from error
+    if not validator(payload):
+        raise _UpstreamUnavailable
+    return payload
 
 
 def _is_host_summary(payload: Any) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    if not isinstance(payload.get("version"), str) or not payload["version"].strip():
-        return False
-    if not isinstance(payload.get("generatedAt"), str) or not payload["generatedAt"].strip():
-        return False
-
-    health = payload.get("health")
-    if not isinstance(health, dict):
-        return False
-    if not isinstance(health.get("level"), str) or not isinstance(health.get("summary"), str):
-        return False
-
-    return all(isinstance(payload.get(key), list) for key in ("metrics", "alerts", "travel", "tasks"))
+    return (
+        isinstance(payload, dict)
+        and isinstance(payload.get("version"), str)
+        and isinstance(payload.get("generatedAt"), str)
+        and isinstance(payload.get("health"), dict)
+        and all(isinstance(payload.get(key), list) for key in ("metrics", "alerts", "travel", "tasks"))
+    )
 
 
 def _is_host_viewport(payload: Any, viewport: str) -> bool:
-    if not isinstance(payload, dict):
+    if not (
+        isinstance(payload, dict)
+        and payload.get("version") == "host-dashboard-viewport.v1"
+        and payload.get("viewport") == viewport
+        and isinstance(payload.get("generatedAt"), str)
+        and isinstance(payload.get("health"), dict)
+        and isinstance(payload.get("source"), dict)
+    ):
         return False
-    if payload.get("version") != "host-dashboard-viewport.v1":
-        return False
-    if payload.get("viewport") != viewport:
-        return False
-    if not isinstance(payload.get("generatedAt"), str) or not payload["generatedAt"].strip():
-        return False
-
-    health = payload.get("health")
-    source = payload.get("source")
-    if not isinstance(health, dict) or not isinstance(source, dict):
-        return False
-    if not isinstance(health.get("level"), str) or not isinstance(health.get("summary"), str):
-        return False
-    if not isinstance(source.get("id"), str) or not isinstance(source.get("status"), str):
-        return False
-
     if viewport == "overview":
         return all(isinstance(payload.get(key), list) for key in ("metrics", "alerts", "travel", "tasks"))
     return isinstance(payload.get("items"), list)
 
 
-def _fetch_json(url: str, validator: Any) -> dict[str, Any]:
-    request = Request(
-        url,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "personal-dashboard-hermes-plugin/0.1",
-        },
-        method="GET",
-    )
-
-    try:
-        with _HTTP_OPENER.open(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            if response.status != 200:
-                raise _SummaryUnavailable
-
-            content_type = response.headers.get_content_type().lower()
-            if content_type != "application/json":
-                raise _SummaryUnavailable
-
-            body = response.read(MAX_RESPONSE_BYTES + 1)
-    except _ProxyConfigurationError:
-        raise
-    except (HTTPError, URLError, TimeoutError, OSError, ValueError) as error:
-        raise _SummaryUnavailable from error
-
-    if len(body) > MAX_RESPONSE_BYTES:
-        raise _SummaryUnavailable
-
-    try:
-        payload = json.loads(body)
-    except (TypeError, ValueError) as error:
-        raise _SummaryUnavailable from error
-
-    if not validator(payload):
-        raise _SummaryUnavailable
-    return payload
-
-
-def _fetch_summary() -> dict[str, Any]:
-    return _fetch_json(_summary_url(), _is_host_summary)
-
-
-def _fetch_viewport(viewport: str) -> dict[str, Any]:
-    return _fetch_json(
-        _viewport_url(viewport),
-        lambda payload: _is_host_viewport(payload, viewport),
+def _is_flight_feed(payload: Any) -> bool:
+    return (
+        isinstance(payload, dict)
+        and isinstance(payload.get("ok"), bool)
+        and payload.get("emailAccess") is False
+        and isinstance(payload.get("searches"), list)
     )
 
 
-async def _get_viewport(viewport: str) -> dict[str, Any]:
-    try:
-        return await asyncio.to_thread(_fetch_viewport, viewport)
-    except _ProxyConfigurationError as error:
-        raise HTTPException(
+def _valid_identifier(value: str) -> bool:
+    return bool(IDENTIFIER.fullmatch(value))
+
+
+def _proxy_error(error: Exception) -> HTTPException:
+    if isinstance(error, _ProxyConfigurationError):
+        return HTTPException(
             status_code=503,
-            detail={
-                "error": "personal_dashboard_proxy_not_configured",
-                "message": "The Personal Dashboard viewport proxy is not configured.",
-            },
-        ) from error
-    except _SummaryUnavailable as error:
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error": "personal_dashboard_viewport_unavailable",
-                "message": "The Personal Dashboard viewport is unavailable.",
-            },
-        ) from error
+            detail={"error": "personal_dashboard_proxy_not_configured", "message": "The dashboard proxy credential is unavailable."},
+        )
+    return HTTPException(
+        status_code=502,
+        detail={"error": "personal_dashboard_upstream_unavailable", "message": "The Personal Dashboard service is unavailable."},
+    )
+
+
+async def _json_call(request: Request, validator: Any) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(_fetch_json, request, validator)
+    except (_ProxyConfigurationError, _UpstreamUnavailable) as error:
+        raise _proxy_error(error) from error
 
 
 @router.get("/summary")
 async def get_summary() -> dict[str, Any]:
-    """Return the fixed, validated host summary without exposing upstream details."""
-
-    try:
-        return await asyncio.to_thread(_fetch_summary)
-    except _ProxyConfigurationError as error:
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "error": "personal_dashboard_proxy_not_configured",
-                "message": "The Personal Dashboard summary proxy is not configured.",
-            },
-        ) from error
-    except _SummaryUnavailable as error:
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error": "personal_dashboard_summary_unavailable",
-                "message": "The Personal Dashboard summary is unavailable.",
-            },
-        ) from error
+    return await _json_call(_request(SUMMARY_PATH), _is_host_summary)
 
 
 @router.get("/overview")
 async def get_overview() -> dict[str, Any]:
-    """Return the fixed Overview viewport without accepting an upstream path."""
-
-    return await _get_viewport("overview")
+    return await _json_call(_request(VIEWPORT_PATHS["overview"]), lambda value: _is_host_viewport(value, "overview"))
 
 
 @router.get("/hotel-rate-finder")
 async def get_hotel_rate_finder() -> dict[str, Any]:
-    """Return the fixed Hotel Rate Finder viewport."""
-
-    return await _get_viewport("hotel-rate-finder")
+    return await _json_call(_request(VIEWPORT_PATHS["hotel-rate-finder"]), lambda value: _is_host_viewport(value, "hotel-rate-finder"))
 
 
 @router.get("/asia-travel-deals")
 async def get_asia_travel_deals() -> dict[str, Any]:
-    """Return the fixed Asia Travel Deals viewport."""
+    return await _json_call(_request(VIEWPORT_PATHS["asia-travel-deals"]), lambda value: _is_host_viewport(value, "asia-travel-deals"))
 
-    return await _get_viewport("asia-travel-deals")
+
+@router.get("/flight-searches")
+async def get_flight_searches() -> dict[str, Any]:
+    return await _json_call(_request(f"{FLIGHT_SEARCHES_PATH}?limit=20", authenticated=True), _is_flight_feed)
+
+
+@router.get("/flight-searches/{job_id}/challenges/{challenge_id}/screenshot")
+async def get_flight_screenshot(job_id: str, challenge_id: str) -> Response:
+    if not _valid_identifier(job_id) or not _valid_identifier(challenge_id):
+        raise HTTPException(status_code=400, detail={"error": "invalid_flight_identifier"})
+    try:
+        body, content_type = await asyncio.to_thread(
+            _read_response,
+            _request(f"{FLIGHT_SEARCHES_PATH}/{job_id}/challenges/{challenge_id}/screenshot", authenticated=True),
+            MAX_SCREENSHOT_BYTES,
+        )
+    except (_ProxyConfigurationError, _UpstreamUnavailable) as error:
+        raise _proxy_error(error) from error
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=502, detail={"error": "invalid_challenge_screenshot"})
+    return Response(content=body, media_type=content_type, headers={"Cache-Control": "no-store, max-age=0", "X-Content-Type-Options": "nosniff"})
+
+
+@router.post("/flight-searches/{job_id}/challenges/{challenge_id}/respond")
+async def respond_to_flight_challenge(job_id: str, challenge_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if not _valid_identifier(job_id) or not _valid_identifier(challenge_id):
+        raise HTTPException(status_code=400, detail={"error": "invalid_flight_identifier"})
+    value = payload.get("value")
+    if not isinstance(value, str) or not value.strip() or len(value.strip()) > 256:
+        raise HTTPException(status_code=400, detail={"error": "invalid_challenge_value"})
+    return await _json_call(
+        _request(f"{FLIGHT_SEARCHES_PATH}/{job_id}/challenges/{challenge_id}/respond", method="POST", payload={"value": value.strip()}, authenticated=True),
+        lambda result: isinstance(result, dict) and isinstance(result.get("ok"), bool),
+    )
+
+
+@router.post("/flight-searches/{job_id}/cancel")
+async def cancel_flight_search(job_id: str) -> dict[str, Any]:
+    if not _valid_identifier(job_id):
+        raise HTTPException(status_code=400, detail={"error": "invalid_flight_identifier"})
+    return await _json_call(
+        _request(f"{FLIGHT_SEARCHES_PATH}/{job_id}/cancel", method="POST", payload={}, authenticated=True),
+        lambda result: isinstance(result, dict) and isinstance(result.get("ok"), bool),
+    )

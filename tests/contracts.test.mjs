@@ -517,10 +517,16 @@ describe("contracts", () => {
     expect(hermesProxy).toContain('@router.get("/hotel-rate-finder")');
     expect(hermesProxy).toContain('@router.get("/asia-travel-deals")');
     expect(hermesProxy).toContain('@router.get("/summary")');
+    expect(hermesProxy).toContain('@router.get("/flight-searches")');
+    expect(hermesProxy).toContain("FLIGHT_CREDENTIAL_NAME");
     expect(hermesProxy).not.toContain("PERSONAL_DASHBOARD_API_TOKEN");
     expect(hermesScript).toContain('"/api/plugins/personal-dashboard/overview"');
     expect(hermesScript).toContain('"/api/plugins/personal-dashboard/hotel-rate-finder"');
     expect(hermesScript).toContain('"/api/plugins/personal-dashboard/asia-travel-deals"');
+    expect(hermesScript).toContain('"/api/plugins/personal-dashboard/flight-searches"');
+    expect(hermesScript).toContain(
+      'autoComplete: challenge.kind === "captcha" ? "off" : "one-time-code"'
+    );
     expect(hermesScript).not.toContain("PERSONAL_DASHBOARD_API_TOKEN");
     expect(hermesScript).not.toContain("iframe");
 
@@ -538,6 +544,115 @@ describe("contracts", () => {
     expect(webuiScript).not.toContain("http://127.0.0.1:8810");
     expect(webuiScript).not.toContain("PERSONAL_DASHBOARD_API_TOKEN");
     expect(webuiScript).not.toContain("innerHTML");
+  });
+
+  test("Hermes flight intervention token has only bounded status and challenge authority", async () => {
+    const observed = [];
+    const flightSearchOptions = {
+      config: {
+        baseUrl: "http://127.0.0.1:8730",
+        apiToken: "flight-reader",
+        ownerApiToken: "flight-owner",
+        timeoutMs: 1_000
+      },
+      fetch: async (url, options) => {
+        const request = { url: String(url), options };
+        observed.push(request);
+        if (request.url.endsWith("/screenshot")) {
+          return new Response(Uint8Array.from([137, 80, 78, 71]), {
+            headers: { "Content-Type": "image/png" }
+          });
+        }
+        if (options.method === "POST" && request.url.endsWith("/respond")) {
+          return Response.json({ status: "accepted", echoed: JSON.parse(options.body).value });
+        }
+        if (options.method === "POST" && request.url.endsWith("/cancel")) {
+          return Response.json({ status: "cancelled" });
+        }
+        return Response.json([
+          {
+            id: "fs_secure",
+            status: "waiting_human",
+            request: { origins: ["SEA"], destinations: ["TPE"] },
+            providers: {
+              eva: {
+                state: "waiting_human",
+                challenge: {
+                  id: "challenge_otp",
+                  provider: "eva",
+                  kind: "email_otp",
+                  prompt: "Enter the code.",
+                  status: "pending",
+                  screenshotAvailable: true,
+                  handoffUrl: "https://must-not-leak.example"
+                }
+              }
+            },
+            results: []
+          }
+        ]);
+      }
+    };
+    const apiServer = createApiServer({
+      apiToken: "dashboard-token",
+      hermesFlightInterventionToken: "scoped-flight-token",
+      flightSearchOptions
+    });
+    const apiPort = await listen(apiServer);
+    const base = `http://127.0.0.1:${apiPort}`;
+    const scopedHeaders = { Authorization: "Bearer scoped-flight-token" };
+
+    try {
+      const noAuth = await fetch(`${base}/api/hermes/flight-searches`);
+      expect(noAuth.status).toBe(401);
+
+      const overbroad = await fetch(`${base}/api/integrations/flight-searcher/cancel`, {
+        method: "POST",
+        headers: { ...scopedHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId: "fs_secure" })
+      });
+      expect(overbroad.status).toBe(401);
+
+      const wrongCredential = await fetch(`${base}/api/hermes/flight-searches`, {
+        headers: { Authorization: "Bearer dashboard-token" }
+      });
+      expect(wrongCredential.status).toBe(401);
+
+      const feed = await fetch(`${base}/api/hermes/flight-searches`, { headers: scopedHeaders });
+      expect(feed.status).toBe(200);
+      const feedBody = await feed.json();
+      expect(feedBody).toMatchObject({
+        ok: true,
+        emailAccess: false,
+        searches: [{ id: "fs_secure", status: "waiting_human" }]
+      });
+      expect(JSON.stringify(feedBody)).not.toContain("must-not-leak.example");
+
+      const screenshot = await fetch(
+        `${base}/api/hermes/flight-searches/fs_secure/challenges/challenge_otp/screenshot`,
+        { headers: scopedHeaders }
+      );
+      expect(screenshot.status).toBe(200);
+      expect(screenshot.headers.get("cache-control")).toContain("no-store");
+
+      const response = await fetch(
+        `${base}/api/hermes/flight-searches/fs_secure/challenges/challenge_otp/respond`,
+        {
+          method: "POST",
+          headers: { ...scopedHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify({ value: "071975" })
+        }
+      );
+      expect(response.status).toBe(200);
+      expect(JSON.stringify(await response.json())).not.toContain("071975");
+      expect(
+        JSON.parse(observed.find((request) => request.url.endsWith("/respond")).options.body)
+      ).toEqual({
+        value: "071975"
+      });
+    } finally {
+      await closeServer(apiServer);
+    }
   });
 
   test("Hermes events normalize into alert and transaction candidates", () => {
