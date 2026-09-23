@@ -18,6 +18,13 @@ function configuredBaseUrl(manifest, env = process.env) {
   return manifest.baseUrl ?? "";
 }
 
+function configuredUiUrl(manifest, env = process.env) {
+  if (manifest.uiUrlEnv) {
+    return env[manifest.uiUrlEnv] ?? "";
+  }
+  return manifest.uiUrl;
+}
+
 export async function loadDashboardConfig(root, configPath = DEFAULT_DASHBOARD_CONFIG) {
   const raw = await readFile(resolvePath(root, configPath), "utf8");
   const parsed = YAML.parse(raw) ?? {};
@@ -40,6 +47,7 @@ export async function loadDashboardManifest(root, appConfig, options = {}) {
   return appManifest({
     ...manifest,
     baseUrl: configuredBaseUrl(manifest, options.env ?? process.env),
+    uiUrl: configuredUiUrl(manifest, options.env ?? process.env),
     panels: (manifest.panels ?? []).map((panel) =>
       appPanel({
         ...panel,

@@ -681,7 +681,12 @@ describe("contracts", () => {
   });
 
   test("plugin registry loads enabled manifests and panel positions from config", async () => {
-    const registry = await loadPluginRegistry(new URL("..", import.meta.url).pathname);
+    const registry = await loadPluginRegistry(new URL("..", import.meta.url).pathname, {
+      env: {
+        HOTEL_RATE_FINDER_API_BASE_URL: "http://127.0.0.1:8720",
+        HOTEL_RATE_FINDER_UI_URL: "https://moo-tokyo-minibox.example.ts.net:8720/"
+      }
+    });
 
     expect(registry.apps.map((app) => app.id)).toEqual(
       expect.arrayContaining([
@@ -858,6 +863,11 @@ describe("contracts", () => {
         })
       ])
     );
+    expect(registry.apps.find((app) => app.id === "hotel-rate-finder")).toMatchObject({
+      baseUrl: "http://127.0.0.1:8720",
+      uiUrl: "https://moo-tokyo-minibox.example.ts.net:8720/",
+      deepLink: "/"
+    });
   });
 
   test("web server returns relative config and proxies API requests", async () => {

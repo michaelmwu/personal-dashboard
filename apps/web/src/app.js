@@ -384,7 +384,23 @@ function currencyRateLabel(value, currency = "USD") {
   }
 }
 
-function renderTravel(travel) {
+function renderTravel(travel, apps = {}) {
+  const hotelRateFinder = (apps.manifests ?? []).find(
+    (manifest) => manifest.id === "hotel-rate-finder"
+  );
+  const hotelRateFinderHref = appDeepLink(hotelRateFinder);
+  const hotelRateFinderLink = byId("hotel-rate-finder-link");
+  const hotelRateFinderLabel = byId("hotel-rate-finder-label");
+  if (hotelRateFinderHref) {
+    hotelRateFinderLink.href = hotelRateFinderHref;
+    hotelRateFinderLink.hidden = false;
+    hotelRateFinderLabel.hidden = true;
+  } else {
+    hotelRateFinderLink.removeAttribute("href");
+    hotelRateFinderLink.hidden = true;
+    hotelRateFinderLabel.hidden = false;
+  }
+
   const hotelRows = travel.hotelWatches.map(
     (watch) => `
       <article class="compact-card">
@@ -668,7 +684,7 @@ function renderIntegrations(integrations) {
 }
 
 function appDeepLink(manifest) {
-  const baseUrl = String(manifest?.baseUrl ?? "").trim();
+  const baseUrl = String(manifest?.uiUrl ?? manifest?.baseUrl ?? "").trim();
   if (!/^https?:\/\//i.test(baseUrl)) {
     return "";
   }
@@ -1375,7 +1391,7 @@ async function main() {
       setupTransactionControls();
       await Promise.all([refreshTransactionView(), setupPlaidConnectionSettings()]);
     } else if (app === "travel") {
-      renderTravel(dashboard.travel);
+      renderTravel(dashboard.travel, dashboard.apps);
     } else if (app === "coding") {
       renderTasks(dashboard.openclaw);
       renderHermes(dashboard.hermes);
