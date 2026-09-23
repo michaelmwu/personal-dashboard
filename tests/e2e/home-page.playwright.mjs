@@ -102,6 +102,31 @@ test("every home card opens its app and Finance contains only finance controls",
   });
 });
 
+test("travel links rate watches to the hosted Hotel Rate Finder", async ({ page }) => {
+  const dashboard = dashboardFixture();
+  dashboard.apps.manifests = [
+    {
+      id: "hotel-rate-finder",
+      uiUrl: "https://moo-tokyo-minibox.example.ts.net:8720/",
+      deepLink: "/"
+    }
+  ];
+
+  await withDashboard(
+    page,
+    async (base) => {
+      await page.goto(`${base}/travel`);
+      const link = page.getByRole("link", { name: "Open Hotel Rate Finder in a new tab" });
+      await expect(link).toBeVisible();
+      await expect(link).toHaveAttribute("href", "https://moo-tokyo-minibox.example.ts.net:8720/");
+      await expect(link).toHaveAttribute("target", "_blank");
+      await expect(page.locator("#hotel-rate-finder-label")).toBeHidden();
+      await expect(page.locator("#travel-watches .compact-card")).toHaveCount(4);
+    },
+    dashboard
+  );
+});
+
 test("finance filters, sorting, empty results and reset work together", async ({ page }) => {
   await withDashboard(page, async (base) => {
     await page.goto(`${base}/finance`);

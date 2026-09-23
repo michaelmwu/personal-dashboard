@@ -3,6 +3,7 @@
   "name": "Hotel Rate Finder",
   "version": "dashboard-app.v1",
   "baseUrlEnv": "HOTEL_RATE_FINDER_API_BASE_URL",
+  "uiUrlEnv": "HOTEL_RATE_FINDER_UI_URL",
   "healthUrl": "/api/providers",
   "panels": [
     {

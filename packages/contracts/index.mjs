@@ -432,13 +432,25 @@ export function appManifest({
   name,
   version = DASHBOARD_APP_MANIFEST_VERSION,
   baseUrl,
+  uiUrl,
   healthUrl,
   panels = [],
   capabilities = [],
   eventTypes = [],
   deepLink
 }) {
-  return { id, name, version, baseUrl, healthUrl, panels, capabilities, eventTypes, deepLink };
+  return {
+    id,
+    name,
+    version,
+    baseUrl,
+    uiUrl,
+    healthUrl,
+    panels,
+    capabilities,
+    eventTypes,
+    deepLink
+  };
 }
 
 export function appItem({

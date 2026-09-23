@@ -187,6 +187,32 @@ h2 {
   border-bottom: 1px solid var(--line);
 }
 
+.panel-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid #99f6e4;
+  border-radius: 8px;
+  background: #f0fdfa;
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.panel-action:hover,
+.panel-action:focus-visible {
+  border-color: var(--accent);
+  background: #ccfbf1;
+}
+
+.panel-action[hidden] {
+  display: none;
+}
+
 .transaction-header {
   align-items: center;
 }
