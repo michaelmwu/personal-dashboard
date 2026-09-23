@@ -1,3 +1,5 @@
+import { appDeepLink } from "./app-links.js";
+
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD"
@@ -681,18 +683,6 @@ function renderIntegrations(integrations) {
       `
     )
     .join("");
-}
-
-function appDeepLink(manifest) {
-  const baseUrl = String(manifest?.uiUrl ?? manifest?.baseUrl ?? "").trim();
-  if (!/^https?:\/\//i.test(baseUrl)) {
-    return "";
-  }
-  try {
-    return new URL(manifest.deepLink || "/", baseUrl).toString();
-  } catch {
-    return "";
-  }
 }
 
 function renderPluginPanels(apps) {
