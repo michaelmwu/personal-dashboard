@@ -46,6 +46,7 @@ export function hermesCapabilities() {
         rooms: "positive integer?",
         adults: "positive integer?",
         kids: "non-negative integer?",
+        corpCode: "Hyatt corporate code string?",
         displayCurrency: "ISO 4217?",
         excludeResortFees: "boolean?",
         forceRefresh: "boolean?"
