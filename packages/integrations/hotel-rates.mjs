@@ -106,6 +106,8 @@ export function hotelAgentSearchRequestFromPayload(payload = {}) {
   copy("rooms", "rooms");
   copy("adults", "adults");
   copy("kids", "kids");
+  const corpCode = payload.corpCode ?? payload.corp_code;
+  if (corpCode !== undefined) request.corp_codes = [corpCode];
   copy("display_currency", "displayCurrency", "display_currency");
   copy("exclude_resort_fees", "excludeResortFees", "exclude_resort_fees");
   copy("force_refresh", "forceRefresh", "force_refresh");

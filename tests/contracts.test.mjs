@@ -7688,6 +7688,29 @@ describe("contracts", () => {
     ]);
   });
 
+  test("Hotel agent search forwards only the requested Hyatt corporate code", async () => {
+    const request = hotelAgentSearchRequestFromPayload({
+      providers: ["hyatt"],
+      mode: "hotel",
+      hotelId: "bkkrb",
+      checkIn: "2026-12-03",
+      checkOut: "2026-12-04",
+      corpCode: "37045"
+    });
+    expect(request.corp_codes).toEqual(["37045"]);
+    expect(request.hotel_id).toBe("bkkrb");
+    expect(request.providers).toEqual(["hyatt"]);
+    let forwardedRequest;
+    await createHotelAgentSearch(request, {
+      config: { baseUrl: "http://127.0.0.1:8720" },
+      fetch: async (_url, options) => {
+        forwardedRequest = JSON.parse(options.body);
+        return Response.json({ job_id: "job_oracle_001" }, { status: 202 });
+      }
+    });
+    expect(forwardedRequest.corp_codes).toEqual(["37045"]);
+  });
+
   test("Hotel rate jobs normalize cheapest cancellable drops with cancellation deadline", () => {
     const reservation = normalizeHotelReservationPayload({
       id: "reservation_hotel_002",
