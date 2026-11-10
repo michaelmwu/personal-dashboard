@@ -78,6 +78,7 @@ import {
   createHotelAgentSearch,
   createHotelSavedSearch,
   getHotelJob,
+  hotelJobForHermes,
   hotelAgentSearchRequestFromPayload,
   hotelRateDropAlert,
   hotelRateFailureAlert,
@@ -1949,7 +1950,7 @@ async function dispatchDeterministicCapability(action, capability) {
     return {
       dispatched: response.ok,
       target: capability.target,
-      response: response.body,
+      response: response.ok ? hotelJobForHermes(response.body) : response.body,
       statusCode: response.status,
       readOnly: true
     };

@@ -1,4 +1,117 @@
 const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "canceled"]);
+const HERMES_HOTEL_RESULT_BUDGET = 128 * 1024;
+const HERMES_RATE_FIELDS = [
+  "provider",
+  "hotel_id",
+  "hotel_name",
+  "hotel_url",
+  "room_name",
+  "room_type_code",
+  "rate_name",
+  "rate_plan_code",
+  "currency",
+  "amount",
+  "rate_before_tax",
+  "rate_after_tax",
+  "total_before_tax",
+  "total_after_tax",
+  "adjusted_total_before_tax",
+  "adjusted_total_after_tax",
+  "converted_currency",
+  "amount_converted",
+  "total_after_tax_converted",
+  "amount_usd",
+  "total_after_tax_usd",
+  "taxes",
+  "resort_fee",
+  "resort_fee_tax",
+  "points",
+  "total_points",
+  "points_rate_name",
+  "bookability_status",
+  "cancellation_policy",
+  "deposit_policy",
+  "is_corp_rate",
+  "is_requested_corp_rate",
+  "matches_standard_rate"
+];
+
+// Hermes needs rate details, not the provider's large raw responses and browser context.
+export function hotelJobForHermes(job) {
+  if (!job || typeof job !== "object" || !job.report) return job;
+  const report = job.report;
+  const result = {
+    id: job.id,
+    status: job.status,
+    error: job.error,
+    request: job.request,
+    created_at: job.created_at,
+    updated_at: job.updated_at,
+    completed_at: job.completed_at,
+    report: {
+      type: report.type,
+      request: report.request,
+      fx_display_currencies: report.fx_display_currencies,
+      provider_errors: report.provider_errors,
+      hotels: [],
+      results_truncated: false
+    }
+  };
+  const hotels = Array.isArray(report.hotels) ? report.hotels : [];
+  for (const hotel of hotels) {
+    const summary = {
+      hotel_id: hotel.hotel_id,
+      hotel_name: hotel.hotel_name,
+      hotel_url: hotel.hotel_url,
+      award_category: hotel.award_category,
+      distance: hotel.distance,
+      best_amount: hotel.best_amount,
+      rates: []
+    };
+    result.report.hotels.push(summary);
+    for (const rate of Array.isArray(hotel.rates) ? hotel.rates : []) {
+      const item = {};
+      for (const key of [
+        "corp_code",
+        "corp_name",
+        "cached",
+        "cached_at",
+        "error",
+        "skip_reason",
+        "skipped",
+        "upstream_maintenance",
+        "upstream_status",
+        "comparison"
+      ]) {
+        if (rate[key] !== undefined) item[key] = rate[key];
+      }
+      for (const key of ["candidate", "cheapest_non_corp", "cheapest_cancellable_non_corp"]) {
+        if (rate[key] && typeof rate[key] === "object") {
+          item[key] = Object.fromEntries(
+            HERMES_RATE_FIELDS.filter((field) => {
+              const value = rate[key][field];
+              return (
+                value == null ||
+                typeof value === "number" ||
+                typeof value === "boolean" ||
+                (typeof value === "string" && value.length <= 4000)
+              );
+            })
+              .filter((field) => rate[key][field] !== undefined)
+              .map((field) => [field, rate[key][field]])
+          );
+        }
+      }
+      summary.rates.push(item);
+      if (Buffer.byteLength(JSON.stringify(result)) > HERMES_HOTEL_RESULT_BUDGET) {
+        summary.rates.pop();
+        result.report.results_truncated = true;
+        return result;
+      }
+    }
+  }
+  return result;
+}
 const NON_REFUNDABLE_MARKERS = [
   "non refundable",
   "non-refundable",
